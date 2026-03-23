@@ -30,8 +30,8 @@ namespace ExaDG
 namespace FTI
 {
 // forward declarations
-template<int dim, typename Number>
-std::shared_ptr<ApplicationBase<dim, Number>>
+template<int dim, int n_components, typename Number>
+std::shared_ptr<ApplicationBase<dim, n_components, Number>>
 get_application(std::string input_file, MPI_Comm const & comm);
 
 } // namespace FTI

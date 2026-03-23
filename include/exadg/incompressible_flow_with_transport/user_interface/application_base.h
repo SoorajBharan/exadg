@@ -184,7 +184,7 @@ private:
   SpatialResolutionParameters resolution;
 };
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class ScalarBase
 {
 public:
@@ -250,7 +250,7 @@ public:
     set_field_functions();
   }
 
-  virtual std::shared_ptr<ConvDiff::PostProcessorBase<dim, Number>>
+  virtual std::shared_ptr<ConvDiff::PostProcessorBase<dim, n_components, Number>>
   create_postprocessor() = 0;
 
   ConvDiff::Parameters const &
@@ -305,7 +305,7 @@ private:
   unsigned int degree;
 };
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class ApplicationBase
 {
 public:
@@ -371,7 +371,7 @@ public:
   }
 
   std::shared_ptr<FluidBase<dim, Number>>               fluid;
-  std::vector<std::shared_ptr<ScalarBase<dim, Number>>> scalars;
+  std::vector<std::shared_ptr<ScalarBase<dim, n_components, Number>>> scalars;
 
 protected:
   MPI_Comm const mpi_comm;

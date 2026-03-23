@@ -101,6 +101,9 @@ public:
   /**************************************************************************************/
 
   // description: see enum declaration
+  ScalarType scalar_type;
+
+  // description: see enum declaration
   ProblemType problem_type;
 
   // description: see enum declaration

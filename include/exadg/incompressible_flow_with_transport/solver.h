@@ -49,25 +49,26 @@ create_input_file(std::string const & input_file)
   // for the automatic generation of a default input file
   unsigned int const Dim = 2;
   typedef double     Number;
-  FTI::get_application<Dim, Number>(input_file, MPI_COMM_WORLD)->add_parameters(prm);
+  unsigned int const N_Components = 1;
+  FTI::get_application<Dim, N_Components, Number>(input_file, MPI_COMM_WORLD)->add_parameters(prm);
 
   prm.print_parameters(input_file,
                        dealii::ParameterHandler::Short |
                          dealii::ParameterHandler::KeepDeclarationOrder);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
 run(std::string const & input_file, MPI_Comm const & mpi_comm, bool const is_test)
 {
   dealii::Timer timer;
   timer.restart();
 
-  std::shared_ptr<FTI::ApplicationBase<dim, Number>> application =
-    FTI::get_application<dim, Number>(input_file, mpi_comm);
+  std::shared_ptr<FTI::ApplicationBase<dim, n_components, Number>> application =
+    FTI::get_application<dim, n_components, Number>(input_file, mpi_comm);
 
-  std::shared_ptr<FTI::Driver<dim, Number>> driver =
-    std::make_shared<FTI::Driver<dim, Number>>(mpi_comm, application, is_test);
+  std::shared_ptr<FTI::Driver<dim, n_components, Number>> driver =
+    std::make_shared<FTI::Driver<dim, n_components, Number>>(mpi_comm, application, is_test);
 
   driver->setup();
 
@@ -117,19 +118,19 @@ main(int argc, char ** argv)
   // run the simulation
   if(general.dim == 2 and general.precision == "float")
   {
-    ExaDG::run<2, float>(input_file, mpi_comm, general.is_test);
+    ExaDG::run<2, 1, float>(input_file, mpi_comm, general.is_test);
   }
   else if(general.dim == 2 and general.precision == "double")
   {
-    ExaDG::run<2, double>(input_file, mpi_comm, general.is_test);
+    ExaDG::run<2, 1, double>(input_file, mpi_comm, general.is_test);
   }
   else if(general.dim == 3 and general.precision == "float")
   {
-    ExaDG::run<3, float>(input_file, mpi_comm, general.is_test);
+    ExaDG::run<3, 1, float>(input_file, mpi_comm, general.is_test);
   }
   else if(general.dim == 3 and general.precision == "double")
   {
-    ExaDG::run<3, double>(input_file, mpi_comm, general.is_test);
+    ExaDG::run<3, 1, double>(input_file, mpi_comm, general.is_test);
   }
   else
   {

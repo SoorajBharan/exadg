@@ -36,7 +36,7 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class Operator;
 
 template<typename Number>
@@ -55,7 +55,7 @@ public:
                     types::time_step const time_step_number = numbers::steady_timestep) = 0;
 };
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class PostProcessorBase : public PostProcessorInterface<Number>
 {
 protected:
@@ -67,7 +67,7 @@ public:
   }
 
   virtual void
-  setup(Operator<dim, Number> const & pde_operator) = 0;
+  setup(Operator<dim, n_components, Number> const & pde_operator) = 0;
 
   /*
    * In the derived classes, one might need to take some actions after coarsening and refinement.

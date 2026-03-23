@@ -29,9 +29,9 @@ namespace ExaDG
 {
 namespace FTI
 {
-template<int dim, typename Number>
-Driver<dim, Number>::Driver(MPI_Comm const &                              comm,
-                            std::shared_ptr<ApplicationBase<dim, Number>> app,
+template<int dim, int n_components, typename Number>
+Driver<dim, n_components, Number>::Driver(MPI_Comm const &                              comm,
+                            std::shared_ptr<ApplicationBase<dim, n_components, Number>> app,
                             bool const                                    is_test)
   : mpi_comm(comm),
     pcout(std::cout, dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0),
@@ -43,9 +43,9 @@ Driver<dim, Number>::Driver(MPI_Comm const &                              comm,
   print_general_info<Number>(pcout, mpi_comm, is_test);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::setup()
+Driver<dim, n_components, Number>::setup()
 {
   dealii::Timer timer;
   timer.restart();
@@ -152,7 +152,7 @@ Driver<dim, Number>::setup()
   // initialize convection-diffusion operator
   for(unsigned int i = 0; i < n_scalars; ++i)
   {
-    scalar_operator[i] = std::make_shared<ConvDiff::Operator<dim, Number>>(
+    scalar_operator[i] = std::make_shared<ConvDiff::Operator<dim, n_components, Number>>(
       grid,
       dynamic_mapping,
       ale ? ale_multigrid_mappings : multigrid_mappings,
@@ -279,7 +279,7 @@ Driver<dim, Number>::setup()
   {
     // initialize time integrator
     scalar_time_integrator[i] =
-      ConvDiff::create_time_integrator<dim, Number>(scalar_operator[i],
+      ConvDiff::create_time_integrator<dim, n_components, Number>(scalar_operator[i],
                                                     helpers_ale,
                                                     scalar_postprocessor[i],
                                                     application->scalars[i]->get_parameters(),
@@ -312,9 +312,9 @@ Driver<dim, Number>::setup()
   timer_tree.insert({"Flow + transport", "Setup"}, timer.wall_time());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::set_start_time() const
+Driver<dim, n_components, Number>::set_start_time() const
 {
   double time = std::numeric_limits<double>::max();
 
@@ -340,9 +340,9 @@ Driver<dim, Number>::set_start_time() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::synchronize_time_step_size() const
+Driver<dim, n_components, Number>::synchronize_time_step_size() const
 {
   double const EPSILON = 1.e-10;
 
@@ -410,9 +410,9 @@ Driver<dim, Number>::synchronize_time_step_size() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::communicate_scalar_to_fluid() const
+Driver<dim, n_components, Number>::communicate_scalar_to_fluid() const
 {
   // We need to communicate between fluid solver and scalar transport solver, i.e., ask the
   // scalar transport solver (scalar 0 by definition) for the temperature and hand it over to the
@@ -431,8 +431,8 @@ Driver<dim, Number>::communicate_scalar_to_fluid() const
     else if(application->scalars[0]->get_parameters().temporal_discretization ==
             ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[0]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[0]);
       time_int_scalar->extrapolate_solution(temperature);
     }
     else
@@ -444,9 +444,9 @@ Driver<dim, Number>::communicate_scalar_to_fluid() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::communicate_fluid_to_all_scalars() const
+Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
 {
   // We need to communicate between fluid solver and scalar transport solver, i.e., ask the
   // fluid solver for the velocity field and hand it over to all scalar transport solvers.
@@ -483,8 +483,8 @@ Driver<dim, Number>::communicate_fluid_to_all_scalars() const
     else if(application->scalars[i]->get_parameters().temporal_discretization ==
             ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
       time_int_scalar->set_velocities_and_times(velocities, times);
     }
     else
@@ -494,9 +494,9 @@ Driver<dim, Number>::communicate_fluid_to_all_scalars() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::ale_update() const
+Driver<dim, n_components, Number>::ale_update() const
 {
   dealii::Timer timer;
   timer.restart();
@@ -516,8 +516,8 @@ Driver<dim, Number>::ale_update() const
   fluid_time_integrator->ale_update();
   for(unsigned int i = 0; i < application->scalars.size(); ++i)
   {
-    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_bdf =
-      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_bdf =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
     time_int_bdf->ale_update();
   }
   timer_tree.insert({"Flow + transport", "ALE", "Update all time integrators"},
@@ -526,9 +526,9 @@ Driver<dim, Number>::ale_update() const
   timer_tree.insert({"Flow + transport", "ALE"}, timer.wall_time());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::solve() const
+Driver<dim, n_components, Number>::solve() const
 {
   set_start_time();
 
@@ -608,9 +608,9 @@ Driver<dim, Number>::solve() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Driver<dim, Number>::print_performance_results(double const total_time) const
+Driver<dim, n_components, Number>::print_performance_results(double const total_time) const
 {
   this->pcout << std::endl
               << "_________________________________________________________________________________"
@@ -647,8 +647,8 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
     if(application->scalars[i]->get_parameters().temporal_discretization ==
        ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_integrator_bdf =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_integrator_bdf =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
       time_integrator_bdf->print_iterations();
     }
     else if(application->scalars[i]->get_parameters().temporal_discretization ==
@@ -716,11 +716,11 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
               << std::endl;
 }
 
-template class Driver<2, float>;
-template class Driver<3, float>;
+template class Driver<2, 1, float>;
+template class Driver<3, 1, float>;
 
-template class Driver<2, double>;
-template class Driver<3, double>;
+template class Driver<2, 1, double>;
+template class Driver<3, 1, double>;
 
 } // namespace FTI
 } // namespace ExaDG

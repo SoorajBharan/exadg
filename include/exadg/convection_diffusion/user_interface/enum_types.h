@@ -78,6 +78,16 @@ enum class FormulationConvectiveTerm
   ConvectiveFormulation
 };
 
+/*
+ *  Scalar Type describes the type of scalar transport equation
+ */
+enum class ScalarType
+{
+  Scalar,
+  kEpsilonTransportVariables,
+  kOmegaTransportVariables
+};
+
 /**************************************************************************************/
 /*                                                                                    */
 /*                                 PHYSICAL QUANTITIES                                */

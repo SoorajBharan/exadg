@@ -33,9 +33,9 @@ namespace ConvDiff
 /**
  * Creates time integrator depending on type of time integration strategy.
  */
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::shared_ptr<TimeIntBase>
-create_time_integrator(std::shared_ptr<Operator<dim, Number>>          pde_operator,
+create_time_integrator(std::shared_ptr<Operator<dim, n_components, Number>>          pde_operator,
                        std::shared_ptr<HelpersALE<dim, Number> const>  helpers_ale,
                        std::shared_ptr<PostProcessorInterface<Number>> postprocessor,
                        Parameters const &                              parameters,
@@ -51,7 +51,7 @@ create_time_integrator(std::shared_ptr<Operator<dim, Number>>          pde_opera
   }
   else if(parameters.temporal_discretization == TemporalDiscretization::BDF)
   {
-    time_integrator = std::make_shared<TimeIntBDF<dim, Number>>(
+    time_integrator = std::make_shared<TimeIntBDF<dim, n_components, Number>>(
       pde_operator, helpers_ale, postprocessor, parameters, mpi_comm, is_test);
   }
   else

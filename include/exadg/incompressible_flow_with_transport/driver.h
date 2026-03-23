@@ -51,12 +51,12 @@ namespace ExaDG
 {
 namespace FTI
 {
-template<int dim, typename Number = double>
+template<int dim, int n_components, typename Number = double>
 class Driver
 {
 public:
   Driver(MPI_Comm const &                              mpi_comm,
-         std::shared_ptr<ApplicationBase<dim, Number>> application,
+         std::shared_ptr<ApplicationBase<dim, n_components, Number>> application,
          bool const                                    is_test);
 
   void
@@ -96,7 +96,7 @@ private:
   bool const is_test;
 
   // application
-  std::shared_ptr<ApplicationBase<dim, Number>> application;
+  std::shared_ptr<ApplicationBase<dim, n_components, Number>> application;
 
   std::shared_ptr<Grid<dim>> grid;
 
@@ -135,9 +135,9 @@ private:
 
   // SCALAR TRANSPORT
 
-  std::vector<std::shared_ptr<ConvDiff::Operator<dim, Number>>> scalar_operator;
+  std::vector<std::shared_ptr<ConvDiff::Operator<dim, n_components, Number>>> scalar_operator;
 
-  std::vector<std::shared_ptr<ConvDiff::PostProcessorBase<dim, Number>>> scalar_postprocessor;
+  std::vector<std::shared_ptr<ConvDiff::PostProcessorBase<dim, n_components, Number>>> scalar_postprocessor;
 
   std::vector<std::shared_ptr<TimeIntBase>> scalar_time_integrator;
 

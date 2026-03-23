@@ -40,8 +40,8 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number>
-Operator<dim, Number>::Operator(
+template<int dim, int n_components, typename Number>
+Operator<dim, n_components, Number>::Operator(
   std::shared_ptr<Grid<dim> const>                      grid_in,
   std::shared_ptr<dealii::Mapping<dim> const>           mapping_in,
   std::shared_ptr<MultigridMappings<dim, Number>> const multigrid_mappings_in,
@@ -64,7 +64,7 @@ Operator<dim, Number>::Operator(
 {
   pcout << std::endl << "Construct convection-diffusion operator ..." << std::endl;
 
-  fe = create_finite_element<dim>(ElementType::Hypercube, true, 1, param.degree);
+  fe = create_finite_element<dim>(ElementType::Hypercube, true, n_components, param.degree);
 
   if(needs_own_dof_handler_velocity())
   {
@@ -85,9 +85,9 @@ Operator<dim, Number>::Operator(
   pcout << std::endl << "... done!" << std::endl;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::initialize_dof_handler_and_constraints()
+Operator<dim, n_components, Number>::initialize_dof_handler_and_constraints()
 {
   dof_handler.distribute_dofs(*fe);
 
@@ -99,9 +99,9 @@ Operator<dim, Number>::initialize_dof_handler_and_constraints()
   affine_constraints.close();
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const
+Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const
 {
   // append mapping flags
   if(param.problem_type == ProblemType::Unsteady)
@@ -155,9 +155,9 @@ Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matri
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup_operators()
+Operator<dim, n_components, Number>::setup_operators()
 {
   // mass operator
   MassOperatorData<dim> mass_operator_data;
@@ -310,9 +310,9 @@ Operator<dim, Number>::setup_operators()
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup()
+Operator<dim, n_components, Number>::setup()
 {
   pcout << std::endl << "Setup convection-diffusion operator ..." << std::endl;
 
@@ -321,9 +321,9 @@ Operator<dim, Number>::setup()
   pcout << std::endl << "... done!" << std::endl;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::do_setup()
+Operator<dim, n_components, Number>::do_setup()
 {
   // initialize MatrixFree and MatrixFreeData
   std::shared_ptr<dealii::MatrixFree<dim, Number>> mf =
@@ -350,9 +350,9 @@ Operator<dim, Number>::do_setup()
   this->setup(mf, mf_data);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
+Operator<dim, n_components, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
                              std::shared_ptr<MatrixFreeData<dim, Number> const> matrix_free_data_in,
                              std::string const & dof_index_velocity_external_in)
 {
@@ -371,9 +371,9 @@ Operator<dim, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> con
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup_after_coarsening_and_refinement()
+Operator<dim, n_components, Number>::setup_after_coarsening_and_refinement()
 {
   initialize_dof_handler_and_constraints();
 
@@ -384,9 +384,9 @@ Operator<dim, Number>::setup_after_coarsening_and_refinement()
   do_setup();
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup_preconditioner()
+Operator<dim, n_components, Number>::setup_preconditioner()
 {
   if(param.preconditioner == Preconditioner::InverseMassMatrix)
   {
@@ -396,7 +396,7 @@ Operator<dim, Number>::setup_preconditioner()
     inverse_mass_operator_data.parameters = param.inverse_mass_preconditioner;
 
     preconditioner =
-      std::make_shared<InverseMassPreconditioner<dim, 1, Number>>(*matrix_free,
+      std::make_shared<InverseMassPreconditioner<dim, n_components, Number>>(*matrix_free,
                                                                   inverse_mass_operator_data);
   }
   else if(param.preconditioner == Preconditioner::PointJacobi)
@@ -473,9 +473,9 @@ Operator<dim, Number>::setup_preconditioner()
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::setup_solver()
+Operator<dim, n_components, Number>::setup_solver()
 {
   if(param.solver == Solver::CG)
   {
@@ -533,23 +533,23 @@ Operator<dim, Number>::setup_solver()
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::initialize_dof_vector(VectorType & src) const
+Operator<dim, n_components, Number>::initialize_dof_vector(VectorType & src) const
 {
   matrix_free->initialize_dof_vector(src, get_dof_index());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::initialize_dof_vector_velocity(VectorType & velocity) const
+Operator<dim, n_components, Number>::initialize_dof_vector_velocity(VectorType & velocity) const
 {
   matrix_free->initialize_dof_vector(velocity, get_dof_index_velocity());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::interpolate_velocity(VectorType & velocity, double const time) const
+Operator<dim, n_components, Number>::interpolate_velocity(VectorType & velocity, double const time) const
 {
   field_functions->velocity->set_time(time);
 
@@ -566,9 +566,9 @@ Operator<dim, Number>::interpolate_velocity(VectorType & velocity, double const 
   velocity = vector_double;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::project_velocity(VectorType & velocity, double const time) const
+Operator<dim, n_components, Number>::project_velocity(VectorType & velocity, double const time) const
 {
   VelocityProjection<dim, Number> l2_projection;
 
@@ -583,9 +583,9 @@ Operator<dim, Number>::project_velocity(VectorType & velocity, double const time
                       velocity);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::prescribe_initial_conditions(VectorType & src, double const time) const
+Operator<dim, n_components, Number>::prescribe_initial_conditions(VectorType & src, double const time) const
 {
   field_functions->initial_solution->set_time(time);
 
@@ -600,9 +600,9 @@ Operator<dim, Number>::prescribe_initial_conditions(VectorType & src, double con
   src = src_double;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::evaluate_explicit_time_int(VectorType &       dst,
+Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &       dst,
                                                   VectorType const & src,
                                                   double const       time,
                                                   VectorType const * velocity) const
@@ -674,9 +674,9 @@ Operator<dim, Number>::evaluate_explicit_time_int(VectorType &       dst,
   inverse_mass_operator.apply(dst, dst);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::evaluate_convective_term(VectorType &       dst,
+Operator<dim, n_components, Number>::evaluate_convective_term(VectorType &       dst,
                                                 VectorType const & src,
                                                 double const       time,
                                                 VectorType const * velocity) const
@@ -692,9 +692,9 @@ Operator<dim, Number>::evaluate_convective_term(VectorType &       dst,
   convective_operator.evaluate(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::rhs(VectorType & dst, double const time, VectorType const * velocity) const
+Operator<dim, n_components, Number>::rhs(VectorType & dst, double const time, VectorType const * velocity) const
 {
   // no need to set scaling_factor_mass because the mass operator does not contribute to rhs
 
@@ -718,30 +718,30 @@ Operator<dim, Number>::rhs(VectorType & dst, double const time, VectorType const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::apply_mass_operator(VectorType & dst, VectorType const & src) const
+Operator<dim, n_components, Number>::apply_mass_operator(VectorType & dst, VectorType const & src) const
 {
   mass_operator.apply(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::apply_mass_operator_add(VectorType & dst, VectorType const & src) const
+Operator<dim, n_components, Number>::apply_mass_operator_add(VectorType & dst, VectorType const & src) const
 {
   mass_operator.apply_add(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::apply_convective_term(VectorType & dst, VectorType const & src) const
+Operator<dim, n_components, Number>::apply_convective_term(VectorType & dst, VectorType const & src) const
 {
   convective_operator.apply(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::update_convective_term(double const time, VectorType const * velocity) const
+Operator<dim, n_components, Number>::update_convective_term(double const time, VectorType const * velocity) const
 {
   if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
   {
@@ -753,23 +753,23 @@ Operator<dim, Number>::update_convective_term(double const time, VectorType cons
   convective_operator.set_time(time);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::apply_diffusive_term(VectorType & dst, VectorType const & src) const
+Operator<dim, n_components, Number>::apply_diffusive_term(VectorType & dst, VectorType const & src) const
 {
   diffusive_operator.apply(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::apply_conv_diff_operator(VectorType & dst, VectorType const & src) const
+Operator<dim, n_components, Number>::apply_conv_diff_operator(VectorType & dst, VectorType const & src) const
 {
   combined_operator.apply(dst, src);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::update_conv_diff_operator(double const       time,
+Operator<dim, n_components, Number>::update_conv_diff_operator(double const       time,
                                                  double const       scaling_factor,
                                                  VectorType const * velocity)
 {
@@ -787,9 +787,9 @@ Operator<dim, Number>::update_conv_diff_operator(double const       time,
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::update_after_grid_motion(bool const update_matrix_free)
+Operator<dim, n_components, Number>::update_after_grid_motion(bool const update_matrix_free)
 {
   if(update_matrix_free)
   {
@@ -811,26 +811,26 @@ Operator<dim, Number>::update_after_grid_motion(bool const update_matrix_free)
   inverse_mass_operator.update();
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors)
+Operator<dim, n_components, Number>::prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors)
 {
   solution_transfer = std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler);
 
   solution_transfer->prepare_coarsening_and_refinement(vectors);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-Operator<dim, Number>::interpolate_after_coarsening_and_refinement(
+Operator<dim, n_components, Number>::interpolate_after_coarsening_and_refinement(
   std::vector<VectorType *> & vectors)
 {
   solution_transfer->interpolate_after_coarsening_and_refinement(vectors);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 unsigned int
-Operator<dim, Number>::solve(VectorType &       sol,
+Operator<dim, n_components, Number>::solve(VectorType &       sol,
                              VectorType const & rhs,
                              bool const         update_preconditioner,
                              double const       scaling_factor,
@@ -846,9 +846,9 @@ Operator<dim, Number>::solve(VectorType &       sol,
   return iterations;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_time_step_cfl_global(double const time) const
+Operator<dim, n_components, Number>::calculate_time_step_cfl_global(double const time) const
 {
   double max_velocity = 0.0;
   if(param.analytical_velocity_field)
@@ -874,9 +874,9 @@ Operator<dim, Number>::calculate_time_step_cfl_global(double const time) const
                                                     mpi_comm);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_time_step_max_efficiency(
+Operator<dim, n_components, Number>::calculate_time_step_max_efficiency(
   unsigned int const order_time_integrator) const
 {
   double const h_min = calculate_minimum_element_length();
@@ -884,9 +884,9 @@ Operator<dim, Number>::calculate_time_step_max_efficiency(
   return ExaDG::calculate_time_step_max_efficiency(h_min, param.degree, order_time_integrator);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_time_step_diffusion() const
+Operator<dim, n_components, Number>::calculate_time_step_diffusion() const
 {
   double const h_min = calculate_minimum_element_length();
 
@@ -896,9 +896,9 @@ Operator<dim, Number>::calculate_time_step_diffusion() const
                                                param.exponent_fe_degree_diffusion);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_time_step_cfl_numerical_velocity(VectorType const & velocity) const
+Operator<dim, n_components, Number>::calculate_time_step_cfl_numerical_velocity(VectorType const & velocity) const
 {
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
                                                     get_dof_index_velocity(),
@@ -910,9 +910,9 @@ Operator<dim, Number>::calculate_time_step_cfl_numerical_velocity(VectorType con
                                                     mpi_comm);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_time_step_cfl_analytical_velocity(double const time) const
+Operator<dim, n_components, Number>::calculate_time_step_cfl_analytical_velocity(double const time) const
 {
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
                                                     get_dof_index(),
@@ -925,9 +925,9 @@ Operator<dim, Number>::calculate_time_step_cfl_analytical_velocity(double const 
                                                     mpi_comm);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_maximum_velocity(double const time) const
+Operator<dim, n_components, Number>::calculate_maximum_velocity(double const time) const
 {
   return calculate_max_velocity(dof_handler.get_triangulation(),
                                 field_functions->velocity,
@@ -935,81 +935,81 @@ Operator<dim, Number>::calculate_maximum_velocity(double const time) const
                                 mpi_comm);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 double
-Operator<dim, Number>::calculate_minimum_element_length() const
+Operator<dim, n_components, Number>::calculate_minimum_element_length() const
 {
   return calculate_minimum_vertex_distance(dof_handler.get_triangulation(),
                                            *get_mapping(),
                                            mpi_comm);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 dealii::DoFHandler<dim> const &
-Operator<dim, Number>::get_dof_handler() const
+Operator<dim, n_components, Number>::get_dof_handler() const
 {
   return dof_handler;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 dealii::DoFHandler<dim> const &
-Operator<dim, Number>::get_dof_handler_velocity() const
+Operator<dim, n_components, Number>::get_dof_handler_velocity() const
 {
   return matrix_free_data->get_dof_handler(get_dof_name_velocity());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 dealii::types::global_dof_index
-Operator<dim, Number>::get_number_of_dofs() const
+Operator<dim, n_components, Number>::get_number_of_dofs() const
 {
   return dof_handler.n_dofs();
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 dealii::MatrixFree<dim, Number> const &
-Operator<dim, Number>::get_matrix_free() const
+Operator<dim, n_components, Number>::get_matrix_free() const
 {
   return *matrix_free;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::string
-Operator<dim, Number>::get_dof_name() const
+Operator<dim, n_components, Number>::get_dof_name() const
 {
   return field + dof_index_std;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::string
-Operator<dim, Number>::get_quad_name() const
+Operator<dim, n_components, Number>::get_quad_name() const
 {
   return field + quad_index_std;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::string
-Operator<dim, Number>::get_quad_name_overintegration() const
+Operator<dim, n_components, Number>::get_quad_name_overintegration() const
 {
   return field + quad_index_overintegration;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 bool
-Operator<dim, Number>::needs_own_dof_handler_velocity() const
+Operator<dim, n_components, Number>::needs_own_dof_handler_velocity() const
 {
   return param.analytical_velocity_field and param.store_analytical_velocity_in_dof_vector;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 unsigned int
-Operator<dim, Number>::get_dof_index() const
+Operator<dim, n_components, Number>::get_dof_index() const
 {
   return matrix_free_data->get_dof_index(get_dof_name());
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::string
-Operator<dim, Number>::get_dof_name_velocity() const
+Operator<dim, n_components, Number>::get_dof_name_velocity() const
 {
   if(needs_own_dof_handler_velocity())
   {
@@ -1021,9 +1021,9 @@ Operator<dim, Number>::get_dof_name_velocity() const
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 unsigned int
-Operator<dim, Number>::get_dof_index_velocity() const
+Operator<dim, n_components, Number>::get_dof_index_velocity() const
 {
   if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
     return matrix_free_data->get_dof_index(get_dof_name_velocity());
@@ -1031,39 +1031,39 @@ Operator<dim, Number>::get_dof_index_velocity() const
     return dealii::numbers::invalid_unsigned_int;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 unsigned int
-Operator<dim, Number>::get_quad_index() const
+Operator<dim, n_components, Number>::get_quad_index() const
 {
   return matrix_free_data->get_quad_index(field + quad_index_std);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 unsigned int
-Operator<dim, Number>::get_quad_index_overintegration() const
+Operator<dim, n_components, Number>::get_quad_index_overintegration() const
 {
   return matrix_free_data->get_quad_index(field + quad_index_overintegration);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::shared_ptr<dealii::Mapping<dim> const>
-Operator<dim, Number>::get_mapping() const
+Operator<dim, n_components, Number>::get_mapping() const
 {
   return mapping;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 dealii::AffineConstraints<Number> const &
-Operator<dim, Number>::get_constraints() const
+Operator<dim, n_components, Number>::get_constraints() const
 {
   return affine_constraints;
 }
 
-template class Operator<2, float>;
-template class Operator<2, double>;
+template class Operator<2, 1, float>;
+template class Operator<2, 1, double>;
 
-template class Operator<3, float>;
-template class Operator<3, double>;
+template class Operator<3, 1, float>;
+template class Operator<3, 1, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

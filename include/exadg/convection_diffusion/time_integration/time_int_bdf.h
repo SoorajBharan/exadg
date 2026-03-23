@@ -35,7 +35,7 @@ namespace ConvDiff
 {
 class Parameters;
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class Operator;
 
 template<typename Number>
@@ -45,13 +45,13 @@ class PostProcessorInterface;
 
 namespace ConvDiff
 {
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class TimeIntBDF : public TimeIntBDFBase
 {
 public:
   using VectorType = dealii::LinearAlgebra::distributed::Vector<Number>;
 
-  TimeIntBDF(std::shared_ptr<Operator<dim, Number>>          operator_in,
+  TimeIntBDF(std::shared_ptr<Operator<dim, n_components, Number>>          operator_in,
              std::shared_ptr<HelpersALE<dim, Number> const>  helpers_ale_in,
              std::shared_ptr<PostProcessorInterface<Number>> postprocessor_in,
              Parameters const &                              param_in,
@@ -123,7 +123,7 @@ private:
   void
   postprocessing() const final;
 
-  std::shared_ptr<Operator<dim, Number>> pde_operator;
+  std::shared_ptr<Operator<dim, n_components, Number>> pde_operator;
 
   Parameters const & param;
 

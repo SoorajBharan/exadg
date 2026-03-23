@@ -44,7 +44,7 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class Operator : public dealii::Subscriptor, public Interface::Operator<Number>
 {
 private:
@@ -424,8 +424,8 @@ private:
   std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel;
   std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel;
 
-  MassOperator<dim, 1, Number>        mass_operator;
-  InverseMassOperator<dim, 1, Number> inverse_mass_operator;
+  MassOperator<dim, n_components, Number>        mass_operator;
+  InverseMassOperator<dim, n_components, Number> inverse_mass_operator;
   ConvectiveOperator<dim, Number>     convective_operator;
   DiffusiveOperator<dim, Number>      diffusive_operator;
   RHSOperator<dim, Number>            rhs_operator;

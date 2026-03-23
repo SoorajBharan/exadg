@@ -61,14 +61,14 @@ enum class OperatorType
   MassConvectionDiffusionOperator
 };
 
-template<int dim, typename Number = double>
+template<int dim, int n_components, typename Number = double>
 class Driver
 {
 public:
   using VectorType = dealii::LinearAlgebra::distributed::Vector<Number>;
 
   Driver(MPI_Comm const &                              mpi_comm,
-         std::shared_ptr<ApplicationBase<dim, Number>> application,
+         std::shared_ptr<ApplicationBase<dim, n_components, Number>> application,
          bool const                                    is_test,
          bool const                                    is_throughput_study);
 
@@ -116,7 +116,7 @@ private:
   bool const is_throughput_study;
 
   // application
-  std::shared_ptr<ApplicationBase<dim, Number>> application;
+  std::shared_ptr<ApplicationBase<dim, n_components, Number>> application;
 
   // Grid and mapping
   std::shared_ptr<Grid<dim>> grid;
@@ -133,9 +133,9 @@ private:
   // ALE helper functions required by time integrator
   std::shared_ptr<HelpersALE<dim, Number>> helpers_ale;
 
-  std::shared_ptr<Operator<dim, Number>> pde_operator;
+  std::shared_ptr<Operator<dim, n_components, Number>> pde_operator;
 
-  std::shared_ptr<PostProcessorBase<dim, Number>> postprocessor;
+  std::shared_ptr<PostProcessorBase<dim, n_components, Number>> postprocessor;
 
   std::shared_ptr<TimeIntBase> time_integrator;
 

@@ -26,8 +26,8 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number>
-PostProcessor<dim, Number>::PostProcessor(PostProcessorData<dim> const & pp_data_in,
+template<int dim, int n_components, typename Number>
+PostProcessor<dim, n_components, Number>::PostProcessor(PostProcessorData<dim> const & pp_data_in,
                                           MPI_Comm const &               mpi_comm_in)
   : mpi_comm(mpi_comm_in),
     pp_data(pp_data_in),
@@ -36,9 +36,9 @@ PostProcessor<dim, Number>::PostProcessor(PostProcessorData<dim> const & pp_data
 {
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator)
+PostProcessor<dim, n_components, Number>::setup(Operator<dim, n_components, Number> const & pde_operator)
 {
   error_calculator.setup(pde_operator.get_dof_handler(),
                          *pde_operator.get_mapping(),
@@ -49,17 +49,17 @@ PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator)
                          pp_data.output_data);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-PostProcessor<dim, Number>::setup_after_coarsening_and_refinement()
+PostProcessor<dim, n_components, Number>::setup_after_coarsening_and_refinement()
 {
   // The `error_calculator` and `output_generator` do not require any additional setup after
   // coarsening and refinement.
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-PostProcessor<dim, Number>::do_postprocessing(VectorType const &     solution,
+PostProcessor<dim, n_components, Number>::do_postprocessing(VectorType const &     solution,
                                               double const           time,
                                               types::time_step const time_step_number)
 {
@@ -70,11 +70,11 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     solution,
     output_generator.evaluate(solution, time, Utilities::is_unsteady_timestep(time_step_number));
 }
 
-template class PostProcessor<2, float>;
-template class PostProcessor<3, float>;
+template class PostProcessor<2, 1, float>;
+template class PostProcessor<3, 1, float>;
 
-template class PostProcessor<2, double>;
-template class PostProcessor<3, double>;
+template class PostProcessor<2, 1, double>;
+template class PostProcessor<3, 1, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

@@ -29,6 +29,7 @@ namespace ConvDiff
 {
 Parameters::Parameters()
   : // MATHEMATICAL MODEL
+    scalar_type(ScalarType::Scalar),
     problem_type(ProblemType::Undefined),
     equation_type(EquationType::Undefined),
     analytical_velocity_field(true),
@@ -435,6 +436,7 @@ Parameters::print_parameters_mathematical_model(dealii::ConditionalOStream const
 {
   pcout << std::endl << "Mathematical model:" << std::endl;
 
+  print_parameter(pcout, "Scalar type", scalar_type);
   print_parameter(pcout, "Problem type", problem_type);
   print_parameter(pcout, "Equation type", equation_type);
   print_parameter(pcout, "Right-hand side", right_hand_side);

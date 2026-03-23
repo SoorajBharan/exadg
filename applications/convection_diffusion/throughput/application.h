@@ -50,19 +50,19 @@ enum class MeshType
   Curvilinear
 };
 
-template<int dim, typename Number>
-class Application : public ApplicationBase<dim, Number>
+template<int dim, int  n_components, typename Number>
+class Application : public ApplicationBase<dim, n_components, Number>
 {
 public:
   Application(std::string input_file, MPI_Comm const & comm)
-    : ApplicationBase<dim, Number>(input_file, comm)
+    : ApplicationBase<dim, n_components, Number>(input_file, comm)
   {
   }
 
   void
   add_parameters(dealii::ParameterHandler & prm) final
   {
-    ApplicationBase<dim, Number>::add_parameters(prm);
+    ApplicationBase<dim, n_components, Number>::add_parameters(prm);
 
     prm.enter_subsection("Application");
     {
@@ -192,13 +192,13 @@ private:
     this->field_functions->velocity.reset(new Velocity<dim>(dim));
   }
 
-  std::shared_ptr<PostProcessorBase<dim, Number>>
+  std::shared_ptr<PostProcessorBase<dim, n_components, Number>>
   create_postprocessor() final
   {
     PostProcessorData<dim> pp_data;
 
-    std::shared_ptr<PostProcessorBase<dim, Number>> pp;
-    pp.reset(new PostProcessor<dim, Number>(pp_data, this->mpi_comm));
+    std::shared_ptr<PostProcessorBase<dim, n_components, Number>> pp;
+    pp.reset(new PostProcessor<dim, n_components, Number>(pp_data, this->mpi_comm));
 
     return pp;
   }

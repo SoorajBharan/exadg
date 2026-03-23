@@ -370,12 +370,12 @@ private:
   }
 };
 
-template<int dim, typename Number>
-class Scalar : public ScalarBase<dim, Number>
+template<int dim, int  n_components, typename Number>
+class Scalar : public ScalarBase<dim, n_components, Number>
 {
 public:
   Scalar(std::string parameter_file, MPI_Comm const & comm)
-    : ScalarBase<dim, Number>(parameter_file, comm)
+    : ScalarBase<dim, n_components, Number>(parameter_file, comm)
   {
   }
 
@@ -478,7 +478,7 @@ private:
     this->field_functions->velocity.reset(new dealii::Functions::ZeroFunction<dim>(dim));
   }
 
-  std::shared_ptr<ConvDiff::PostProcessorBase<dim, Number>>
+  std::shared_ptr<ConvDiff::PostProcessorBase<dim, n_components, Number>>
   create_postprocessor() final
   {
     ConvDiff::PostProcessorData<dim> pp_data;
@@ -490,25 +490,25 @@ private:
     pp_data.output_data.degree             = this->param.degree;
     pp_data.output_data.write_higher_order = true;
 
-    std::shared_ptr<ConvDiff::PostProcessorBase<dim, Number>> pp;
-    pp.reset(new ConvDiff::PostProcessor<dim, Number>(pp_data, this->mpi_comm));
+    std::shared_ptr<ConvDiff::PostProcessorBase<dim, n_components, Number>> pp;
+    pp.reset(new ConvDiff::PostProcessor<dim, n_components, Number>(pp_data, this->mpi_comm));
 
     return pp;
   }
 };
 
-template<int dim, typename Number>
-class Application : public ApplicationBase<dim, Number>
+template<int dim, int  n_components, typename Number>
+class Application : public ApplicationBase<dim, n_components, Number>
 {
 public:
   Application(std::string input_file, MPI_Comm const & comm)
-    : ApplicationBase<dim, Number>(input_file, comm)
+    : ApplicationBase<dim, n_components, Number>(input_file, comm)
   {
     this->fluid = std::make_shared<Fluid<dim, Number>>(input_file, comm);
 
     // create one (or even more) scalar fields
     this->scalars.resize(1);
-    this->scalars[0] = std::make_shared<Scalar<dim, Number>>(input_file, comm);
+    this->scalars[0] = std::make_shared<Scalar<dim, n_components, Number>>(input_file, comm);
   }
 };
 
