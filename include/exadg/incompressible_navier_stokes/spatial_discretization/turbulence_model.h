@@ -70,6 +70,17 @@ public:
              TurbulenceModelData const &                            turbulence_model_data_in,
              unsigned int const                                     dof_index_velocity_in);
 
+  /*
+   * Initialization function.
+   */
+  void
+  initialize(dealii::MatrixFree<dim, Number> const &                matrix_free_in,
+             dealii::Mapping<dim> const &                           mapping_in,
+             std::shared_ptr<Operators::ViscousKernel<dim, Number>> viscous_kernel_in,
+             TurbulenceModelData const &                            turbulence_model_data_in,
+             unsigned int const                                     dof_index_velocity_in,
+             unsigned int const                                     dof_index_scalar_in);
+
   /**
    * Function for *setting* the viscosity taking the viscosity stored in the viscous_kernel's data
    * as a basis.
@@ -89,6 +100,13 @@ public:
   void
   calculate_filter_width(dealii::Mapping<dim> const & mapping);
 
+  void
+  set_eddy_viscosity(VectorType const & eddy_viscosity_in);
+
+  void
+  get_eddy_viscosity(VectorType & dst) const;
+
+  unsigned int dof_index_scalar;
 private:
   void
   cell_loop_set_coefficients(dealii::MatrixFree<dim, Number> const & data,
@@ -224,6 +242,8 @@ private:
 
   TurbulenceModelData           turbulence_model_data;
   dealii::AlignedVector<scalar> filter_width_vector;
+
+  VectorType eddy_viscosity;
 };
 
 } // namespace IncNS

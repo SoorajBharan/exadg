@@ -298,6 +298,15 @@ public:
   void
   get_eddy_viscosity(VectorType & dst) const;
 
+  /*
+   * Dof index for eddy viscosity (in case of turbulence model with eddy viscosity).
+   */
+  std::string
+  get_dof_name_eddy_viscosity() const;
+
+  unsigned int
+  get_dof_index_eddy_viscosity() const;
+
 private:
   void
   do_setup();
@@ -358,15 +367,6 @@ private:
    */
   void
   setup_solver();
-
-  /*
-   * Dof index for eddy viscosity (in case of turbulence model with eddy viscosity).
-   */
-  std::string
-  get_dof_name_eddy_viscosity() const;
-
-  unsigned int
-  get_dof_index_eddy_viscosity() const;
 
   /*
    * Grid

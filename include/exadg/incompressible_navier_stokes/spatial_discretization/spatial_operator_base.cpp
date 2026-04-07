@@ -1898,6 +1898,13 @@ SpatialOperatorBase<dim, Number>::distribute_constraint_u(VectorType & velocity)
   }
 }
 
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::set_eddy_viscosity(VectorType const & eddy_viscosity_in)
+{
+  turbulence_model.set_eddy_viscosity(eddy_viscosity_in);
+}
+
 template class SpatialOperatorBase<2, float>;
 template class SpatialOperatorBase<3, float>;
 

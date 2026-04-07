@@ -81,6 +81,9 @@ private:
   communicate_fluid_to_all_scalars() const;
 
   void
+  communicate_eddy_viscosity_to_fluid() const;
+
+  void
   set_start_time() const;
 
   void
@@ -149,6 +152,9 @@ private:
   mutable TimerTree timer_tree;
 
   mutable unsigned int N_time_steps;
+
+  unsigned int rans_scalar_index;
+  bool rans_enabled;
 };
 
 } // namespace FTI

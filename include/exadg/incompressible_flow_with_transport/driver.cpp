@@ -38,7 +38,9 @@ Driver<dim, n_components, Number>::Driver(MPI_Comm const &                      
     is_test(is_test),
     application(app),
     use_adaptive_time_stepping(false),
-    N_time_steps(0)
+    N_time_steps(0),
+    rans_enabled(false),
+    rans_scalar_index(dealii::numbers::invalid_unsigned_int)
 {
   print_general_info<Number>(pcout, mpi_comm, is_test);
 }
@@ -298,6 +300,13 @@ Driver<dim, n_components, Number>::setup()
     scalar_time_integrator[i]->setup(
       application->scalars[i]->get_parameters().restarted_simulation);
 
+    if(application->scalars[i]->get_parameters().turbulence_model_data.is_active)
+    {
+      rans_enabled = true;
+      rans_scalar_index = i;
+      break;
+    }
+
     AssertThrow(application->scalars[i]->get_parameters().analytical_velocity_field == false,
                 dealii::ExcMessage(
                   "An analytical velocity field can not be used for this coupled solver."));
@@ -496,6 +505,40 @@ Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
 
 template<int dim, int n_components, typename Number>
 void
+Driver<dim, n_components, Number>::communicate_eddy_viscosity_to_fluid() const
+{
+if(rans_enabled) 
+  {
+    VectorType rans_solution_extrapolated;
+    scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
+
+    if(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
+       ConvDiff::TemporalDiscretization::ExplRK)
+    {
+      std::shared_ptr<ConvDiff::TimeIntExplRK<Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntExplRK<Number>>(scalar_time_integrator[rans_scalar_index]);
+      time_int_scalar->extrapolate_solution(rans_solution_extrapolated);
+    }
+    else if(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
+            ConvDiff::TemporalDiscretization::BDF)
+    {
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[rans_scalar_index]);
+      time_int_scalar->extrapolate_solution(rans_solution_extrapolated);
+    }
+
+    scalar_operator[rans_scalar_index]->update_eddy_viscosity(rans_solution_extrapolated);
+
+    VectorType eddy_viscosity;
+    matrix_free->initialize_dof_vector(eddy_viscosity, scalar_operator[rans_scalar_index]->get_dof_index_eddy_viscosity());
+    scalar_operator[rans_scalar_index]->get_eddy_viscosity(eddy_viscosity);
+
+    fluid_operator->set_eddy_viscosity(eddy_viscosity);
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void
 Driver<dim, n_components, Number>::ale_update() const
 {
   dealii::Timer timer;
@@ -559,6 +602,9 @@ Driver<dim, n_components, Number>::solve() const
 
     // Communicate scalar -> fluid
     communicate_scalar_to_fluid();
+
+    // Communicate scalar -> fluid (turbulence eddy viscosity)
+    communicate_eddy_viscosity_to_fluid();
 
     // fluid: advance one time step
     if(application->fluid->get_parameters().solver_type == IncNS::SolverType::Unsteady)

@@ -56,6 +56,27 @@ TurbulenceModel<dim, Number>::initialize(
 
 template<int dim, typename Number>
 void
+TurbulenceModel<dim, Number>::initialize(
+  dealii::MatrixFree<dim, Number> const &                matrix_free_in,
+  dealii::Mapping<dim> const &                           mapping_in,
+  std::shared_ptr<Operators::ViscousKernel<dim, Number>> viscous_kernel_in,
+  TurbulenceModelData const &                            turbulence_model_data_in,
+  unsigned int const                                     dof_index_velocity_in,
+  unsigned int const                                     dof_index_scalar_in)
+{
+  Base::initialize(matrix_free_in, viscous_kernel_in, dof_index_velocity_in);
+
+  turbulence_model_data = turbulence_model_data_in;
+
+  turbulence_model_data.check();
+
+  calculate_filter_width(mapping_in);
+
+  this->dof_index_scalar = dof_index_scalar_in;
+}
+
+template<int dim, typename Number>
+void
 TurbulenceModel<dim, Number>::set_viscosity(VectorType const & velocity) const
 {
   this->viscous_kernel->set_constant_coefficient(this->viscous_kernel->get_data().viscosity);
@@ -581,6 +602,21 @@ TurbulenceModel<dim, Number>::sigma_model(scalar const & filter_width,
   // add turbulent eddy-viscosity to laminar viscosity
   scalar factor = C * filter_width;
   viscosity += factor * factor * D;
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::set_eddy_viscosity(VectorType const & eddy_viscosity_in)
+{
+  this->eddy_viscosity = eddy_viscosity_in;
+  eddy_viscosity.update_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::get_eddy_viscosity(VectorType & dst) const
+{
+  dst = this->eddy_viscosity;
 }
 
 template class TurbulenceModel<2, float>;
