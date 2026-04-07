@@ -739,7 +739,7 @@ OperatorCoupled<dim, Number>::setup_pressure_convection_diffusion_operator()
   operator_data.convective_kernel_data = convective_kernel_data;
   operator_data.diffusive_kernel_data  = diffusive_kernel_data;
 
-  pressure_conv_diff_operator = std::make_shared<ConvDiff::CombinedOperator<dim, Number>>();
+  pressure_conv_diff_operator = std::make_shared<ConvDiff::CombinedOperator<dim, 1, Number>>();
   pressure_conv_diff_operator->initialize(this->get_matrix_free(),
                                           this->get_constraint_p(),
                                           operator_data);

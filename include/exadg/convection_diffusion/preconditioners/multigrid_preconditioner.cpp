@@ -33,8 +33,8 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number>
-MultigridPreconditioner<dim, Number>::MultigridPreconditioner(MPI_Comm const & mpi_comm)
+template<int dim, int n_components, typename Number>
+MultigridPreconditioner<dim, n_components, Number>::MultigridPreconditioner(MPI_Comm const & mpi_comm)
   : Base(mpi_comm),
     degree_velocity(1),
     pde_operator(nullptr),
@@ -43,9 +43,9 @@ MultigridPreconditioner<dim, Number>::MultigridPreconditioner(MPI_Comm const & m
 {
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-MultigridPreconditioner<dim, Number>::initialize(
+MultigridPreconditioner<dim, n_components, Number>::initialize(
   MultigridData const &                                 mg_data,
   std::shared_ptr<Grid<dim> const>                      grid,
   std::shared_ptr<MultigridMappings<dim, Number>> const multigrid_mappings,
@@ -105,9 +105,9 @@ MultigridPreconditioner<dim, Number>::initialize(
                    false /* initialize_preconditioners */);
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-MultigridPreconditioner<dim, Number>::update()
+MultigridPreconditioner<dim, n_components, Number>::update()
 {
   // Update matrix-free objects and operators
   if(mesh_is_moving)
@@ -172,9 +172,9 @@ MultigridPreconditioner<dim, Number>::update()
   this->update_needed = false;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-MultigridPreconditioner<dim, Number>::fill_matrix_free_data(
+MultigridPreconditioner<dim, n_components, Number>::fill_matrix_free_data(
   MatrixFreeData<dim, MultigridNumber> & matrix_free_data,
   unsigned int const                     level,
   unsigned int const                     dealii_tria_level)
@@ -186,10 +186,10 @@ MultigridPreconditioner<dim, Number>::fill_matrix_free_data(
     matrix_free_data.append_mapping_flags(MassKernel<dim, Number>::get_mapping_flags());
   if(data.convective_problem)
     matrix_free_data.append_mapping_flags(
-      Operators::ConvectiveKernel<dim, Number>::get_mapping_flags());
+      Operators::ConvectiveKernel<dim, n_components, Number>::get_mapping_flags());
   if(data.diffusive_problem)
     matrix_free_data.append_mapping_flags(
-      Operators::DiffusiveKernel<dim, Number>::get_mapping_flags(this->level_info[level].is_dg(),
+      Operators::DiffusiveKernel<dim, n_components, Number>::get_mapping_flags(this->level_info[level].is_dg(),
                                                                  this->level_info[level].is_dg()));
 
   if(data.use_cell_based_loops and this->level_info[level].is_dg())
@@ -224,10 +224,10 @@ MultigridPreconditioner<dim, Number>::fill_matrix_free_data(
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::shared_ptr<
   MultigridOperatorBase<dim, typename MultigridPreconditionerBase<dim, Number>::MultigridNumber>>
-MultigridPreconditioner<dim, Number>::initialize_operator(unsigned int const level)
+MultigridPreconditioner<dim, n_components, Number>::initialize_operator(unsigned int const level)
 {
   // initialize pde_operator in a first step
   std::shared_ptr<PDEOperatorMG> pde_operator_level(new PDEOperatorMG());
@@ -257,14 +257,15 @@ MultigridPreconditioner<dim, Number>::initialize_operator(unsigned int const lev
   return mg_operator_level;
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-MultigridPreconditioner<dim, Number>::initialize_dof_handler_and_constraints(
+MultigridPreconditioner<dim, n_components, Number>::initialize_dof_handler_and_constraints(
   bool const                    operator_is_singular,
-  unsigned int const            n_components,
+  unsigned int  const           dof_index,
   Map_DBC const &               dirichlet_bc,
   Map_DBC_ComponentMask const & dirichlet_bc_component_mask)
 {
+  (void)dof_index;
   Base::initialize_dof_handler_and_constraints(operator_is_singular,
                                                n_components,
                                                dirichlet_bc,
@@ -287,9 +288,9 @@ MultigridPreconditioner<dim, Number>::initialize_dof_handler_and_constraints(
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 void
-MultigridPreconditioner<dim, Number>::initialize_transfer_operators()
+MultigridPreconditioner<dim, n_components, Number>::initialize_transfer_operators()
 {
   Base::initialize_transfer_operators();
 
@@ -301,10 +302,10 @@ MultigridPreconditioner<dim, Number>::initialize_transfer_operators()
   }
 }
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 std::shared_ptr<
-  CombinedOperator<dim, typename MultigridPreconditionerBase<dim, Number>::MultigridNumber>>
-MultigridPreconditioner<dim, Number>::get_operator(unsigned int level) const
+  CombinedOperator<dim, n_components, typename MultigridPreconditionerBase<dim, Number>::MultigridNumber>>
+MultigridPreconditioner<dim, n_components, Number>::get_operator(unsigned int level) const
 {
   std::shared_ptr<MGOperator> mg_operator =
     std::dynamic_pointer_cast<MGOperator>(this->operators[level]);
@@ -312,11 +313,17 @@ MultigridPreconditioner<dim, Number>::get_operator(unsigned int level) const
   return mg_operator->get_pde_operator();
 }
 
-template class MultigridPreconditioner<2, float>;
-template class MultigridPreconditioner<3, float>;
+template class MultigridPreconditioner<2, 1, float>;
+template class MultigridPreconditioner<3, 1, float>;
 
-template class MultigridPreconditioner<2, double>;
-template class MultigridPreconditioner<3, double>;
+template class MultigridPreconditioner<2, 1, double>;
+template class MultigridPreconditioner<3, 1, double>;
+
+template class MultigridPreconditioner<2, 2, float>;
+template class MultigridPreconditioner<3, 2, float>;
+
+template class MultigridPreconditioner<2, 2, double>;
+template class MultigridPreconditioner<3, 2, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

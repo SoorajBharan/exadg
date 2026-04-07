@@ -94,6 +94,9 @@ template class MassOperator<3, 1, double>;
 template class MassOperator<2, 2, float>;
 template class MassOperator<2, 2, double>;
 
+template class MassOperator<3, 2, float>;
+template class MassOperator<3, 2, double>;
+
 template class MassOperator<3, 3, float>;
 template class MassOperator<3, 3, double>;
 

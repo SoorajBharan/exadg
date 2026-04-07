@@ -44,17 +44,19 @@ struct DiffusiveKernelData
   double diffusivity;
 };
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class DiffusiveKernel
 {
 private:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
   typedef dealii::VectorizedArray<Number>                         scalar;
-  typedef dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> vector;
 
-  typedef CellIntegrator<dim, 1, Number> IntegratorCell;
-  typedef FaceIntegrator<dim, 1, Number> IntegratorFace;
+  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
+  typedef FaceIntegrator<dim, n_components, Number> IntegratorFace;
+
+  using value_type = typename IntegratorCell::value_type;
+  using gradient_type = typename IntegratorCell::gradient_type;
 
 public:
   DiffusiveKernel() : degree(1), tau(dealii::make_vectorized_array<Number>(0.0))
@@ -169,8 +171,8 @@ public:
 
 
   inline DEAL_II_ALWAYS_INLINE //
-    scalar
-    calculate_gradient_flux(scalar const & value_m, scalar const & value_p) const
+    value_type
+    calculate_gradient_flux(value_type const & value_m, value_type const & value_p) const
   {
     return -0.5 * data.diffusivity * (value_m - value_p);
   }
@@ -181,11 +183,11 @@ public:
    * normal denotes the normal vector of element e⁻.
    */
   inline DEAL_II_ALWAYS_INLINE //
-    scalar
-    calculate_value_flux(scalar const & normal_gradient_m,
-                         scalar const & normal_gradient_p,
-                         scalar const & value_m,
-                         scalar const & value_p) const
+    value_type
+    calculate_value_flux(value_type const & normal_gradient_m,
+                         value_type const & normal_gradient_p,
+                         value_type const & value_m,
+                         value_type const & value_p) const
   {
     return data.diffusivity *
            (0.5 * (normal_gradient_m + normal_gradient_p) - tau * (value_m - value_p));
@@ -195,7 +197,7 @@ public:
    * Volume flux, i.e., the term occurring in the volume integral
    */
   inline DEAL_II_ALWAYS_INLINE //
-    vector
+    gradient_type
     get_volume_flux(IntegratorCell & integrator, unsigned int const q) const
   {
     return integrator.get_gradient(q) * data.diffusivity;
@@ -227,11 +229,11 @@ struct DiffusiveOperatorData : public OperatorBaseData
 };
 
 
-template<int dim, typename Number>
-class DiffusiveOperator : public OperatorBase<dim, Number, 1>
+template<int dim, int n_components, typename Number>
+class DiffusiveOperator : public OperatorBase<dim, Number, n_components>
 {
 private:
-  typedef OperatorBase<dim, Number, 1> Base;
+  typedef OperatorBase<dim, Number, n_components> Base;
 
   typedef typename Base::IntegratorCell IntegratorCell;
   typedef typename Base::IntegratorFace IntegratorFace;
@@ -244,7 +246,7 @@ public:
   initialize(dealii::MatrixFree<dim, Number> const &                  matrix_free,
              dealii::AffineConstraints<Number> const &                affine_constraints,
              DiffusiveOperatorData<dim> const &                       data,
-             std::shared_ptr<Operators::DiffusiveKernel<dim, Number>> kernel);
+             std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>> kernel);
 
   void
   update();
@@ -284,7 +286,7 @@ private:
 
   DiffusiveOperatorData<dim> operator_data;
 
-  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>> kernel;
+  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>> kernel;
 };
 } // namespace ConvDiff
 } // namespace ExaDG

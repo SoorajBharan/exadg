@@ -76,5 +76,11 @@ template class PostProcessor<3, 1, float>;
 template class PostProcessor<2, 1, double>;
 template class PostProcessor<3, 1, double>;
 
+template class PostProcessor<2, 2, float>;
+template class PostProcessor<3, 2, float>;
+
+template class PostProcessor<2, 2, double>;
+template class PostProcessor<3, 2, double>;
+
 } // namespace ConvDiff
 } // namespace ExaDG

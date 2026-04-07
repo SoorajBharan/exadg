@@ -684,5 +684,10 @@ template class TimeIntBDF<2, 1, double>;
 template class TimeIntBDF<3, 1, float>;
 template class TimeIntBDF<3, 1, double>;
 
+template class TimeIntBDF<2, 2, float>;
+template class TimeIntBDF<2, 2, double>;
+
+template class TimeIntBDF<3, 2, float>;
+template class TimeIntBDF<3, 2, double>;
 } // namespace ConvDiff
 } // namespace ExaDG

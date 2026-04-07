@@ -33,7 +33,7 @@ namespace ConvDiff
 /*
  *  Multigrid preconditioner for scalar convection-diffusion equation.
  */
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class MultigridPreconditioner : public MultigridPreconditionerBase<dim, Number>
 {
 private:
@@ -43,8 +43,8 @@ public:
   typedef typename Base::MultigridNumber MultigridNumber;
 
 private:
-  typedef CombinedOperator<dim, Number>          PDEOperator;
-  typedef CombinedOperator<dim, MultigridNumber> PDEOperatorMG;
+  typedef CombinedOperator<dim, n_components, Number>          PDEOperator;
+  typedef CombinedOperator<dim, n_components, MultigridNumber> PDEOperatorMG;
 
   typedef MultigridOperatorBase<dim, MultigridNumber>            MGOperatorBase;
   typedef MultigridOperator<dim, MultigridNumber, PDEOperatorMG> MGOperator;
@@ -92,7 +92,7 @@ private:
   void
   initialize_dof_handler_and_constraints(
     bool const                    operator_is_singular,
-    unsigned int const            n_components,
+    unsigned int const            dof_index,
     Map_DBC const &               dirichlet_bc,
     Map_DBC_ComponentMask const & dirichlet_bc_component_mask) final;
 
@@ -107,8 +107,7 @@ private:
   unsigned int degree_velocity;
 
   dealii::MGLevelObject<std::shared_ptr<dealii::DoFHandler<dim> const>> dof_handlers_velocity;
-  dealii::MGLevelObject<std::shared_ptr<dealii::AffineConstraints<MultigridNumber>>>
-    constraints_velocity;
+  dealii::MGLevelObject<std::shared_ptr<dealii::AffineConstraints<MultigridNumber>>> constraints_velocity;
 
   CombinedOperatorData<dim> data;
 

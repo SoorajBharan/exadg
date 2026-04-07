@@ -51,14 +51,15 @@ struct CombinedOperatorData : public OperatorBaseData
   std::shared_ptr<BoundaryDescriptor<dim> const> bc;
 };
 
-template<int dim, typename Number>
-class CombinedOperator : public OperatorBase<dim, Number, 1>
+template<int dim, int n_components, typename Number>
+class CombinedOperator : public OperatorBase<dim, Number, n_components>
 {
 public:
   typedef Number value_type;
 
 private:
-  typedef OperatorBase<dim, Number, 1> Base;
+
+  typedef OperatorBase<dim, Number, n_components> Base;
 
   typedef typename Base::IntegratorCell IntegratorCell;
   typedef typename Base::IntegratorFace IntegratorFace;
@@ -69,6 +70,9 @@ private:
   typedef dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> vector;
 
 public:
+  using simd_value_type = typename  IntegratorCell::value_type;
+  using gradient_type = typename IntegratorCell::gradient_type;
+
   CombinedOperator();
 
   /**
@@ -84,8 +88,8 @@ public:
   initialize(dealii::MatrixFree<dim, Number> const &                   matrix_free,
              dealii::AffineConstraints<Number> const &                 affine_constraints,
              CombinedOperatorData<dim> const &                         data,
-             std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel,
-             std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel);
+             std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel,
+             std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel);
 
   CombinedOperatorData<dim> const &
   get_data() const;
@@ -153,8 +157,8 @@ private:
   CombinedOperatorData<dim> operator_data;
 
   std::shared_ptr<MassKernel<dim, Number>>                  mass_kernel;
-  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel;
-  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel;
+  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
+  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
 
   double scaling_factor_mass;
 };

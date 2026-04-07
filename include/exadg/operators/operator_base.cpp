@@ -2458,11 +2458,13 @@ template class OperatorBase<2, double, 3>;
 template class OperatorBase<2, double, 4>;
 
 template class OperatorBase<3, float, 1>;
+template class OperatorBase<3, float, 2>;
 template class OperatorBase<3, float, 3>;
 template class OperatorBase<3, float, 4>;
 template class OperatorBase<3, float, 5>;
 
 template class OperatorBase<3, double, 1>;
+template class OperatorBase<3, double, 2>;
 template class OperatorBase<3, double, 3>;
 template class OperatorBase<3, double, 4>;
 template class OperatorBase<3, double, 5>;

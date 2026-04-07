@@ -116,21 +116,37 @@ main(int argc, char ** argv)
   ExaDG::GeneralParameters general(input_file);
 
   // run the simulation
-  if(general.dim == 2 and general.precision == "float")
+  if(general.dim == 2 and general.precision == "float" and general.n_components == 1)
   {
     ExaDG::run<2, 1, float>(input_file, mpi_comm, general.is_test);
   }
-  else if(general.dim == 2 and general.precision == "double")
+  else if(general.dim == 2 and general.precision == "double" and general.n_components == 1)
   {
     ExaDG::run<2, 1, double>(input_file, mpi_comm, general.is_test);
   }
-  else if(general.dim == 3 and general.precision == "float")
+  else if(general.dim == 3 and general.precision == "float" and general.n_components == 1)
   {
     ExaDG::run<3, 1, float>(input_file, mpi_comm, general.is_test);
   }
-  else if(general.dim == 3 and general.precision == "double")
+  else if(general.dim == 3 and general.precision == "double" and general.n_components == 1)
   {
     ExaDG::run<3, 1, double>(input_file, mpi_comm, general.is_test);
+  }
+  else if(general.dim == 2 and general.precision == "float" and general.n_components == 2)
+  {
+    ExaDG::run<2, 2, float>(input_file, mpi_comm, general.is_test);
+  }
+  else if(general.dim == 2 and general.precision == "double" and general.n_components == 2)
+  {
+    ExaDG::run<2, 2, double>(input_file, mpi_comm, general.is_test);
+  }
+  else if(general.dim == 3 and general.precision == "float" and general.n_components == 2)
+  {
+    ExaDG::run<3, 2, float>(input_file, mpi_comm, general.is_test);
+  }
+  else if(general.dim == 3 and general.precision == "double" and general.n_components == 2)
+  {
+    ExaDG::run<3, 2, double>(input_file, mpi_comm, general.is_test);
   }
   else
   {

@@ -2,7 +2,7 @@
     "General": {
         "Precision": "double",
         "Dim": "2",
-        "NumberOfComponents": "1",
+        "NumberOfComponents": "2",
         "IsTest": "false"
     },
     "SpatialResolution": {

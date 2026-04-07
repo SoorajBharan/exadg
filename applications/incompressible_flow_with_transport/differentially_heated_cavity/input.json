@@ -2,6 +2,7 @@
     "General": {
         "Precision": "double",
         "Dim": "2",
+        "NumberOfComponents": "1",
         "IsTest": "false"
     },
     "Fluid": {
@@ -12,7 +13,7 @@
         "Output": {
             "OutputDirectory": "output/cavity_natural_convection/",
             "OutputName": "l4_k3_fluid",
-            "WriteOutput": "false"
+            "WriteOutput": "true"
         }
     },
     "Scalar0": {
@@ -22,7 +23,7 @@
         "Output": {
             "OutputDirectory": "output/cavity_natural_convection/",
             "OutputName": "l4_k3_scalar0",
-            "WriteOutput": "false"
+            "WriteOutput": "true"
         }
     }
 }

@@ -459,5 +459,11 @@ template class Driver<3, 1, float>;
 template class Driver<2, 1, double>;
 template class Driver<3, 1, double>;
 
+template class Driver<2, 2, float>;
+template class Driver<3, 2, float>;
+
+template class Driver<2, 2, double>;
+template class Driver<3, 2, double>;
+
 } // namespace ConvDiff
 } // namespace ExaDG

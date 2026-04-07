@@ -53,6 +53,7 @@ struct GeneralParameters
                         false);
       prm.add_parameter(
         "Dim", dim, "Number of space dimension.", dealii::Patterns::Integer(2, 3), true);
+      prm.add_parameter("NumberOfComponents", n_components, "Number of components.", dealii::Patterns::Integer(1,3), true);
       prm.add_parameter("IsTest",
                         is_test,
                         "Set to true if the program is run as a test.",
@@ -65,6 +66,8 @@ struct GeneralParameters
   std::string precision = "double";
 
   unsigned int dim = 2;
+
+  unsigned int n_components = 1;
 
   bool is_test = false;
 };

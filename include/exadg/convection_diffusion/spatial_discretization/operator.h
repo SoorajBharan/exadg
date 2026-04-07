@@ -421,19 +421,19 @@ private:
   /*
    * Basic operators.
    */
-  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel;
-  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel;
+  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
+  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
 
   MassOperator<dim, n_components, Number>        mass_operator;
   InverseMassOperator<dim, n_components, Number> inverse_mass_operator;
-  ConvectiveOperator<dim, Number>     convective_operator;
-  DiffusiveOperator<dim, Number>      diffusive_operator;
+  ConvectiveOperator<dim, n_components, Number>     convective_operator;
+  DiffusiveOperator<dim, n_components, Number>      diffusive_operator;
   RHSOperator<dim, Number>            rhs_operator;
 
   /*
    * Combined operator.
    */
-  CombinedOperator<dim, Number> combined_operator;
+  CombinedOperator<dim, n_components, Number> combined_operator;
 
   /*
    * Solvers and preconditioners

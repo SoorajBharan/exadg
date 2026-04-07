@@ -118,13 +118,13 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
   if(param.convective_problem())
   {
     matrix_free_data.append_mapping_flags(
-      Operators::ConvectiveKernel<dim, Number>::get_mapping_flags());
+      Operators::ConvectiveKernel<dim, n_components, Number>::get_mapping_flags());
   }
 
   if(param.diffusive_problem())
   {
     matrix_free_data.append_mapping_flags(
-      Operators::DiffusiveKernel<dim, Number>::get_mapping_flags(true, true));
+      Operators::DiffusiveKernel<dim, n_components, Number>::get_mapping_flags(true, true));
   }
 
   // mapping flags required for CFL condition
@@ -191,7 +191,7 @@ Operator<dim, n_components, Number>::setup_operators()
     convective_kernel_data.numerical_flux_formulation = param.numerical_flux_convective_operator;
     convective_kernel_data.velocity                   = field_functions->velocity;
 
-    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, Number>>();
+    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, n_components, Number>>();
     convective_kernel->reinit(*matrix_free,
                               convective_kernel_data,
                               quad_index_convective,
@@ -220,7 +220,7 @@ Operator<dim, n_components, Number>::setup_operators()
     diffusive_kernel_data.IP_factor   = param.IP_factor;
     diffusive_kernel_data.diffusivity = param.diffusivity;
 
-    diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, Number>>();
+    diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();
     diffusive_kernel->reinit(*matrix_free, diffusive_kernel_data, get_dof_index());
 
     DiffusiveOperatorData<dim> diffusive_operator_data;
@@ -402,13 +402,13 @@ Operator<dim, n_components, Number>::setup_preconditioner()
   else if(param.preconditioner == Preconditioner::PointJacobi)
   {
     preconditioner =
-      std::make_shared<JacobiPreconditioner<CombinedOperator<dim, Number>>>(combined_operator,
+      std::make_shared<JacobiPreconditioner<CombinedOperator<dim, n_components, Number>>>(combined_operator,
                                                                             false);
   }
   else if(param.preconditioner == Preconditioner::BlockJacobi)
   {
     preconditioner =
-      std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, Number>>>(combined_operator,
+      std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, n_components, Number>>>(combined_operator,
                                                                                  false);
   }
   else if(param.preconditioner == Preconditioner::Multigrid)
@@ -424,7 +424,7 @@ Operator<dim, n_components, Number>::setup_preconditioner()
     MultigridData mg_data;
     mg_data = param.multigrid_data;
 
-    typedef MultigridPreconditioner<dim, Number> Multigrid;
+    typedef MultigridPreconditioner<dim, n_components, Number> Multigrid;
 
     preconditioner = std::make_shared<Multigrid>(this->mpi_comm);
     std::shared_ptr<Multigrid> mg_preconditioner =
@@ -490,7 +490,7 @@ Operator<dim, n_components, Number>::setup_solver()
 
     // initialize solver
     iterative_solver = std::make_shared<
-      Krylov::SolverCG<CombinedOperator<dim, Number>, PreconditionerBase<Number>, VectorType>>(
+      Krylov::SolverCG<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
       combined_operator, *preconditioner, solver_data);
   }
   else if(param.solver == Solver::GMRES)
@@ -507,7 +507,7 @@ Operator<dim, n_components, Number>::setup_solver()
 
     // initialize solver
     iterative_solver = std::make_shared<
-      Krylov::SolverGMRES<CombinedOperator<dim, Number>, PreconditionerBase<Number>, VectorType>>(
+      Krylov::SolverGMRES<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
       combined_operator, *preconditioner, solver_data, mpi_comm);
   }
   else if(param.solver == Solver::FGMRES)
@@ -524,7 +524,7 @@ Operator<dim, n_components, Number>::setup_solver()
 
     // initialize solver
     iterative_solver = std::make_shared<
-      Krylov::SolverFGMRES<CombinedOperator<dim, Number>, PreconditionerBase<Number>, VectorType>>(
+      Krylov::SolverFGMRES<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
       combined_operator, *preconditioner, solver_data);
   }
   else
@@ -1064,6 +1064,12 @@ template class Operator<2, 1, double>;
 
 template class Operator<3, 1, float>;
 template class Operator<3, 1, double>;
+
+template class Operator<2, 2, float>;
+template class Operator<2, 2, double>;
+
+template class Operator<3, 2, float>;
+template class Operator<3, 2, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG
