@@ -30,6 +30,8 @@
 #include <exadg/convection_diffusion/user_interface/parameters.h>
 #include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
 
+
+
 namespace ExaDG
 {
 namespace ConvDiff
@@ -37,12 +39,20 @@ namespace ConvDiff
 /*
  *  Base class for variable viscosity models.
  */
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class TurbulenceModel : public dealii::Subscriptor
 {
 private:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
+  typedef std::pair<unsigned int, unsigned int> Range;
+
+  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
+  typedef FaceIntegrator<dim, n_components, Number> IntegratorFace;
+
+  typedef CellIntegrator<dim, 1, Number> IntegratorCellScalar;
+
+  typedef dealii::VectorizedArray<Number> scalar;
 public:
   /*
    * Constructor.
@@ -59,27 +69,49 @@ public:
    */
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free_in,
+             TurbulenceModelData const &             turbulence_model_data_in,
              unsigned int const                      dof_index_in,
+             unsigned int const                      dof_index_viscosity_in,
              unsigned int const                      quad_index_in);
 
   /**
-   * Pure virtual function for *setting* the viscosity to viscosity_newtonian_limit.
+   * Function for *setting* the eddy viscosity
    */
-  virtual void
-  set_viscosity(VectorType const & solution) = 0;
+  void
+  set_viscosity(VectorType const & solution);
 
-  /**
-   * Pure virtual function for *adding to* the viscosity taking the currently stored viscosity as a
-   * basis.
-   */
-  virtual void
-  add_viscosity(VectorType const & solution) = 0;
+  void
+  get_eddy_viscosity(VectorType & dst) const;
 
   double       diffusivity;
   unsigned int quad_index;
 
+private:
+  void
+  cell_loop(dealii::MatrixFree<dim, Number> const & data,
+            VectorType &,
+            VectorType const & src,
+            Range const &      cell_range);
+
+  template<typename DataType>
+  void
+  evaluate_eddy_viscosity(DataType const & solution_values,
+                          scalar & viscosity) const;
+
+  void
+  standard_k_epsilon_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
+                           scalar & viscosity) const;
+
+  TurbulenceModelData                                   turbulence_model_data;
+
+  std::vector<double> model_coefficients;
+
+  VectorType eddy_viscosity;
+  VectorType effective_viscosity;
+
 protected:
   unsigned int dof_index;
+  unsigned int dof_index_viscosity;
 
   dealii::MatrixFree<dim, Number> const * matrix_free;
 };
