@@ -86,6 +86,8 @@ public:
   double       diffusivity;
   unsigned int quad_index;
 
+  std::vector<double> model_coefficients;
+
 private:
   void
   cell_loop(dealii::MatrixFree<dim, Number> const & data,
@@ -103,8 +105,6 @@ private:
                            scalar & viscosity) const;
 
   TurbulenceModelData                                   turbulence_model_data;
-
-  std::vector<double> model_coefficients;
 
   VectorType eddy_viscosity;
   VectorType effective_viscosity;

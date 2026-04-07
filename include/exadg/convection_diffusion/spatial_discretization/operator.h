@@ -28,6 +28,7 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/spatial_discretization/interface.h>
+#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/combined_operator.h>
 #include <exadg/convection_diffusion/user_interface/boundary_descriptor.h>
 #include <exadg/convection_diffusion/user_interface/field_functions.h>
@@ -291,6 +292,12 @@ public:
   dealii::AffineConstraints<Number> const &
   get_constraints() const;
 
+  void
+  update_eddy_viscosity(VectorType const & src) const;
+
+  void
+  get_eddy_viscosity(VectorType & dst) const;
+
 private:
   void
   do_setup();
@@ -353,6 +360,15 @@ private:
   setup_solver();
 
   /*
+   * Dof index for eddy viscosity (in case of turbulence model with eddy viscosity).
+   */
+  std::string
+  get_dof_name_eddy_viscosity() const;
+
+  unsigned int
+  get_dof_index_eddy_viscosity() const;
+
+  /*
    * Grid
    */
   std::shared_ptr<Grid<dim> const> grid;
@@ -401,6 +417,7 @@ private:
 
   std::string const dof_index_std      = "conv_diff";
   std::string const dof_index_velocity = "conv_diff_velocity";
+  std::string const dof_index_eddy_viscosity = "eddy_viscosity";
 
   std::string const quad_index_std             = "conv_diff";
   std::string const quad_index_overintegration = "conv_diff_overintegration";
@@ -450,6 +467,11 @@ private:
    * Output to screen.
    */
   dealii::ConditionalOStream pcout;
+
+  /*
+   * Turbulence models.
+   */
+  std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr = std::make_shared<TurbulenceModel<dim, n_components, Number>>();
 };
 
 } // namespace ConvDiff

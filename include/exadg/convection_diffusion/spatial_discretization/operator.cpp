@@ -212,6 +212,18 @@ Operator<dim, n_components, Number>::setup_operators()
                                    convective_kernel);
   }
 
+  if(param.turbulence_model_data.is_active)
+  {
+    turbulence_model_ptr->diffusivity              = param.diffusivity;
+
+    turbulence_model_ptr->initialize(*matrix_free,
+                                     param.turbulence_model_data,
+                                     get_dof_index(),
+                                     get_dof_index_eddy_viscosity(),
+                                     get_quad_index());
+    turbulence_model_ptr->model_coefficients       = param.turbulence_model_data.turbulence_data_base->get_all_coefficients();
+  }
+
   // diffusive operator
   Operators::DiffusiveKernelData diffusive_kernel_data;
 
@@ -1057,6 +1069,40 @@ dealii::AffineConstraints<Number> const &
 Operator<dim, n_components, Number>::get_constraints() const
 {
   return affine_constraints;
+}
+
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & src) const
+{
+  AssertThrow(param.diffusive_problem(),
+              dealii::ExcMessage("Updating viscosity reasonable for diffusive problem"));
+
+  if(param.turbulence_model_data.is_active)
+  {
+    turbulence_model_ptr->set_viscosity(src);
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::get_eddy_viscosity(VectorType & dst) const
+{
+    turbulence_model_ptr->get_eddy_viscosity(dst);
+}
+
+template<int dim, int n_components, typename Number>
+std::string
+Operator<dim, n_components, Number>::get_dof_name_eddy_viscosity() const
+{
+  return dof_index_eddy_viscosity;
+}
+
+template<int dim, int n_components, typename Number>
+unsigned int
+Operator<dim, n_components, Number>::get_dof_index_eddy_viscosity() const
+{
+  return matrix_free_data->get_dof_index(get_dof_name_eddy_viscosity());
 }
 
 template class Operator<2, 1, float>;

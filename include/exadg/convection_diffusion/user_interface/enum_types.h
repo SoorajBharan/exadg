@@ -88,6 +88,16 @@ enum class ScalarType
   kOmegaTransportVariables
 };
 
+/*
+ *  The possibly variable viscosity can be treated explicitly (Explicit) or implicitly (Implicit).
+ */
+enum class TreatmentOfVariableViscosity
+{
+  Undefined,
+  Explicit,
+  Implicit
+};
+
 /**************************************************************************************/
 /*                                                                                    */
 /*                                 PHYSICAL QUANTITIES                                */

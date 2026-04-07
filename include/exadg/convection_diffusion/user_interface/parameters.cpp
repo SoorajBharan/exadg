@@ -92,7 +92,8 @@ Parameters::Parameters()
     use_cell_based_face_loops(false),
     use_combined_operator(true),
     store_analytical_velocity_in_dof_vector(false),
-    use_overintegration(false)
+    use_overintegration(false),
+    treatment_of_variable_viscosity(TreatmentOfVariableViscosity::Undefined)
 {
 }
 
@@ -341,6 +342,13 @@ Parameters::check() const
       dealii::ExcMessage(
         "Invalid parameter. A solver type needs to be specified for elementwise matrix-free iterative solver."));
   }
+  
+  // TURBULENCE
+  if(turbulence_model_data.is_active)
+  {
+    AssertThrow(treatment_of_variable_viscosity != TreatmentOfVariableViscosity::Undefined,
+                dealii::ExcMessage("Parameter must be defined."));
+  }
 
   // NUMERICAL PARAMETERS
 }
@@ -420,6 +428,12 @@ Parameters::print(dealii::ConditionalOStream const & pcout, std::string const & 
 
   // SPATIAL DISCRETIZATION
   print_parameters_spatial_discretization(pcout);
+   
+  // TURBULENCE
+  if(turbulence_model_data.is_active)
+  {
+    turbulence_model_data.print(pcout);
+  }
 
   // SOLVER
   // If a linear system of equations has to be solved:
