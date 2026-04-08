@@ -88,7 +88,7 @@ TurbulenceModel<dim, n_components, Number>::cell_loop(
 
     integrator_viscosity.reinit(cell);
 
-    for(unsigned int dof = 0; dof < integrator.dofs_per_cell; ++dof)
+    for(unsigned int dof = 0; dof < integrator_viscosity.dofs_per_cell; ++dof)
     {
       auto solution_values = integrator.get_dof_value(dof);
       

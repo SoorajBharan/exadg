@@ -189,13 +189,42 @@ Driver<dim, n_components, Number>::setup()
       dealii::ExcMessage(
         "Parameter use_cell_based_face_loops should be the same for fluid and scalar transport."));
   }
+  
+  // 1. Detect if RANS is active before setting up the fluid operator
+  for(unsigned int i = 0; i < application->scalars.size(); ++i)
+  {
+    if(application->scalars[i]->get_parameters().turbulence_model_data.is_active)
+    {
+      rans_enabled = true;
+      rans_scalar_index = i;
+      break;
+    }
+  }
 
   // setup Navier-Stokes operator
-  if(application->fluid->get_parameters().boussinesq_term)
+  if(application->fluid->get_parameters().boussinesq_term && rans_enabled)
   {
     // assume that the first scalar field with index 0 is the active scalar that
     // couples to the incompressible Navier-Stokes equations
-    fluid_operator->setup(matrix_free, matrix_free_data, scalar_operator[0]->get_dof_name());
+    fluid_operator->setup(matrix_free,
+                          matrix_free_data,
+                          scalar_operator[0]->get_dof_name(),
+                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
+  }
+  else if(application->fluid->get_parameters().boussinesq_term)
+  {
+    // Pass only temperature (eddy viscosity defaults to "")
+    fluid_operator->setup(matrix_free, 
+                          matrix_free_data, 
+                          scalar_operator[0]->get_dof_name());
+  }
+  else if(rans_enabled)
+  {
+    // Pass empty temperature to reach the 4th argument for eddy viscosity
+    fluid_operator->setup(matrix_free, 
+                          matrix_free_data, 
+                          "", 
+                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
   }
   else
   {

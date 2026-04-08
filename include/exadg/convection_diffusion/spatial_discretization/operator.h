@@ -411,6 +411,12 @@ private:
   std::shared_ptr<dealii::DoFHandler<dim>>    dof_handler_velocity;
 
   /*
+   * Eddy viscosity field.
+   */
+  std::shared_ptr<dealii::FiniteElement<dim>> fe_eddy_viscosity;
+  std::shared_ptr<dealii::DoFHandler<dim>>    dof_handler_eddy_viscosity;
+
+  /*
    * Constraints.
    */
   dealii::AffineConstraints<Number> affine_constraints;

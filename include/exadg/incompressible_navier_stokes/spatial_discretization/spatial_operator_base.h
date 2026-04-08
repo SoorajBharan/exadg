@@ -119,7 +119,8 @@ public:
   void
   setup(std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free,
         std::shared_ptr<MatrixFreeData<dim, Number> const>     matrix_free_data,
-        std::string const &                                    dof_index_temperature = "");
+        std::string const &                                    dof_index_temperature = "",
+        std::string const &                                    dof_index_eddy_viscosity = "");
 
 protected:
   /*
@@ -634,7 +635,8 @@ private:
   initialize_dirichlet_cached_bc();
 
   void
-  initialize_operators(std::string const & dof_index_temperature);
+  initialize_operators(std::string const & dof_index_temperature,
+                       std::string const & dof_index_eddy_viscosity = "");
 
   void
   initialize_calculators_for_derived_quantities();

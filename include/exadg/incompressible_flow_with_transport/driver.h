@@ -153,8 +153,8 @@ private:
 
   mutable unsigned int N_time_steps;
 
-  unsigned int rans_scalar_index;
   bool rans_enabled;
+  unsigned int rans_scalar_index;
 };
 
 } // namespace FTI

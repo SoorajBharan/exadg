@@ -72,6 +72,13 @@ Operator<dim, n_components, Number>::Operator(
     dof_handler_velocity = std::make_shared<dealii::DoFHandler<dim>>(*grid->triangulation);
   }
 
+  if(param.turbulence_model_data.is_active)
+  {
+    // Create a 1-component element with the same polynomial degree as the solution
+    fe_eddy_viscosity = create_finite_element<dim>(ElementType::Hypercube, true, 1, param.degree);
+    dof_handler_eddy_viscosity = std::make_shared<dealii::DoFHandler<dim>>(*grid->triangulation);
+  }
+
   initialize_dof_handler_and_constraints();
 
   pcout << std::endl
@@ -94,6 +101,11 @@ Operator<dim, n_components, Number>::initialize_dof_handler_and_constraints()
   if(needs_own_dof_handler_velocity())
   {
     dof_handler_velocity->distribute_dofs(*fe_velocity);
+  }
+
+  if(param.turbulence_model_data.is_active)
+  {
+    dof_handler_eddy_viscosity->distribute_dofs(*fe_eddy_viscosity);
   }
 
   affine_constraints.close();
@@ -140,6 +152,12 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
   {
     matrix_free_data.insert_dof_handler(&(*dof_handler_velocity), get_dof_name_velocity());
     matrix_free_data.insert_constraint(&affine_constraints, get_dof_name_velocity());
+  }
+
+  if(param.turbulence_model_data.is_active)
+  {
+    matrix_free_data.insert_dof_handler(&(*dof_handler_eddy_viscosity), get_dof_name_eddy_viscosity());
+    matrix_free_data.insert_constraint(&affine_constraints, get_dof_name_eddy_viscosity());
   }
 
   // dealii::Quadrature

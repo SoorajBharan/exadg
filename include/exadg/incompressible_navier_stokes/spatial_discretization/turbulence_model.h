@@ -49,6 +49,8 @@ private:
   typedef CellIntegrator<dim, dim, Number> CellIntegratorU;
   typedef FaceIntegrator<dim, dim, Number> FaceIntegratorU;
 
+  typedef CellIntegrator<dim, 1, Number>   CellIntegratorScalar;
+  typedef FaceIntegrator<dim, 1, Number>   FaceIntegratorScalar;
 public:
   /*
    *  Constructor.
@@ -125,6 +127,24 @@ private:
                                       VectorType &,
                                       VectorType const & src,
                                       Range const &      face_range) const;
+
+  void
+  cell_loop_set_coefficients_rans(dealii::MatrixFree<dim, Number> const & data,
+                                  VectorType &,
+                                  VectorType const & src,
+                                  Range const &      cell_range) const;
+
+  void
+  face_loop_set_coefficients_rans(dealii::MatrixFree<dim, Number> const & data,
+                                  VectorType &,
+                                  VectorType const & src,
+                                  Range const &      face_range) const;
+
+  void
+  boundary_face_loop_set_coefficients_rans(dealii::MatrixFree<dim, Number> const & data,
+                                           VectorType &,
+                                           VectorType const & src,
+                                           Range const &      face_range) const;
 
   /**
    *  This function adds the turbulent eddy-viscosity to the laminar viscosity

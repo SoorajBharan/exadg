@@ -90,12 +90,24 @@ TurbulenceModel<dim, Number>::add_viscosity(VectorType const & velocity) const
 {
   VectorType dummy;
 
-  this->matrix_free->loop(&This::cell_loop_set_coefficients,
-                          &This::face_loop_set_coefficients,
-                          &This::boundary_face_loop_set_coefficients,
-                          this,
-                          dummy,
-                          velocity);
+  if(turbulence_model_data.rans_model)
+  {
+    this->matrix_free->loop(&This::cell_loop_set_coefficients_rans,
+                            &This::face_loop_set_coefficients_rans,
+                            &This::boundary_face_loop_set_coefficients_rans,
+                            this,
+                            dummy,
+                            this->eddy_viscosity);
+  }
+  else
+{
+    this->matrix_free->loop(&This::cell_loop_set_coefficients,
+                            &This::face_loop_set_coefficients,
+                            &This::boundary_face_loop_set_coefficients,
+                            this,
+                            dummy,
+                            velocity);
+  }
 }
 
 template<int dim, typename Number>
@@ -617,6 +629,116 @@ void
 TurbulenceModel<dim, Number>::get_eddy_viscosity(VectorType & dst) const
 {
   dst = this->eddy_viscosity;
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::cell_loop_set_coefficients_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &,
+  VectorType const & src,
+  Range const &      cell_range) const
+{
+  CellIntegratorScalar integrator(matrix_free,
+                                  this->dof_index_scalar,
+                                  this->viscous_kernel->get_quad_index());
+  // loop over all cells
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.read_dof_values(src);
+
+    integrator.evaluate(dealii::EvaluationFlags::values);
+
+    // loop over all quadrature points
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      // get the current viscosity
+      scalar viscosity = this->viscous_kernel->get_viscosity_cell(cell, q);
+      // add eddy viscosity
+      viscosity += integrator.get_value(q);
+
+      this->viscous_kernel->set_coefficient_cell(cell, q, viscosity);
+    }
+  }
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::face_loop_set_coefficients_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &,
+  VectorType const & src,
+  Range const &      face_range) const
+{
+  FaceIntegratorScalar integrator_m(matrix_free,
+                                    true,
+                                    this->dof_index_scalar,
+                                    this->viscous_kernel->get_quad_index());
+  FaceIntegratorScalar integrator_p(matrix_free,
+                                    false,
+                                    this->dof_index_scalar,
+                                    this->viscous_kernel->get_quad_index());
+
+  // loop over all interior faces
+  for(unsigned int face = face_range.first; face < face_range.second; face++)
+  {
+    integrator_m.reinit(face);
+    integrator_p.reinit(face);
+
+    integrator_m.read_dof_values(src);
+    integrator_p.read_dof_values(src);
+
+    // we only need the gradient
+    integrator_m.evaluate(dealii::EvaluationFlags::values);
+    integrator_p.evaluate(dealii::EvaluationFlags::values);
+
+    // loop over all quadrature points
+    for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
+    {
+      scalar viscosity_m = this->viscous_kernel->get_coefficient_face(face, q);
+      scalar viscosity_p = this->viscous_kernel->get_coefficient_face_neighbor(face, q);
+      viscosity_m += integrator_m.get_value(q);
+      viscosity_p += integrator_p.get_value(q);
+
+      // set the coefficients
+      this->viscous_kernel->set_coefficient_face(face, q, viscosity_m);
+      this->viscous_kernel->set_coefficient_face_neighbor(face, q, viscosity_p);
+    }
+  }
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::boundary_face_loop_set_coefficients_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &,
+  VectorType const & src,
+  Range const &      face_range) const
+{
+  FaceIntegratorScalar integrator(matrix_free,
+                                  true,
+                                  this->dof_index_scalar,
+                                  this->viscous_kernel->get_quad_index());
+
+  // loop over all boundary faces
+  for(unsigned int face = face_range.first; face < face_range.second; face++)
+  {
+    integrator.reinit(face);
+    integrator.read_dof_values(src);
+
+    integrator.evaluate(dealii::EvaluationFlags::values);
+
+    // loop over all quadrature points
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      scalar viscosity = this->viscous_kernel->get_coefficient_face(face, q);
+      viscosity += integrator.get_value(q);
+
+      // set the coefficients
+      this->viscous_kernel->set_coefficient_face(face, q, viscosity);
+    }
+  }
 }
 
 template class TurbulenceModel<2, float>;

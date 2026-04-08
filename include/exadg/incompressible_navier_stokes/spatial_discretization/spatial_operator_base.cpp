@@ -391,7 +391,8 @@ SpatialOperatorBase<dim, Number>::initialize_dirichlet_cached_bc()
 
 template<int dim, typename Number>
 void
-SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_index_temperature)
+SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_index_temperature,
+                                                       std::string const & dof_index_eddy_viscosity)
 {
   // mass operator
   MassOperatorData<dim> mass_operator_data;
@@ -504,11 +505,26 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   // initialize and check turbulence model data
   if(param.turbulence_model_data.is_active)
   {
-    turbulence_model.initialize(*matrix_free,
-                                *get_mapping(),
-                                viscous_kernel,
-                                param.turbulence_model_data,
-                                get_dof_index_velocity());
+    if(param.turbulence_model_data.rans_model)
+    {
+      // Fetch the exact integer index using the string provided by the Driver!
+      unsigned int const eddy_viscosity_index = matrix_free_data->get_dof_index(dof_index_eddy_viscosity);
+      turbulence_model.initialize(*matrix_free,
+                                  *get_mapping(),
+                                  viscous_kernel,
+                                  param.turbulence_model_data,
+                                  get_dof_index_velocity(),
+                                  eddy_viscosity_index);
+    }
+    else
+  {
+      // Standard LES models
+      turbulence_model.initialize(*matrix_free,
+                                  *get_mapping(),
+                                  viscous_kernel,
+                                  param.turbulence_model_data,
+                                  get_dof_index_velocity());
+    }
   }
 
   // initialize and check generalized Newtonian model data
@@ -705,7 +721,8 @@ void
 SpatialOperatorBase<dim, Number>::setup(
   std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
   std::shared_ptr<MatrixFreeData<dim, Number> const>     matrix_free_data_in,
-  std::string const &                                    dof_index_temperature)
+  std::string const &                                    dof_index_temperature,
+  std::string const &                                    dof_index_eddy_viscosity)
 {
   pcout << std::endl
         << "Setup incompressible Navier-Stokes operator ..." << std::endl
@@ -719,7 +736,7 @@ SpatialOperatorBase<dim, Number>::setup(
 
   initialize_dirichlet_cached_bc();
 
-  initialize_operators(dof_index_temperature);
+  initialize_operators(dof_index_temperature, dof_index_eddy_viscosity);
 
   initialize_calculators_for_derived_quantities();
 
