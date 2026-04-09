@@ -83,6 +83,9 @@ public:
   void
   get_eddy_viscosity(VectorType & dst) const;
 
+  dealii::LinearAlgebra::distributed::Vector<Number> const &
+  get_eddy_viscosity_ref() const;
+
   double       diffusivity;
   unsigned int quad_index;
 

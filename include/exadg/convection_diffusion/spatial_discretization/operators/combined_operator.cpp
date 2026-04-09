@@ -56,7 +56,7 @@ CombinedOperator<dim, n_components, Number>::initialize(
   if(operator_data.diffusive_problem)
   {
     diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();
-    diffusive_kernel->reinit(matrix_free, data.diffusive_kernel_data, data.dof_index);
+    diffusive_kernel->reinit(matrix_free, data.diffusive_kernel_data, data.dof_index, data.quad_index);
   }
 
   // integrator flags
@@ -164,6 +164,8 @@ CombinedOperator<dim, n_components, Number>::reinit_cell_derived(IntegratorCell 
 
   if(operator_data.convective_problem)
     convective_kernel->reinit_cell(cell);
+  if(operator_data.diffusive_problem)
+    diffusive_kernel->reinit_cell(cell);
 }
 
 template<int dim, int n_components, typename Number>
@@ -175,7 +177,7 @@ CombinedOperator<dim, n_components, Number>::reinit_face_derived(IntegratorFace 
   if(operator_data.convective_problem)
     convective_kernel->reinit_face(face);
   if(operator_data.diffusive_problem)
-    diffusive_kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index);
+    diffusive_kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index, face);
 }
 
 template<int dim, int n_components, typename Number>
@@ -186,7 +188,7 @@ CombinedOperator<dim, n_components, Number>::reinit_boundary_face_derived(Integr
   if(operator_data.convective_problem)
     convective_kernel->reinit_boundary_face(face);
   if(operator_data.diffusive_problem)
-    diffusive_kernel->reinit_boundary_face(integrator_m, operator_data.dof_index);
+    diffusive_kernel->reinit_boundary_face(integrator_m, operator_data.dof_index, face);
 }
 
 template<int dim, int n_components, typename Number>
@@ -294,7 +296,9 @@ CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & i
       simd_value_type value_flux = diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                                  normal_gradient_p,
                                                                  value_m,
-                                                                 value_p);
+                                                                 value_p,
+                                                                 q,
+                                                                 false);
 
       value_flux_m += -value_flux;
       value_flux_p += value_flux; // + sign since n⁺ = -n⁻
@@ -305,7 +309,7 @@ CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & i
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
       integrator_m.submit_normal_derivative(gradient_flux, q);
       integrator_p.submit_normal_derivative(gradient_flux, q);
     }
@@ -344,14 +348,16 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p);
+                                                            value_p,
+                                                            q,
+                                                            false);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -399,14 +405,16 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral_cell_based(Int
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p);
+                                                            value_p,
+                                                            q,
+                                                            false);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -446,14 +454,16 @@ CombinedOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_p,
                                                             normal_gradient_m,
                                                             value_p,
-                                                            value_m);
+                                                            value_m,
+                                                            q,
+                                                            false);
     }
 
     integrator_p.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_p, value_m);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_p, value_m, q, false);
       // opposite sign since n⁺ = -n⁻
       integrator_p.submit_normal_derivative(-gradient_flux, q);
     }
@@ -509,14 +519,16 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p);
+                                                            value_p,
+                                                            q,
+                                                            true);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, true);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }

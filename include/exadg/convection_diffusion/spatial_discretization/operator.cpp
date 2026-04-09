@@ -250,8 +250,22 @@ Operator<dim, n_components, Number>::setup_operators()
     diffusive_kernel_data.IP_factor   = param.IP_factor;
     diffusive_kernel_data.diffusivity = param.diffusivity;
 
+    if(param.turbulence_model_data.is_active)
+    {
+      diffusive_kernel_data.rans_model = true;
+      diffusive_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
+
+      if(param.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
+      {
+        diffusive_kernel_data.inverse_sigma = {
+          1.0 / turbulence_model_ptr->model_coefficients[0], // 1/sigma_k
+          1.0 / turbulence_model_ptr->model_coefficients[4]  // 1/sigma_epsilon
+        };
+      }
+    }
+
     diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();
-    diffusive_kernel->reinit(*matrix_free, diffusive_kernel_data, get_dof_index());
+    diffusive_kernel->reinit(*matrix_free, diffusive_kernel_data, get_dof_index(), get_quad_index());
 
     DiffusiveOperatorData<dim> diffusive_operator_data;
     diffusive_operator_data.dof_index            = get_dof_index();
@@ -1099,6 +1113,8 @@ Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & sr
   if(param.turbulence_model_data.is_active)
   {
     turbulence_model_ptr->set_viscosity(src);
+
+    diffusive_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
   }
 }
 

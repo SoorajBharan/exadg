@@ -167,6 +167,13 @@ TurbulenceModel<dim, n_components, Number>::get_eddy_viscosity(VectorType & dst)
   dst.equ(1.0, eddy_viscosity);
 }
 
+template<int dim, int n_components, typename Number>
+typename TurbulenceModel<dim, n_components, Number>::VectorType const &
+TurbulenceModel<dim, n_components, Number>::get_eddy_viscosity_ref() const
+{
+  return eddy_viscosity;
+}
+
 template class TurbulenceModel<2, 1, float>;
 template class TurbulenceModel<2, 1, double>;
 template class TurbulenceModel<3, 1, float>;

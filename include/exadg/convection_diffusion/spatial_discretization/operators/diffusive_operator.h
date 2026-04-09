@@ -36,12 +36,23 @@ namespace Operators
 {
 struct DiffusiveKernelData
 {
-  DiffusiveKernelData() : IP_factor(1.0), diffusivity(1.0)
+  DiffusiveKernelData() : IP_factor(1.0),
+    diffusivity(1.0),
+    rans_model(false),
+    positivity_preserving_limiter(PositivityPreservingLimiter::Undefined)
   {
   }
 
   double IP_factor;
   double diffusivity;
+
+  bool rans_model;
+  PositivityPreservingLimiter positivity_preserving_limiter;
+
+  TurbulenceModelData turbulence_model_data;
+  unsigned int dof_index_eddy_viscosity;
+
+  std::vector<double> inverse_sigma;
 };
 
 template<int dim, int n_components, typename Number>
@@ -58,6 +69,8 @@ private:
   using value_type = typename IntegratorCell::value_type;
   using gradient_type = typename IntegratorCell::gradient_type;
 
+  typedef CellIntegrator<dim, 1, Number> IntegratorCellScalar;
+  typedef FaceIntegrator<dim, 1, Number> IntegratorFaceScalar;
 public:
   DiffusiveKernel() : degree(1), tau(dealii::make_vectorized_array<Number>(0.0))
   {
@@ -66,7 +79,8 @@ public:
   void
   reinit(dealii::MatrixFree<dim, Number> const & matrix_free,
          DiffusiveKernelData const &             data_in,
-         unsigned int const                      dof_index)
+         unsigned int const                      dof_index,
+         unsigned int const                      quad_index)
   {
     data = data_in;
 
@@ -77,6 +91,16 @@ public:
 
     AssertThrow(data.diffusivity > (0.0 - std::numeric_limits<double>::epsilon()),
                 dealii::ExcMessage("Diffusivity is not set!"));
+
+    if(data.rans_model)
+    {
+      integrator_cell_eddy_viscosity =
+        std::make_shared<IntegratorCellScalar>(matrix_free, data.dof_index_eddy_viscosity, quad_index);
+      integrator_face_eddy_viscosity_m = std::make_shared<IntegratorFaceScalar>(
+        matrix_free, true, data.dof_index_eddy_viscosity, quad_index);
+      integrator_face_eddy_viscosity_p = std::make_shared<IntegratorFaceScalar>(
+        matrix_free, false, data.dof_index_eddy_viscosity, quad_index);
+    }
   }
 
   void
@@ -118,9 +142,21 @@ public:
   }
 
   void
+  reinit_cell(unsigned const int cell) const
+  {
+    if(data.rans_model)
+    {
+      integrator_cell_eddy_viscosity->reinit(cell);
+      integrator_cell_eddy_viscosity->gather_evaluate(*eddy_viscosity,
+                                                      dealii::EvaluationFlags::values);
+    }
+  }
+
+  void
   reinit_face(IntegratorFace &   integrator_m,
               IntegratorFace &   integrator_p,
-              unsigned int const dof_index) const
+              unsigned int const dof_index,
+              unsigned int const face) const
   {
     tau = std::max(integrator_m.read_cell_data(array_penalty_parameter),
                    integrator_p.read_cell_data(array_penalty_parameter)) *
@@ -129,10 +165,22 @@ public:
             get_element_type(
               integrator_m.get_matrix_free().get_dof_handler(dof_index).get_triangulation()),
             data.IP_factor);
+
+    if(data.rans_model)
+    {
+      integrator_face_eddy_viscosity_m->reinit(face);
+      integrator_face_eddy_viscosity_p->reinit(face);
+      integrator_face_eddy_viscosity_m->gather_evaluate(*eddy_viscosity,
+                                                        dealii::EvaluationFlags::values);
+      integrator_face_eddy_viscosity_p->gather_evaluate(*eddy_viscosity,
+                                                        dealii::EvaluationFlags::values);
+    }
   }
 
   void
-  reinit_boundary_face(IntegratorFace & integrator_m, unsigned int const dof_index) const
+  reinit_boundary_face(IntegratorFace & integrator_m,
+                       unsigned int const dof_index,
+                       unsigned int const face) const
   {
     tau = integrator_m.read_cell_data(array_penalty_parameter) *
           IP::get_penalty_factor<dim, Number>(
@@ -140,6 +188,13 @@ public:
             get_element_type(
               integrator_m.get_matrix_free().get_dof_handler(dof_index).get_triangulation()),
             data.IP_factor);
+
+    if(data.rans_model)
+    {
+      integrator_face_eddy_viscosity_m->reinit(face);
+      integrator_face_eddy_viscosity_m->gather_evaluate(*eddy_viscosity,
+                                                        dealii::EvaluationFlags::values);
+    }
   }
 
   void
@@ -169,12 +224,42 @@ public:
     }
   }
 
+void
+  set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in)
+  {
+    eddy_viscosity.own() = eddy_viscosity_in;
+    eddy_viscosity->update_ghost_values();
+  }
 
   inline DEAL_II_ALWAYS_INLINE //
     value_type
-    calculate_gradient_flux(value_type const & value_m, value_type const & value_p) const
+    calculate_gradient_flux(value_type const & value_m,
+                            value_type const & value_p,
+                            unsigned int const q,
+                            bool boundary_face) const
   {
-    return -0.5 * data.diffusivity * (value_m - value_p);
+    value_type gradient_flux;
+    value_type effective_viscosity;
+    if(boundary_face)
+    {
+      effective_viscosity = get_int_face_eddy_viscosity(q);
+    }
+    else
+    {
+      effective_viscosity = 0.5 * (get_int_face_eddy_viscosity(q) + get_ext_face_eddy_viscosity(q));
+    }
+
+    if constexpr(n_components == 1)
+    {
+      gradient_flux = -0.5 * effective_viscosity * (value_m - value_p);
+    }
+    else
+    {
+      for(unsigned int c = 0; c < n_components; ++c)
+        gradient_flux[c] = -0.5 * effective_viscosity[c] * (value_m[c] - value_p[c]);
+    }
+
+    return gradient_flux;
   }
 
   /*
@@ -187,10 +272,33 @@ public:
     calculate_value_flux(value_type const & normal_gradient_m,
                          value_type const & normal_gradient_p,
                          value_type const & value_m,
-                         value_type const & value_p) const
+                         value_type const & value_p,
+                         unsigned int const q,
+                         bool boundary_face) const
   {
-    return data.diffusivity *
-           (0.5 * (normal_gradient_m + normal_gradient_p) - tau * (value_m - value_p));
+    value_type value_flux;
+    value_type effective_viscosity;
+    if(boundary_face)
+    {
+      effective_viscosity = get_int_face_eddy_viscosity(q);
+    }
+    else
+    {
+      effective_viscosity = 0.5 * (get_int_face_eddy_viscosity(q) + get_ext_face_eddy_viscosity(q));
+    }
+
+    if constexpr(n_components == 1)
+    {
+      value_flux = effective_viscosity * (0.5 * (normal_gradient_m + normal_gradient_p) - tau * (value_m - value_p));
+    }
+    else
+    {
+      for(unsigned int c = 0; c < n_components; ++c)
+        value_flux[c] =
+          effective_viscosity[c] * (0.5 * (normal_gradient_m[c] + normal_gradient_p[c]) - tau * (value_m[c] - value_p[c]));
+    }
+
+    return value_flux;
   }
 
   /*
@@ -200,8 +308,110 @@ public:
     gradient_type
     get_volume_flux(IntegratorCell & integrator, unsigned int const q) const
   {
-    return integrator.get_gradient(q) * data.diffusivity;
+    value_type effective_viscosity = get_effective_cell_viscosity(q);
+    gradient_type solution_gradient = integrator.get_gradient(q);
+
+    gradient_type volume_flux;
+    if constexpr(n_components == 1)
+    {
+      volume_flux = solution_gradient * effective_viscosity; 
+    }
+    else
+  {
+      for(unsigned int c = 0; c < n_components; ++c)
+        volume_flux[c] = solution_gradient[c] * effective_viscosity[c];
+    }
+
+    return volume_flux;
   }
+
+  value_type
+  get_effective_cell_viscosity(unsigned const int q) const
+  {
+    value_type nu_eff;
+    scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
+    scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+
+    if(data.rans_model)
+    {
+      nu_t = integrator_cell_eddy_viscosity->get_value(q);
+    }
+
+    if constexpr(n_components == 1)
+    {
+      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+    }
+    else
+    {
+      for(unsigned int c = 0; c < n_components; ++c)
+        nu_eff[c] = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+    }
+
+    return nu_eff;
+  }
+
+  value_type
+  get_int_face_eddy_viscosity(unsigned const int q) const
+  {
+    value_type nu_eff;
+    scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
+    scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+
+    if(data.rans_model)
+    {
+      nu_t = integrator_face_eddy_viscosity_m->get_value(q);
+    }
+
+    if constexpr(n_components == 1)
+    {
+      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+    }
+    else
+    {
+    for(unsigned int c = 0; c < n_components; ++c)
+    {
+      scalar inverse_sigma = dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+      nu_eff[c] =
+        nu_laminar + nu_t * inverse_sigma;
+    }
+    }
+
+    return nu_eff;
+  }
+
+  value_type
+  get_ext_face_eddy_viscosity(unsigned const int q) const
+  {
+    value_type nu_eff;
+    scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
+    scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+
+    if(data.rans_model)
+    {
+      nu_t = integrator_face_eddy_viscosity_p->get_value(q);
+    }
+
+    if constexpr(n_components == 1)
+    {
+      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+    }
+    else
+    {
+      for(unsigned int c = 0; c < n_components; ++c)
+        nu_eff[c] = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+    }
+
+    return nu_eff;
+  }
+
+  void
+  set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in) const
+  {
+    eddy_viscosity.own() = eddy_viscosity_in;
+    eddy_viscosity->update_ghost_values();
+  }
+
+  mutable lazy_ptr<VectorType> eddy_viscosity;
 
 private:
   DiffusiveKernelData data;
@@ -211,6 +421,10 @@ private:
   dealii::AlignedVector<scalar> array_penalty_parameter;
 
   mutable scalar tau;
+
+  std::shared_ptr<IntegratorCellScalar> integrator_cell_eddy_viscosity;
+  std::shared_ptr<IntegratorFaceScalar> integrator_face_eddy_viscosity_m;
+  std::shared_ptr<IntegratorFaceScalar> integrator_face_eddy_viscosity_p;
 };
 
 } // namespace Operators
@@ -250,6 +464,9 @@ public:
 
   void
   update();
+
+  void
+  set_eddy_viscosity_ptr(dealii::LinearAlgebra::distributed::Vector<Number> const & eddy_viscosity) const;
 
 private:
   void
