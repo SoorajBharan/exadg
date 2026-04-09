@@ -428,6 +428,34 @@ struct FunctionEvaluator<2, dim, Number>
   }
 };
 
+template<int n_components, int dim, typename Number>
+struct MultiComponentFunctionEvaluator
+{
+  static inline DEAL_II_ALWAYS_INLINE //
+    dealii::Tensor<1, n_components, dealii::VectorizedArray<Number>>
+    value(dealii::Function<dim> &                               function,
+          dealii::Point<dim, dealii::VectorizedArray<Number>> const & q_points,
+          double const &                                              time)
+  {
+    function.set_time(time);
+    dealii::Tensor<1, n_components, dealii::VectorizedArray<Number>> val;
+
+    for(unsigned int c = 0; c < n_components; ++c)
+    {
+      for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
+      {
+        dealii::Point<dim> q_point;
+        for(unsigned int d = 0; d < dim; ++d)
+          q_point[d] = q_points[d][v];
+
+        val[c][v] = function.value(q_point, c);
+      }
+    }
+
+    return val;
+  }
+};
+
 } // namespace ExaDG
 
 #endif /* INCLUDE_EXADG_FUNCTIONS_AND_BOUNDARY_CONDITIONS_EVALUATE_FUNCTIONS_H_ */
