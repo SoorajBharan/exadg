@@ -103,7 +103,7 @@ public:
       integrator_velocity->gather_evaluate(*velocity, dealii::EvaluationFlags::gradients);
 
       integrator_solution->reinit(cell);
-      integrator_solution->gather_evaluate(*solution, dealii::EvaluationFlags::values);
+      integrator_solution->gather_evaluate(*solution, dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
 
       integrator_eddy_viscosity->reinit(cell);
       integrator_eddy_viscosity->gather_evaluate(*eddy_viscosity, dealii::EvaluationFlags::values);
@@ -154,9 +154,45 @@ public:
     {
       volume_flux += get_production_term(q);
       volume_flux -= get_dissipation_term(q);
+      if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+      {
+        volume_flux += get_square_gradient_term(q);
+      }
     }
 
     return volume_flux;
+  }
+
+  value_type
+  get_square_gradient_term(unsigned int const q) const
+  {
+    if constexpr (n_components >= 2)
+    {
+      scalar viscosity = integrator_eddy_viscosity->get_value(q);
+
+      gradient_type solution_gradient = integrator_solution->get_gradient(q);
+
+      value_type square_gradient_term;
+
+      if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
+      {
+        scalar sigma_k = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[0]);
+        scalar sigma_E = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[4]);
+
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          square_gradient_term[0] = (data.diffusivity + viscosity /sigma_k) * scalar_product(solution_gradient[0], solution_gradient[0]);
+          square_gradient_term[1] = (data.diffusivity + viscosity /sigma_E) * scalar_product(solution_gradient[1], solution_gradient[1]);
+        }
+      }
+
+      return square_gradient_term;
+    }
+    else {
+      value_type zero_flux = dealii::make_vectorized_array<Number>(0.0);
+      AssertThrow(false, dealii::ExcMessage("Square gradient term for turbulence models with 1 component not yet implemented."));
+      return zero_flux;
+    }
   }
 
   value_type
@@ -174,15 +210,16 @@ public:
 
       value_type solution = integrator_solution->get_value(q);
 
-      scalar C_e1 = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[1]);
-
       value_type production_term;
+
       for(unsigned int c = 0; c < n_components; ++c)
       {
         production_term[c] = viscosity * gradient_product;
       }
       if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
       {
+        scalar C_e1 = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[1]);
+
         if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
         {
           production_term[0] /= std::exp(solution[0]);
@@ -218,15 +255,13 @@ public:
           dissipation_term[0] = solution[1];
           dissipation_term[1] = C_e2 * std::exp(solution[1] - solution[0]);
         }
-
-        return dissipation_term;
       }
-      else
-      {
-        value_type zero_flux = dealii::make_vectorized_array<Number>(0.0);
-        AssertThrow(false, dealii::ExcMessage("Dissipation term for turbulence models other than StandardKEpsilon not yet implemented."));
-        return zero_flux;
-      }
+      return dissipation_term;
+    }
+    else{
+      value_type zero_flux = dealii::make_vectorized_array<Number>(0.0);
+      AssertThrow(false, dealii::ExcMessage("Dissipation term for turbulence models other than StandardKEpsilon not yet implemented."));
+      return zero_flux;
     }
   }
 
