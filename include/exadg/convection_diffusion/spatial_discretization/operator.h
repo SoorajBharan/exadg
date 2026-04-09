@@ -30,6 +30,7 @@
 #include <exadg/convection_diffusion/spatial_discretization/interface.h>
 #include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/combined_operator.h>
+#include <exadg/convection_diffusion/spatial_discretization/operators/rhs_operator.h>
 #include <exadg/convection_diffusion/user_interface/boundary_descriptor.h>
 #include <exadg/convection_diffusion/user_interface/field_functions.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>
@@ -37,7 +38,6 @@
 #include <exadg/matrix_free/matrix_free_data.h>
 #include <exadg/operators/inverse_mass_operator.h>
 #include <exadg/operators/mass_operator.h>
-#include <exadg/operators/rhs_operator.h>
 #include <exadg/operators/solution_transfer.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 
@@ -158,6 +158,7 @@ public:
    */
   void
   rhs(VectorType &       dst,
+      VectorType const & src,
       double const       evaluation_time = 0.0,
       VectorType const * velocity        = nullptr) const final;
 
@@ -446,12 +447,13 @@ private:
    */
   std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
   std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
+  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>>  rhs_kernel;
 
   MassOperator<dim, n_components, Number>        mass_operator;
   InverseMassOperator<dim, n_components, Number> inverse_mass_operator;
   ConvectiveOperator<dim, n_components, Number>     convective_operator;
   DiffusiveOperator<dim, n_components, Number>      diffusive_operator;
-  RHSOperator<dim, Number>            rhs_operator;
+  RHSOperator<dim, Number, n_components>            rhs_operator;
 
   /*
    * Combined operator.

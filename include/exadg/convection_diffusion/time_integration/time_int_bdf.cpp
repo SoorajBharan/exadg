@@ -527,7 +527,7 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
   }
 
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
-  pde_operator->rhs(rhs_vector, this->get_next_time(), &velocity_np);
+  pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
 
   // if the convective term is involved in the equations:
   // add the convective term to the right-hand side of the equations

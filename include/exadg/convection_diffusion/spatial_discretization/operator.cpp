@@ -124,7 +124,7 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
   if(param.right_hand_side)
   {
     matrix_free_data.append_mapping_flags(
-      ExaDG::Operators::RHSKernel<dim, Number>::get_mapping_flags());
+      Operators::RHSKernel<dim, Number>::get_mapping_flags());
   }
 
   if(param.convective_problem())
@@ -286,8 +286,27 @@ Operator<dim, n_components, Number>::setup_operators()
   RHSOperatorData<dim> rhs_operator_data;
   rhs_operator_data.dof_index     = get_dof_index();
   rhs_operator_data.quad_index    = get_quad_index();
-  rhs_operator_data.kernel_data.f = field_functions->right_hand_side;
-  rhs_operator.initialize(*matrix_free, rhs_operator_data);
+
+  Operators::RHSKernelData<dim> rhs_kernel_data;
+  rhs_kernel_data.rans_model = param.turbulence_model_data.is_active;
+  rhs_kernel_data.positivity_preserving_limiter =
+    param.turbulence_model_data.positivity_preserving_limiter;
+  rhs_kernel_data.dof_index_velocity       = get_dof_index_velocity();
+  rhs_kernel_data.dof_index                = get_dof_index();
+  rhs_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
+  rhs_kernel_data.turbulence_model_data    = param.turbulence_model_data;
+  rhs_kernel_data.diffusivity              = param.diffusivity;
+
+  rhs_kernel_data.f = field_functions->right_hand_side;
+
+  rhs_kernel = std::make_shared<Operators::RHSKernel<dim, Number, n_components>>();
+  rhs_kernel->reinit(*matrix_free, rhs_kernel_data, quad_index_convective);
+
+  rhs_operator.initialize(*matrix_free, rhs_operator_data, rhs_kernel);
+  if(param.turbulence_model_data.is_active)
+  {
+    rhs_kernel->turbulence_model_ptr = turbulence_model_ptr;
+  }
 
   // merged operator
   if(param.temporal_discretization == TemporalDiscretization::BDF or
@@ -683,6 +702,12 @@ Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &    
 
     if(param.right_hand_side == true)
     {
+      rhs_operator.set_velocity_ptr(*velocity);
+      rhs_operator.set_solution_ptr(src);
+      if(param.turbulence_model_data.is_active)
+      {
+        rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+      }
       rhs_operator.evaluate_add(dst, time);
     }
   }
@@ -710,6 +735,12 @@ Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &    
 
     if(param.right_hand_side == true)
     {
+      rhs_operator.set_velocity_ptr(*velocity);
+      rhs_operator.set_solution_ptr(src);
+      if(param.turbulence_model_data.is_active)
+      {
+        rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+      }
       rhs_operator.evaluate_add(dst, time);
     }
   }
@@ -738,7 +769,10 @@ Operator<dim, n_components, Number>::evaluate_convective_term(VectorType &      
 
 template<int dim, int n_components, typename Number>
 void
-Operator<dim, n_components, Number>::rhs(VectorType & dst, double const time, VectorType const * velocity) const
+Operator<dim, n_components, Number>::rhs(VectorType & dst,
+                                         VectorType const & src,
+                                         double const time,
+                                         VectorType const * velocity) const
 {
   // no need to set scaling_factor_mass because the mass operator does not contribute to rhs
 
@@ -758,6 +792,12 @@ Operator<dim, n_components, Number>::rhs(VectorType & dst, double const time, Ve
   // rhs operator f(t)
   if(param.right_hand_side == true)
   {
+    rhs_operator.set_velocity_ptr(*velocity);
+    rhs_operator.set_solution_ptr(src);
+    if(param.turbulence_model_data.is_active)
+    {
+      rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+    }
     rhs_operator.evaluate_add(dst, time);
   }
 }

@@ -34,12 +34,13 @@ template<int dim, typename Number, int n_components>
 void
 RHSOperator<dim, Number, n_components>::initialize(
   dealii::MatrixFree<dim, Number> const & matrix_free_in,
-  RHSOperatorData<dim> const &            data_in)
+  RHSOperatorData<dim> const &            data_in,
+  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel_in)
 {
   this->matrix_free = &matrix_free_in;
   this->data        = data_in;
 
-  kernel.reinit(data.kernel_data);
+  this->kernel = kernel_in;
 }
 
 template<int dim, typename Number, int n_components>
@@ -68,7 +69,7 @@ RHSOperator<dim, Number, n_components>::do_cell_integral(IntegratorCell & integr
 {
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
-    integrator.submit_value(kernel.get_volume_flux(integrator, q, time), q);
+    integrator.submit_value(kernel->get_volume_flux(integrator, q, time), q);
   }
 
   integrator.integrate(dealii::EvaluationFlags::values);
@@ -90,10 +91,33 @@ RHSOperator<dim, Number, n_components>::cell_loop(
   {
     integrator.reinit(cell);
 
+    kernel->reinit_cell(cell);
+
     do_cell_integral(integrator);
 
     integrator.distribute_local_to_global(dst);
   }
+}
+
+template<int dim, typename Number, int n_components>
+void
+RHSOperator<dim, Number, n_components>::set_velocity_ptr(VectorType const & velocity_in) const
+{
+  kernel->set_velocity_ptr(velocity_in);
+}
+
+template<int dim, typename Number, int n_components>
+void
+RHSOperator<dim, Number, n_components>::set_eddy_viscosity_ptr(VectorType const & src) const
+{
+  kernel->set_eddy_viscosity_ptr(src);
+}
+
+template<int dim, typename Number, int n_components>
+void
+RHSOperator<dim, Number, n_components>::set_solution_ptr(VectorType const & src) const
+{
+  kernel->set_solution_ptr(src);
 }
 
 template class RHSOperator<2, float, 1>;

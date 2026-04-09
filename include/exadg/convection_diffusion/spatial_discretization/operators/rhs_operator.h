@@ -25,6 +25,9 @@
 #include <exadg/functions_and_boundary_conditions/evaluate_functions.h>
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/mapping_flags.h>
+#include "exadg/utilities/lazy_ptr.h"
+
+#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
 
 namespace ExaDG
 {
@@ -35,9 +38,18 @@ namespace Operators
 template<int dim>
 struct RHSKernelData
 {
+  RHSKernelData() : rans_model(false), positivity_preserving_limiter(PositivityPreservingLimiter::Undefined)
+  {
+  }
   std::shared_ptr<dealii::Function<dim>> f;
 
-  bool rans_model = false;
+  bool                        rans_model;
+  unsigned int                dof_index_eddy_viscosity;
+  unsigned int                dof_index_velocity;
+  unsigned int                dof_index;
+  double                      diffusivity;
+  TurbulenceModelData         turbulence_model_data;
+  PositivityPreservingLimiter positivity_preserving_limiter;
 };
 
 template<int dim, typename Number, int n_components = 1>
@@ -45,17 +57,57 @@ class RHSKernel
 {
 private:
   typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
+  typedef CellIntegrator<dim, dim, Number>                   CellIntegratorVelocity;
+  typedef CellIntegrator<dim, 1, Number>                     CellIntegratorScalar;
 
   using value_type = typename IntegratorCell::value_type;
   using gradient_type = typename IntegratorCell::gradient_type;
 
   typedef dealii::VectorizedArray<Number>   scalar;
 
+  typedef dealii::Tensor<2, dim, scalar> tensor;
+
+  typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+
 public:
   void
   reinit(RHSKernelData<dim> const & data_in) const
   {
     data = data_in;
+  }
+
+  void
+  reinit(dealii::MatrixFree<dim, Number> const & matrix_free_in,
+         RHSKernelData<dim> const &              data_in,
+         unsigned int const                      quad_index)
+  {
+    data = data_in;
+    if(data.rans_model)
+    {
+      integrator_velocity =
+        std::make_shared<CellIntegratorVelocity>(matrix_free_in, data.dof_index_velocity, quad_index);
+      integrator_solution =
+        std::make_shared<IntegratorCell>(matrix_free_in, data.dof_index, quad_index);
+      integrator_eddy_viscosity =
+        std::make_shared<CellIntegratorScalar>(matrix_free_in, data.dof_index_eddy_viscosity, quad_index);
+
+    }
+  }
+
+  void
+  reinit_cell(unsigned int const cell) const
+  {
+    if(data.rans_model)
+    {
+      integrator_velocity->reinit(cell);
+      integrator_velocity->gather_evaluate(*velocity, dealii::EvaluationFlags::gradients);
+
+      integrator_solution->reinit(cell);
+      integrator_solution->gather_evaluate(*solution, dealii::EvaluationFlags::values);
+
+      integrator_eddy_viscosity->reinit(cell);
+      integrator_eddy_viscosity->gather_evaluate(*eddy_viscosity, dealii::EvaluationFlags::values);
+    }
   }
 
   static MappingFlags
@@ -65,7 +117,8 @@ public:
 
     flags.cells = dealii::update_JxW_values |
                   dealii::update_quadrature_points |
-                  dealii::update_values;
+                  dealii::update_values |
+                  dealii::update_gradients;
 
     // no face integrals
 
@@ -97,11 +150,130 @@ public:
       volume_flux = MultiComponentFunctionEvaluator<n_components, dim,  Number>::value(*(data.f), q_points, time);
     }
 
+    if(data.rans_model)
+    {
+      volume_flux += get_production_term(q);
+      volume_flux -= get_dissipation_term(q);
+    }
+
     return volume_flux;
   }
 
+  value_type
+  get_production_term(unsigned int const q) const
+  {
+    if constexpr (n_components >= 2)
+    {
+      scalar viscosity = integrator_eddy_viscosity->get_value(q);
+
+      tensor velocity_gradient = integrator_velocity->get_gradient(q);
+
+      tensor symmetric_velocity_gradient = (velocity_gradient + transpose(velocity_gradient));
+
+      scalar gradient_product = scalar_product(symmetric_velocity_gradient, velocity_gradient);
+
+      value_type solution = integrator_solution->get_value(q);
+
+      scalar C_e1 = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[1]);
+
+      value_type production_term;
+      for(unsigned int c = 0; c < n_components; ++c)
+      {
+        production_term[c] = viscosity * gradient_product;
+      }
+      if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
+      {
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          production_term[0] /= std::exp(solution[0]);
+          production_term[1] *= C_e1 / std::exp(solution[0]);
+        }
+      }
+
+      return production_term;
+    }
+    else {
+      value_type zero_flux = dealii::make_vectorized_array<Number>(0.0);
+      AssertThrow(false, dealii::ExcMessage("Production term for turbulence models with 1 component not yet implemented."));
+      return zero_flux;
+    }
+  }
+
+  value_type
+  get_dissipation_term(unsigned int const q) const
+  {
+    if constexpr (n_components >= 2)
+    {
+      value_type solution = integrator_solution->get_value(q);
+
+      value_type dissipation_term;
+
+      if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
+      {
+        scalar C_e2 = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[2]);
+        scalar C_mu = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[3]);
+
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          dissipation_term[0] = solution[1];
+          dissipation_term[1] = C_e2 * std::exp(solution[1] - solution[0]);
+        }
+
+        return dissipation_term;
+      }
+      else
+      {
+        value_type zero_flux = dealii::make_vectorized_array<Number>(0.0);
+        AssertThrow(false, dealii::ExcMessage("Dissipation term for turbulence models other than StandardKEpsilon not yet implemented."));
+        return zero_flux;
+      }
+    }
+  }
+
+  /*
+   * Function for taking value of velocity from NS solver
+   */
+  void
+  set_velocity_ptr(VectorType const & velocity_in)
+  {
+    velocity.own() = velocity_in;
+    velocity->update_ghost_values();
+  }
+
+  /*
+   * Function for taking value of solution from pde_operator
+   */
+  void
+  set_solution_ptr(VectorType const & sol)
+  {
+    // solution = &sol;
+    solution.own() = sol;
+    solution->update_ghost_values();
+  }
+
+  void
+  set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in)
+  {
+    eddy_viscosity.own() = eddy_viscosity_in;
+    eddy_viscosity->update_ghost_values();
+  }
+
+  std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr;
+
 private:
   mutable RHSKernelData<dim> data;
+
+  mutable lazy_ptr<VectorType> velocity;
+
+  std::shared_ptr<CellIntegratorVelocity> integrator_velocity;
+
+  mutable lazy_ptr<VectorType> solution;
+
+  mutable lazy_ptr<VectorType> eddy_viscosity;
+
+  std::shared_ptr<IntegratorCell> integrator_solution;
+
+  std::shared_ptr<CellIntegratorScalar> integrator_eddy_viscosity;
 };
 
 } // namespace Operators
@@ -143,7 +315,8 @@ public:
    */
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free,
-             RHSOperatorData<dim> const &            data);
+             RHSOperatorData<dim> const &            data,
+             std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel_in);
 
   /*
    * Evaluate operator and overwrite dst-vector.
@@ -156,6 +329,15 @@ public:
    */
   void
   evaluate_add(VectorType & dst, double const evaluation_time) const;
+
+  void
+  set_velocity_ptr(VectorType const & velocity_in) const;
+
+  void
+  set_solution_ptr(VectorType const & src) const;
+
+  void
+  set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in) const;
 
 private:
   void
@@ -177,7 +359,8 @@ private:
 
   mutable double time;
 
-  Operators::RHSKernel<dim, Number, n_components> kernel;
+  // Operators::RHSKernel<dim, Number, n_components> kernel;
+  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel;
 };
 
 } // namespace ConvDiff

@@ -131,7 +131,7 @@ DriverSteadyProblems<Number>::do_solve()
   }
 
   // calculate rhs vector
-  pde_operator->rhs(rhs_vector, 0.0 /* time */, velocity_ptr);
+  pde_operator->rhs(rhs_vector, solution, 0.0 /* time */, velocity_ptr);
 
   // solve linear system of equations
   unsigned int iterations = pde_operator->solve(solution,
