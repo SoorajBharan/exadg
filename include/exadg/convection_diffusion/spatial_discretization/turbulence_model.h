@@ -86,6 +86,9 @@ public:
   dealii::LinearAlgebra::distributed::Vector<Number> const &
   get_eddy_viscosity_ref() const;
 
+  void
+  get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
+
   double       diffusivity;
   unsigned int quad_index;
 
@@ -106,6 +109,12 @@ private:
   void
   standard_k_epsilon_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
                            scalar & viscosity) const;
+
+  void
+  cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & data,
+                        VectorType &,
+                        VectorType const & src,
+                        Range const &      cell_range) const;
 
   TurbulenceModelData                                   turbulence_model_data;
 

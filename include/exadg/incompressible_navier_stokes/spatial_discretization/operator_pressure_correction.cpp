@@ -246,6 +246,15 @@ OperatorPressureCorrection<dim, Number>::local_interpolate_pressure_dirichlet_bc
       integrator.reinit(face);
       integrator.read_dof_values(dst);
 
+      dealii::FEEvaluation<dim, -1, 0, 1, Number> tke_integrator(matrix_free, this->get_dof_index_pressure(), quad_index);
+      bool use_tke = (this->param.turbulence_model_data.rans_model && this->tke != nullptr);
+
+      if (use_tke) 
+      {
+        tke_integrator.reinit(face);
+        tke_integrator.read_dof_values(*(this->tke));
+      }
+
       for(unsigned int q = 0; q < integrator.n_q_points; ++q)
       {
         unsigned int const local_face_number = matrix_free.get_face_info(face).interior_face_no;
@@ -257,6 +266,13 @@ OperatorPressureCorrection<dim, Number>::local_interpolate_pressure_dirichlet_bc
         auto q_points = integrator.quadrature_point(q);
 
         scalar g = FunctionEvaluator<0, dim, Number>::value(*bc, q_points, this->evaluation_time);
+
+        if (use_tke) 
+        {
+          scalar tke = tke_integrator.get_value(q);
+          g += dealii::make_vectorized_array<Number>(2.0 / 3.0) * tke;
+        }
+
         integrator.submit_dof_value(g, index);
       }
 

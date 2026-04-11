@@ -1179,6 +1179,13 @@ Operator<dim, n_components, Number>::get_dof_index_eddy_viscosity() const
   return matrix_free_data->get_dof_index(get_dof_name_eddy_viscosity());
 }
 
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const
+{
+  turbulence_model_ptr->get_turbulent_kinetic_energy(dst, solution);
+}
+
 template class Operator<2, 1, float>;
 template class Operator<2, 1, double>;
 

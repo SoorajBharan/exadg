@@ -1922,6 +1922,13 @@ SpatialOperatorBase<dim, Number>::set_eddy_viscosity(VectorType const & eddy_vis
   turbulence_model.set_eddy_viscosity(eddy_viscosity_in);
 }
 
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::set_turbulent_kinetic_energy(VectorType const & tke_in)
+{
+  this->tke = &tke_in;
+}
+
 template class SpatialOperatorBase<2, float>;
 template class SpatialOperatorBase<3, float>;
 

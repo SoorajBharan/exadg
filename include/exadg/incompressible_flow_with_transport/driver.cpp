@@ -562,7 +562,12 @@ if(rans_enabled)
     matrix_free->initialize_dof_vector(eddy_viscosity, scalar_operator[rans_scalar_index]->get_dof_index_eddy_viscosity());
     scalar_operator[rans_scalar_index]->get_eddy_viscosity(eddy_viscosity);
 
+    VectorType tke;
+    matrix_free->initialize_dof_vector(tke, scalar_operator[rans_scalar_index]->get_dof_index_eddy_viscosity());
+    scalar_operator[rans_scalar_index]->get_turbulent_kinetic_energy(tke, rans_solution_extrapolated);
+
     fluid_operator->set_eddy_viscosity(eddy_viscosity);
+    fluid_operator->set_turbulent_kinetic_energy(tke);
   }
 }
 

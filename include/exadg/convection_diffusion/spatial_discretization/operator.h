@@ -308,6 +308,9 @@ public:
   unsigned int
   get_dof_index_eddy_viscosity() const;
 
+  void
+  get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
+
 private:
   void
   do_setup();

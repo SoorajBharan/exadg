@@ -174,6 +174,58 @@ TurbulenceModel<dim, n_components, Number>::get_eddy_viscosity_ref() const
   return eddy_viscosity;
 }
 
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::get_turbulent_kinetic_energy(VectorType & dst,
+                                                                         VectorType const & solution) const
+{
+  matrix_free->cell_loop(&TurbulenceModel<dim, n_components, Number>::cell_loop_extract_tke,
+                         this,
+                         dst,
+                         solution);
+}
+
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::cell_loop_extract_tke(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType & dst,
+  VectorType const & src,
+  Range const &      cell_range) const
+{
+  if constexpr (n_components < 2)
+  {
+    AssertThrow(false, dealii::ExcMessage("Turbulence Models with 1 component not yet implemented."));
+  }
+
+  IntegratorCell integrator(matrix_free, dof_index, quad_index);
+  IntegratorCellScalar integrator_tke(matrix_free, dof_index_viscosity, quad_index);
+
+  if(turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
+  {
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    {
+      integrator.reinit(cell);
+      integrator.read_dof_values(src);
+
+      integrator_tke.reinit(cell);
+      for(unsigned int dof = 0; dof < integrator_tke.dofs_per_cell; ++dof)
+      {
+        auto solution_values = integrator.get_dof_value(dof);
+        scalar tke = solution_values[0];
+
+        if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          tke = std::exp(tke);
+        }
+
+        integrator_tke.submit_dof_value(tke, dof);
+      }
+      integrator_tke.set_dof_values(dst);
+    }
+  }
+}
+
 template class TurbulenceModel<2, 1, float>;
 template class TurbulenceModel<2, 1, double>;
 template class TurbulenceModel<3, 1, float>;

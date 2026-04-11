@@ -310,7 +310,10 @@ public:
    *  RANS approximation
    */
   void
-  set_eddy_viscosity(VectorType const & eddy_viscosity);
+  set_eddy_viscosity(VectorType const & eddy_viscosity_in);
+
+  void
+  set_turbulent_kinetic_energy(VectorType const & tke_in);
 
   /*
    * Computation of derived quantities which is needed for postprocessing but some of them are also
@@ -616,6 +619,8 @@ protected:
   MPI_Comm const mpi_comm;
 
   dealii::ConditionalOStream pcout;
+
+  mutable VectorType const * tke = nullptr;
 
 private:
   // Minimum element length h_min required for global CFL condition.
