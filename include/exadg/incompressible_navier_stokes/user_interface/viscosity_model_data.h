@@ -45,7 +45,8 @@ enum class TurbulenceEddyViscosityModel
   Vreman,
   WALE,
   Sigma,
-  StandardKEpsilon
+  StandardKEpsilon,
+  StandardKOmega1988
 };
 
 struct TurbulenceModelData

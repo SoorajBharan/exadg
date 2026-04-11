@@ -30,12 +30,20 @@ double start_time        = 0.0;
 double end_time          = 10.0;
 double number_of_outputs = 10.0;
 
+// K-Epsilon Model Coefficients
 double              sigma_k                 = 1.0;
 double              C_D                     = 0.07;
 double              C_epsilon_1             = 1.44;
 double              C_epsilon_2             = 1.92;
 double              C_mu                    = 0.09;
 double              sigma_epsilon           = 1.3;
+
+// K-Omega Model Coefficients
+double alpha      = 5.0 / 9.0;
+double beta       = 3.0 / 40.0;
+double beta_star  = 9.0 / 100.0;
+double sigma      = 1.0 / 2.0;
+double sigma_star = 1.0 / 2.0;
 
 std::vector<double> turbulence_model_coefficients;
 
@@ -134,7 +142,7 @@ private:
     // TURBULENCE
     this->param.turbulence_model_data.is_active = true;
     this->param.turbulence_model_data.rans_model = true;
-    this->param.turbulence_model_data.turbulence_model = IncNS::TurbulenceEddyViscosityModel::StandardKEpsilon;
+    this->param.turbulence_model_data.turbulence_model = IncNS::TurbulenceEddyViscosityModel::StandardKOmega1988;
     this->param.treatment_of_variable_viscosity  = TreatmentOfVariableViscosity::Explicit;
 
     // convective term
@@ -453,12 +461,14 @@ private:
     // TURBULENCE
     this->param.turbulence_model_data.is_active = true;
     this->param.turbulence_model_data.turbulence_model =
-      TurbulenceEddyViscosityModel::StandardKEpsilon;
+      TurbulenceEddyViscosityModel::StandardKOmega1988;
     this->param.treatment_of_variable_viscosity = TreatmentOfVariableViscosity::Explicit;
     this->param.turbulence_model_data.positivity_preserving_limiter =
       ConvDiff::PositivityPreservingLimiter::LogarithmicTransportVariable;
+    // this->param.turbulence_model_data.initialize_and_set_turbulence_coefficients(
+    //  {sigma_k, C_epsilon_1, C_epsilon_2, C_mu, sigma_epsilon});
     this->param.turbulence_model_data.initialize_and_set_turbulence_coefficients(
-     {sigma_k, C_epsilon_1, C_epsilon_2, C_mu, sigma_epsilon});
+     {alpha, beta, beta_star, sigma, sigma_star});
 
     // convective term
     this->param.numerical_flux_convective_operator =

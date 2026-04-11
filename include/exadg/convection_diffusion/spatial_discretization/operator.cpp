@@ -262,6 +262,13 @@ Operator<dim, n_components, Number>::setup_operators()
           1.0 / turbulence_model_ptr->model_coefficients[4]  // 1/sigma_epsilon
         };
       }
+      else if(param.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
+      {
+        diffusive_kernel_data.inverse_sigma = {
+          turbulence_model_ptr->model_coefficients[4], // sigma*
+          turbulence_model_ptr->model_coefficients[3]  // sigma
+        };
+      }
     }
 
     diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();

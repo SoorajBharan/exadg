@@ -225,6 +225,24 @@ public:
           production_term[0] /= std::exp(solution[0]);
           production_term[1] *= C_e1 / std::exp(solution[0]);
         }
+        else if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+        {
+          production_term[1] *= C_e1 * solution[1] / std::max(solution[0], dealii::make_vectorized_array<Number>(1.e-6));
+        }
+      }
+      else if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
+      {
+        scalar alpha = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[0]);
+
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          production_term[0] /= std::exp(solution[0]);
+          production_term[1] *= alpha / std::exp(solution[0]);
+        }
+        else if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+        {
+          production_term[1] *= alpha * solution[1] / std::max(solution[0], dealii::make_vectorized_array<Number>(1.e-6));
+        }
       }
 
       return production_term;
@@ -254,6 +272,27 @@ public:
         {
           dissipation_term[0] = solution[1];
           dissipation_term[1] = C_e2 * std::exp(solution[1] - solution[0]);
+        }
+        else if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+        {
+          dissipation_term[0] = solution[1];
+          dissipation_term[1] = C_e2 * C_mu * solution[1] * solution[1] / std::max(solution[0], dealii::make_vectorized_array<Number>(1.e-6));
+        }
+      }
+      else if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
+      {
+        scalar beta = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[1]);
+        scalar beta_star = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[2]);
+
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          dissipation_term[0] = beta * std::exp(solution[1]);
+          dissipation_term[1] = beta_star * std::exp(solution[1]);
+        }
+        else if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+        {
+          dissipation_term[0] = beta * solution[0] * solution[1];
+          dissipation_term[1] = beta_star * solution[1] * solution[1];
         }
       }
       return dissipation_term;

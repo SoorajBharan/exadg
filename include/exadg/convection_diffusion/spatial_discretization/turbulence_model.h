@@ -111,6 +111,10 @@ private:
                            scalar & viscosity) const;
 
   void
+  standard_k_omega_1988_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
+                              scalar & viscosity) const;
+
+  void
   cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & data,
                         VectorType &,
                         VectorType const & src,

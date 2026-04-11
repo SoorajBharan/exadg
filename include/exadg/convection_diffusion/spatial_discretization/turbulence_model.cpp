@@ -122,6 +122,9 @@ TurbulenceModel<dim, n_components, Number>::evaluate_eddy_viscosity(DataType con
       case TurbulenceEddyViscosityModel::StandardKEpsilon:
         standard_k_epsilon_model(solution_values, viscosity);
         break;
+      case TurbulenceEddyViscosityModel::StandardKOmega1988:
+        standard_k_omega_1988_model(solution_values, viscosity);
+        break;
       case TurbulenceEddyViscosityModel::Undefined:
         AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
         break;
@@ -151,6 +154,31 @@ TurbulenceModel<dim, n_components, Number>::standard_k_epsilon_model(dealii::Ten
   else if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
   {
     viscosity = C_mu * tke * tke / std::max(epsilon, dealii::make_vectorized_array<Number>(1.e-6));
+  }
+  else
+  {
+    AssertThrow(false,
+                dealii::ExcMessage(
+                  "PositivityPreservingLimiter needs to be specified for  calculating viscosity"));
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::standard_k_omega_1988_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
+                                                                        scalar & viscosity) const
+{
+  scalar tke = solution_values[0];
+  scalar omega = solution_values[1];
+
+  if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+  {
+    scalar log_terms = tke - omega;
+    viscosity = std::exp(log_terms);
+  }
+  else if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+  {
+    viscosity = tke / std::max(omega, dealii::make_vectorized_array<Number>(1.e-6));
   }
   else
   {

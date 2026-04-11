@@ -37,7 +37,8 @@ namespace ConvDiff
 enum class TurbulenceEddyViscosityModel
 {
   Undefined,
-  StandardKEpsilon
+  StandardKEpsilon,
+  StandardKOmega1988
 };
 
 enum class VaryingViscosityType
@@ -58,13 +59,12 @@ enum class PositivityPreservingLimiter
 
 struct TurbulenceDataBase
 {
-  TurbulenceDataBase() : sigma_k(1.0)
+  TurbulenceDataBase()
   {
   }
   virtual ~TurbulenceDataBase()
   {
   }
-  double sigma_k;
 
   virtual void
   set_all_coefficients(std::vector<double> const & coefficients) = 0;
@@ -85,10 +85,11 @@ struct TurbulenceDataBase
  */
 struct StandardKEpsilonData : public TurbulenceDataBase
 {
-  StandardKEpsilonData() : C_epsilon_1(1.44), C_epsilon_2(1.92), C_mu(0.09), sigma_epsilon(1.3)
+  StandardKEpsilonData() : sigma_k(1.0), C_epsilon_1(1.44), C_epsilon_2(1.92), C_mu(0.09), sigma_epsilon(1.3)
   {
   }
 
+  double sigma_k;
   double C_epsilon_1;
   double C_epsilon_2;
   double C_mu;
@@ -121,6 +122,45 @@ struct StandardKEpsilonData : public TurbulenceDataBase
   }
 };
 
+struct StandardKOmega1988Data : public TurbulenceDataBase
+{
+  StandardKOmega1988Data() : alpha(0.55), beta(0.075), beta_star(0.09), sigma_star(0.5), sigma(0.5)
+  {
+  }
+
+  double alpha;
+  double beta;
+  double beta_star;
+  double sigma_star;
+  double sigma;
+
+  virtual void
+  set_all_coefficients(std::vector<double> const & coefficients) override
+  {
+    alpha         = coefficients[0];
+    beta          = coefficients[1];
+    beta_star     = coefficients[2];
+    sigma         = coefficients[3];
+    sigma_star    = coefficients[4];
+  }
+
+  virtual std::vector<double>
+  get_all_coefficients() const override
+  {
+    return {alpha, beta, beta_star, sigma, sigma_star};
+  }
+
+  virtual void
+  print_coefficients(dealii::ConditionalOStream const & pcout) const override
+  {
+    print_parameter(pcout, "alpha", alpha);
+    print_parameter(pcout, "beta", beta);
+    print_parameter(pcout, "beta*", beta_star);
+    print_parameter(pcout, "sigma", sigma);
+    print_parameter(pcout, "sigma*", sigma_star);
+  }
+};
+
 struct TurbulenceModelData
 {
   TurbulenceModelData()
@@ -129,8 +169,6 @@ struct TurbulenceModelData
 
   TurbulenceEddyViscosityModel turbulence_model{TurbulenceEddyViscosityModel::Undefined};
   bool                         is_active{false};
-  bool                         production_term{false};
-  bool                         dissipation_term{false};
   PositivityPreservingLimiter positivity_preserving_limiter{PositivityPreservingLimiter::Undefined};
   std::shared_ptr<TurbulenceDataBase> turbulence_data_base;
 
@@ -163,8 +201,6 @@ struct TurbulenceModelData
                   dealii::ExcMessage("Turbulence data base not initialized."));
       print_parameter(pcout, "Turbulence model", turbulence_model);
       print_parameter(pcout, "Positivity preserving limiter", positivity_preserving_limiter);
-      print_parameter(pcout, "Use production term", production_term);
-      print_parameter(pcout, "Use dissipation term", dissipation_term);
       turbulence_data_base->print_coefficients(pcout);
     }
   }
@@ -176,6 +212,9 @@ struct TurbulenceModelData
     {
       case TurbulenceEddyViscosityModel::StandardKEpsilon:
         return std::make_shared<StandardKEpsilonData>();
+        break;
+      case TurbulenceEddyViscosityModel::StandardKOmega1988:
+        return std::make_shared<StandardKOmega1988Data>();
         break;
       case TurbulenceEddyViscosityModel::Undefined:
       default:
