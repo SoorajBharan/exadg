@@ -2,6 +2,7 @@
     "General": {
         "Precision": "double",
         "Dim": "2",
+        "NumberOfComponents": "1",
         "IsTest": "false"
     },
     "SpatialResolution": {
@@ -22,6 +23,6 @@
     "Output": {
         "OutputDirectory": "output/flow_past_cylinder/",
         "OutputName": "2d_3",
-        "WriteOutput": "false"
+        "WriteOutput": "true"
     }
 }

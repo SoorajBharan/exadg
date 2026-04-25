@@ -70,8 +70,9 @@ double output_interval_time = 1.0e-12;
 // PHYSICAL QUANTITIES
 double half_width          = 1.0;
 double channel_height      = 2.0 * half_width;
-double channel_length      = 4.0;
-double kinematic_viscosity = 1e-5;
+double channel_length      = 12.0 * half_width;
+double Re_c                = 3300.0;
+double kinematic_viscosity = 1.0 / Re_c;
 
 // MATHEMATICAL VALUES
 double Re_tau              = 180.0;
@@ -371,11 +372,11 @@ private:
   void
   set_field_functions() final
   {
-    std::vector<double> wall_velocity = std::vector<double>(dim, 0.0);
-    wall_velocity[0]                  = 1.0;
+    std::vector<double> initial_velocity = std::vector<double>(dim, 0.0);
+    initial_velocity[0]                  = 1.0;
 
     this->field_functions->initial_solution_velocity.reset(
-      new dealii::Functions::ConstantFunction<dim>(wall_velocity));
+      new dealii::Functions::ConstantFunction<dim>(initial_velocity));
     this->field_functions->initial_solution_pressure.reset(
       new dealii::Functions::ZeroFunction<dim>(1));
     this->field_functions->analytical_solution_pressure.reset(
