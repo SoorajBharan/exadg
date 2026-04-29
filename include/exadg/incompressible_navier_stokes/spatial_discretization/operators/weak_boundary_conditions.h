@@ -92,7 +92,7 @@ inline DEAL_II_ALWAYS_INLINE //
   // element e⁺
   dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> value_p;
 
-  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached or boundary_type == BoundaryTypeU::WallEnrichment)
   {
     if(operator_type == OperatorType::full or operator_type == OperatorType::inhomogeneous)
     {
@@ -112,6 +112,13 @@ inline DEAL_II_ALWAYS_INLINE //
                                                      integrator.get_current_cell_index(),
                                                      q,
                                                      integrator.get_quadrature_index());
+      }
+      else if(boundary_type == BoundaryTypeU::WallEnrichment)
+      {
+        auto bc       = boundary_descriptor->wall_enrichment_bc.find(boundary_id)->second;
+        auto q_points = integrator.quadrature_point(q);
+
+        g = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, time);
       }
       else
       {
@@ -243,7 +250,7 @@ inline DEAL_II_ALWAYS_INLINE //
   // element e⁺
   dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> value_p;
 
-  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached or boundary_type == BoundaryTypeU::WallEnrichment)
   {
     if(operator_type == OperatorType::full or operator_type == OperatorType::inhomogeneous)
     {
@@ -460,7 +467,7 @@ inline DEAL_II_ALWAYS_INLINE //
 {
   dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> normal_gradient_p;
 
-  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached or boundary_type == BoundaryTypeU::WallEnrichment)
   {
     normal_gradient_p = normal_gradient_m;
   }

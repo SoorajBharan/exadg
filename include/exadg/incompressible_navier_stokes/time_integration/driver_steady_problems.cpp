@@ -157,6 +157,11 @@ DriverSteadyProblems<dim, Number>::do_solve(double const time, bool unsteady_pro
     }
   }
 
+  if(this->param.wall_enrichment_enabled)
+  {
+    pde_operator->update_wall_enrichment_vectors(solution.block(0));
+  }
+
   if(this->param.nonlinear_problem_has_to_be_solved())
   {
     VectorType rhs(solution.block(0));

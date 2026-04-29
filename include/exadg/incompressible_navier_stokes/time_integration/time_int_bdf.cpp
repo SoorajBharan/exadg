@@ -128,6 +128,12 @@ TimeIntBDF<dim, Number>::setup_derived()
       initialize_vec_convective_term();
     }
   }
+
+  // Compute friction velocity for wall function enrichment
+  if(this->param.wall_enrichment_enabled)
+  {
+    this->operator_base->update_wall_enrichment_vectors(get_velocity(0)); 
+  }
 }
 
 template<int dim, typename Number>

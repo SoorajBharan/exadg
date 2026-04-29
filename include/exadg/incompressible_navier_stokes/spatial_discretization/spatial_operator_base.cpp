@@ -199,6 +199,16 @@ SpatialOperatorBase<dim, Number>::initialize_dof_handler_and_constraints()
                   fe_u->n_dofs_per_cell() + fe_p->n_dofs_per_cell());
   print_parameter(pcout, "number of dofs (total)", get_number_of_dofs());
 
+  if(param.wall_enrichment_enabled)
+  {
+   function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
+
+   function_enrichment->initialize_dofs(*grid->triangulation, param.fe_degree_cg);
+
+   pcout << "Wall Function CG Enrichment: Enabled" << std::endl;
+   pcout << "  number of CG dofs (total): " << function_enrichment->get_dof_handler_cg().n_dofs() << std::endl;
+  }
+
   pcout << std::flush;
 }
 
@@ -342,6 +352,19 @@ SpatialOperatorBase<dim, Number>::fill_matrix_free_data(
   matrix_free_data.insert_dof_handler(&dof_handler_p, field + dof_index_p);
   matrix_free_data.insert_dof_handler(&dof_handler_u_scalar, field + dof_index_u_scalar);
 
+  // dof handler for wall enrichment
+  if(param.wall_enrichment_enabled)
+  {
+    auto* cg_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg());
+    auto* cg_linear_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_linear());
+
+    // High-order CG space for velocity
+    matrix_free_data.insert_dof_handler(cg_handler, field + dof_index_cg);
+    // 1st-order linear spaces for distance, stresses, and projected wall velocity
+    matrix_free_data.insert_dof_handler(cg_linear_handler, field + dof_index_cg_scalar);
+    matrix_free_data.insert_dof_handler(cg_linear_handler, field + dof_index_cg_wall);
+  }
+
   // constraint
   matrix_free_data.insert_constraint(&constraint_u, field + dof_index_u);
   matrix_free_data.insert_constraint(&constraint_p, field + dof_index_p);
@@ -394,6 +417,24 @@ void
 SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_index_temperature,
                                                        std::string const & dof_index_eddy_viscosity)
 {
+  // wall enrichment
+  if(param.wall_enrichment_enabled)
+  {
+    unsigned int idx_cg        = matrix_free_data->get_dof_index(field + dof_index_cg);
+    unsigned int idx_cg_wall   = matrix_free_data->get_dof_index(field + dof_index_cg_wall);
+    unsigned int idx_cg_scalar = matrix_free_data->get_dof_index(field + dof_index_cg_scalar);
+
+    function_enrichment->initialize(*matrix_free,
+                                    boundary_descriptor->velocity,
+                                    get_dof_index_velocity(),
+                                    idx_cg,
+                                    idx_cg_wall,
+                                    idx_cg_scalar,
+                                    get_quad_index_velocity_standard());
+
+    function_enrichment->setup_wall_distance(*get_mapping(),
+                                             3); // BFS layers
+  }
   // mass operator
   MassOperatorData<dim> mass_operator_data;
   mass_operator_data.dof_index  = get_dof_index_velocity();
@@ -1927,6 +1968,19 @@ void
 SpatialOperatorBase<dim, Number>::set_turbulent_kinetic_energy(VectorType const & tke_in)
 {
   this->tke = &tke_in;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::update_wall_enrichment_vectors(VectorType const & velocity) const
+{
+  if(param.wall_enrichment_enabled)
+  {
+    function_enrichment->evaluate_friction_velocity(velocity);
+  }
+  else{
+    AssertThrow(false, dealii::ExcMessage("update_wall_enrichment_vectors is only necessary when wall_enrichment_enabled is true"));
+  }
 }
 
 template class SpatialOperatorBase<2, float>;

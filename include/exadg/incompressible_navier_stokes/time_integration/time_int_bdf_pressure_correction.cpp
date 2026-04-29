@@ -878,6 +878,11 @@ TimeIntBDFPressureCorrection<dim, Number>::prepare_vectors_for_next_timestep()
     // no need to move the mesh here since we still have the mesh Omega_{n+1} at this point!
     pde_operator->interpolate_pressure_dirichlet_bc(pressure_dbc[0], this->get_next_time());
   }
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
+  }
 }
 
 template<int dim, typename Number>

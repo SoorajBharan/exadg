@@ -56,6 +56,9 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 #include <exadg/time_integration/interpolate.h>
 
+#include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
+#include <exadg/operators/wall_modelling/function_enrichment.h>
+
 namespace ExaDG
 {
 namespace IncNS
@@ -436,6 +439,9 @@ public:
   void
   distribute_constraint_u(VectorType & velocity) const;
 
+  void
+  update_wall_enrichment_vectors(VectorType const & velocity) const;
+
 protected:
   /*
    * Projection step.
@@ -520,6 +526,13 @@ private:
   std::string const dof_index_u        = "velocity";
   std::string const dof_index_p        = "pressure";
   std::string const dof_index_u_scalar = "velocity_scalar";
+  
+  // DoF index for the enriched velocity field for wal modelling
+  std::string const dof_index_cg       = "cg_velocity";
+  // DoF index for the friction velocity and wall distance for wal modelling
+  std::string const dof_index_cg_scalar= "cg_scalar";
+  // DoF index for the CG with polynomial order 1 for wal modelling
+  std::string const dof_index_cg_wall  = "cg_wall";
 
   std::string const quad_index_u                 = "velocity";
   std::string const quad_index_p                 = "pressure";
@@ -541,6 +554,11 @@ private:
    * Interface coupling
    */
   std::shared_ptr<ContainerInterfaceData<1, dim, double>> interface_data_dirichlet_cached;
+
+  /*
+   * Wall model by Function Enrichment
+   */
+  std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment;
 
 protected:
   /*

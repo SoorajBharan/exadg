@@ -66,7 +66,8 @@ enum class BoundaryTypeU
   Dirichlet,
   DirichletCached,
   Neumann,
-  Symmetry
+  Symmetry,
+  WallEnrichment
 };
 
 enum class BoundaryTypeP
@@ -119,6 +120,7 @@ struct BoundaryDescriptorU
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> symmetry_bc;
 
   // add more types of boundary conditions
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> wall_enrichment_bc;
 
 
   // return the boundary type
@@ -134,6 +136,8 @@ struct BoundaryDescriptorU
       return BoundaryTypeU::Neumann;
     else if(this->symmetry_bc.find(boundary_id) != this->symmetry_bc.end())
       return BoundaryTypeU::Symmetry;
+    else if(this->wall_enrichment_bc.find(boundary_id) != this->wall_enrichment_bc.end())
+      return BoundaryTypeU::WallEnrichment;
 
     AssertThrow(false, dealii::ExcMessage("Boundary type of face is invalid or not implemented."));
 
@@ -157,6 +161,9 @@ struct BoundaryDescriptorU
       counter++;
 
     if(this->symmetry_bc.find(boundary_id) != this->symmetry_bc.end())
+      counter++;
+
+    if(this->wall_enrichment_bc.find(boundary_id) != this->wall_enrichment_bc.end())
       counter++;
 
     if(periodic_boundary_ids.find(boundary_id) != periodic_boundary_ids.end())

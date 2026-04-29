@@ -416,6 +416,11 @@ public:
   TurbulenceModelData           turbulence_model_data;
   GeneralizedNewtonianModelData generalized_newtonian_model_data;
 
+  // Wall Modelling by function enrichment
+  bool wall_enrichment_enabled;
+  // Polynomial order for CG space
+  unsigned int fe_degree_cg;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                              NUMERICAL PARAMETERS                                  */

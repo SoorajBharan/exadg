@@ -217,7 +217,11 @@ Parameters::Parameters()
     preconditioner_pressure_block(SchurComplementPreconditioner::PressureConvectionDiffusion),
     multigrid_data_pressure_block(MultigridData()),
     exact_inversion_of_laplace_operator(false),
-    solver_data_pressure_block(SolverData(1e4, 1.e-12, 1.e-6, 100))
+    solver_data_pressure_block(SolverData(1e4, 1.e-12, 1.e-6, 100)),
+     
+    // Wall Function
+    wall_enrichment_enabled(false),
+    fe_degree_cg(1)
 {
 }
 

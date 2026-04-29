@@ -504,6 +504,11 @@ TimeIntBDFCoupled<dim, Number>::prepare_vectors_for_next_timestep()
 
   push_back(solution);
   solution[0].swap(solution_np);
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
+  }
 }
 
 template<int dim, typename Number>

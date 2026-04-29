@@ -16,6 +16,7 @@
 
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/wall_modelling/wall_law_evaluator.h>
+#include <exadg/incompressible_navier_stokes/user_interface/boundary_descriptor.h>
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/point.h>
@@ -51,7 +52,8 @@ public:
    * Must be called before initialize().
    */
   void
-  initialize_dofs(dealii::Triangulation<dim> const & triangulation);
+  initialize_dofs(dealii::Triangulation<dim> const & triangulation,
+                  unsigned int fe_degree_cg);
 
   // ──  link to MatrixFree and allocate vectors ──────────────────
   /**
@@ -60,29 +62,25 @@ public:
    */
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free_in,
+             std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
              unsigned int                            dof_index_in,
              unsigned int                            dof_index_cg_in,
              unsigned int                            dof_index_cg_wall_in,
              unsigned int                            dof_index_cg_scalar_in,
              unsigned int                            quad_index_in);
 
-  // ── Phase 1c: compute wall distances and node pairings ─────────────────
+  // ──  compute wall distances and node pairings ─────────────────
   /**
-   * Computes the nodal wall distances y_B (eq. 6.13) for all DoFs within
-   * @p layers topological cell-layers from the wall boundaries listed in
-   * @p wall_boundary_ids.
+   * Computes the nodal wall distances y_B  for all DoFs within
+   * enriched layers 
    *
    * Also builds the node_to_wall_node pairing (off-wall node → nearest wall
-   * node) used every time step to propagate u_τ.
+   * node) used every time step to propagate u_{\tau}
    *
-   * Wall DoF coordinates are gathered via MPI_Allgather so every rank has
-   * the complete picture, fixing the parallel correctness gap in the original
-   * implementation.
    */
   void
-  setup_wall_distance(dealii::Mapping<dim> const &                    mapping,
-                      std::vector<dealii::types::boundary_id> const & wall_boundary_ids,
-                      unsigned int                                    layers = 3);
+  setup_wall_distance(dealii::Mapping<dim> const &                          mapping,
+                      unsigned int                                          layers = 3);
 
   void
   evaluate_friction_velocity(VectorType const & velocity);
@@ -90,6 +88,24 @@ public:
   // ── Accessors ──────────────────────────────────────────────────────────
   dealii::DoFHandler<dim> const &
   get_dof_handler_cg() const;
+
+  dealii::DoFHandler<dim> const & 
+  get_dof_handler_cg_linear() const;
+
+  unsigned int
+  get_dof_index_dg() const;
+
+  unsigned int
+  get_dof_index_cg() const;
+
+  unsigned int
+  get_dof_index_cg_wall() const;
+
+  unsigned int 
+  get_dof_index_cg_scalar() const;
+
+  unsigned int
+  get_quad_index() const;
 
   typename FunctionEnrichment<dim, Number>::scalar
   get_value(scalar const u_tau,
@@ -100,8 +116,8 @@ public:
                scalar const y) const;
 
   // ── Public output vectors (CG layout, index = dof_index_cg) ───────────
-  VectorType wall_distance;     ///< y_B  – shortest distance to nearest wall node (eq. 6.13)
-  VectorType friction_velocity; ///< u_τ,B – sqrt(τ_w / ρ) at every near-wall node
+  VectorType wall_distance;
+  VectorType friction_velocity;
 
   VectorType wall_velocity;
 
@@ -124,20 +140,11 @@ private:
 
   /**
    * Inner face loop called by evaluate_friction_velocity.
-   * Integrates ν ∇u · n against CG shape functions on wall boundary faces
-   * and accumulates into @p traction_num (dim components) and @p traction_den.
    */
   void
   integrate_wall_traction(
     std::array<VectorType, dim> &             traction_num,
     VectorType &                              traction_den) const;
-
-  void
-  local_wall_traction_integral(
-    dealii::MatrixFree<dim, Number> const & data,
-    TractionVectors &                       dst,
-    VectorType const &                      velocity,
-    std::pair<unsigned int, unsigned int> const & face_range) const;
 
   void 
   local_integrate_wall_traction(
@@ -163,13 +170,17 @@ private:
   unsigned int quad_index;
 
   // ── Physical constants ──────────────────────────────────────────────────
-  double kinematic_viscosity; ///< ν
-  double kappa;               ///< von Kármán constant ≈ 0.41
+  double kinematic_viscosity; ///< \nu
+  double kappa;               ///< von Karman constant ≈ 0.41
   double beta;                ///< log-law intercept ≈ 5.2
 
   // ── CG finite-element infrastructure ───────────────────────────────────
-  dealii::FE_Q<dim>       fe_cg;         ///< Q1 continuous element (m = 1)
+  std::unique_ptr<dealii::FE_Q<dim>>       fe_cg;         ///< Q1 continuous element 
   dealii::DoFHandler<dim> dof_handler_cg;
+
+  std::unique_ptr<dealii::FE_Q<dim>>       fe_cg_linear;
+  dealii::DoFHandler<dim> dof_handler_cg_linear;
+
 
   // ── Wall boundary data (stored for re-use in evaluate_friction_velocity) ─
   std::vector<dealii::types::boundary_id> wall_boundary_ids_;
@@ -178,6 +189,8 @@ private:
   std::map<dealii::types::global_dof_index, dealii::types::global_dof_index> node_to_wall_node;
 
   WallLawEvaluator<dim, Number> wall_law_eval;
+
+  std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor;
 };
 
 } // namespace ExaDG

@@ -909,6 +909,11 @@ TimeIntBDFDualSplitting<dim, Number>::prepare_vectors_for_next_timestep()
   // Note that velocity_dbc_np has already been updated.
   push_back(velocity_dbc);
   velocity_dbc[0].swap(velocity_dbc_np);
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
+  }
 }
 
 template<int dim, typename Number>

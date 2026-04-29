@@ -37,7 +37,6 @@ FunctionEnrichment<dim, Number>::FunctionEnrichment(double kinematic_viscosity_i
   , kinematic_viscosity(kinematic_viscosity_in)
   , kappa(0.41)
   , beta(5.2)
-  , fe_cg(1)        // Q1 continuous (m = 1 as in Section 6.3.2.4)
   , dof_handler_cg()
 {}
 
@@ -49,10 +48,17 @@ FunctionEnrichment<dim, Number>::FunctionEnrichment(double kinematic_viscosity_i
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::initialize_dofs(
-  dealii::Triangulation<dim> const & triangulation)
+  dealii::Triangulation<dim> const & triangulation,
+  unsigned int fe_degree_cg)
 {
+  fe_cg = std::make_unique<dealii::FE_Q<dim>>(fe_degree_cg);
+  
   dof_handler_cg.reinit(triangulation);
-  dof_handler_cg.distribute_dofs(fe_cg);
+  dof_handler_cg.distribute_dofs(*fe_cg);
+
+  fe_cg_linear = std::make_unique<dealii::FE_Q<dim>>(1);
+  dof_handler_cg_linear.reinit(triangulation);
+  dof_handler_cg_linear.distribute_dofs(*fe_cg_linear);
 }
 
 
@@ -64,6 +70,7 @@ template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const & matrix_free_in,
+  std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
   unsigned int                            dof_index_dg_in,
   unsigned int                            dof_index_cg_in,
   unsigned int                            dof_index_cg_wall_in,
@@ -71,6 +78,9 @@ FunctionEnrichment<dim, Number>::initialize(
   unsigned int                            quad_index_in)
 {
   matrix_free  = &matrix_free_in;
+
+  this->boundary_descriptor = boundary_descriptor_in;
+
   dof_index_dg = dof_index_dg_in;
   dof_index_cg = dof_index_cg_in;
   dof_index_cg_wall = dof_index_cg_wall_in;
@@ -98,9 +108,8 @@ FunctionEnrichment<dim, Number>::initialize(
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::setup_wall_distance(
-  dealii::Mapping<dim> const &                    mapping,
-  std::vector<dealii::types::boundary_id> const & wall_boundary_ids,
-  unsigned int                                    layers)
+  dealii::Mapping<dim> const &                           mapping,
+  unsigned int                                           layers)
 {
   // Initialize to a large number so freestream cells don't default to 0.0
   wall_distance = 1e10; 
@@ -127,7 +136,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
         {
           auto bid = cell->face(face)->boundary_id();
           // Check if the boundary is a wall boundary
-          if(std::find(wall_boundary_ids.begin(), wall_boundary_ids.end(), bid) != wall_boundary_ids.end())
+          if(boundary_descriptor->get_boundary_type(bid) == IncNS::BoundaryTypeU::WallEnrichment)
           {
             current_layer.insert(cell);
             all_near_wall_cells.insert(cell);
@@ -240,6 +249,7 @@ FunctionEnrichment<dim, Number>::project_velocity_to_wall(VectorType const & src
   wall_velocity.update_ghost_values();
 }
 
+// This function projects the DG solution over CG space
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
@@ -266,7 +276,7 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
 
     cg_eval.reinit(cell);
 
-   // Numerator: ∫ u_dg · φ_i dΩ
+   // Numerator
    for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
    {
     cg_eval.submit_value(dg_eval.get_value(q), q);
@@ -274,7 +284,7 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
    cg_eval.integrate(dealii::EvaluationFlags::values);
    cg_eval.distribute_local_to_global(*dst.first);
 
-   // Denominator: ∫ 1 · φ_i dΩ  (lumped mass)
+   // Denominator
    cg_eval.reinit(cell);
    for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
    {
@@ -290,7 +300,7 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
 //  Private helper – integrate_wall_traction
 //
 //  Loops over all locally owned boundary cells and, for each wall face,
-//  evaluates τ_w = ν ∇u · n at face quadrature points using the DG velocity
+//  evaluates \tau_w = \nu \nabla u \cdot n at face quadrature points using the DG velocity
 //  and accumulates
 //
 //    traction_num[d][B] += \int_{\partial \Omega} N_B^{cg}  \nu (\nabla u \cdot n)_d \, dA
@@ -343,7 +353,7 @@ void FunctionEnrichment<dim, Number>::local_integrate_wall_traction(
     auto boundary_id = matrix_free_data.get_boundary_id(face);
     
     // Check if this macro-face is on our specified wall boundary
-    if (std::find(wall_boundary_ids_.begin(), wall_boundary_ids_.end(), boundary_id) != wall_boundary_ids_.end())
+    if (boundary_descriptor->get_boundary_type(boundary_id) == IncNS::BoundaryTypeU::WallEnrichment)
     {
       // Evaluate the DG velocity and its gradients exactly on the face
       u_wall.reinit(face);
@@ -429,7 +439,8 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
     if (den > 1e-14) 
     {
       dealii::Tensor<1, dim> tau_w_B;
-      for (unsigned int d = 0; d < dim; ++d) {
+      for (unsigned int d = 0; d < dim; ++d) 
+      {
         tau_w_B[d] = traction_num[d][global_node] / den;
       }
 
@@ -483,6 +494,13 @@ FunctionEnrichment<dim, Number>::get_dof_handler_cg() const
 }
 
 template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
+FunctionEnrichment<dim, Number>::get_dof_handler_cg_linear() const
+{
+  return dof_handler_cg_linear;
+}
+
+template<int dim, typename Number>
 typename FunctionEnrichment<dim, Number>::scalar
 FunctionEnrichment<dim, Number>::get_value(
   scalar const u_tau,
@@ -513,6 +531,40 @@ FunctionEnrichment<dim, Number>::get_gradient(
   return du_dy_physical;
 }
 
+template<int dim, typename Number>
+unsigned int 
+FunctionEnrichment<dim, Number>::get_dof_index_dg() const
+{
+  return dof_index_dg;
+}
+
+template<int dim, typename Number>
+unsigned int 
+FunctionEnrichment<dim, Number>::get_dof_index_cg() const
+{
+  return dof_index_cg;
+}
+
+template<int dim, typename Number>
+unsigned int 
+FunctionEnrichment<dim, Number>::get_dof_index_cg_scalar() const
+{
+  return dof_index_cg_scalar;
+}
+
+template<int dim, typename Number>
+unsigned int 
+FunctionEnrichment<dim, Number>::get_dof_index_cg_wall() const
+{
+  return dof_index_cg_wall;
+}
+
+template<int dim, typename Number>
+unsigned int 
+FunctionEnrichment<dim, Number>::get_quad_index() const
+{
+  return quad_index;
+}
 
 template class FunctionEnrichment<2, float>;
 template class FunctionEnrichment<2, double>;

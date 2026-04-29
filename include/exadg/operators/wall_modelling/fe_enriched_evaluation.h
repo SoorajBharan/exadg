@@ -18,6 +18,7 @@
 #include <deal.II/base/vectorization.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/matrix_free/matrix_free.h>
+#include <deal.II/matrix_free/evaluation_flags.h>
 #include <utility>
 
 #include <exadg/operators/wall_modelling/function_enrichment.h>
@@ -47,30 +48,22 @@ public:
 
   // Constructor for CellIntegrator
   FEEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
-                       FunctionEnrichment<dim, Number> const & enrichment_in,
-                       unsigned int dof_dg,
-                       unsigned int dof_cg,
-                       unsigned int dof_cg_scalar,
-                       unsigned int quad_index)
-    : phi_dg(mf, dof_dg, quad_index),
-    phi_cg(mf, dof_cg, quad_index),
-    y_eval(mf, dof_cg_scalar, quad_index),
-    utau_eval(mf, dof_cg_scalar, quad_index),
+                       FunctionEnrichment<dim, Number> const & enrichment_in)
+    : phi_dg(mf, enrichment_in.get_dof_index_dg(), enrichment_in.get_quad_index()),
+    phi_cg(mf, enrichment_in.get_dof_index_cg(), enrichment_in.get_quad_index()),
+    y_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
+    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
     enrichment(&enrichment_in),
     n_q_points(phi_dg.n_q_points) {}
 
   // Constructor for FaceIntegrator (needs the inner_face boolean)
   FEEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
                        FunctionEnrichment<dim, Number> const & enrichment_in,
-                       bool inner_face,
-                       unsigned int dof_dg,
-                       unsigned int dof_cg,
-                       unsigned int dof_cg_scalar,
-                       unsigned int quad_index)
-    : phi_dg(mf, inner_face, dof_dg, quad_index),
-    phi_cg(mf, inner_face, dof_cg, quad_index),
-    y_eval(mf, dof_cg_scalar, quad_index),
-    utau_eval(mf, dof_cg_scalar, quad_index),
+                       bool inner_face)
+    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_dg(), enrichment_in.get_quad_index()),
+    phi_cg(mf, inner_face, enrichment_in.get_dof_index_cg(), enrichment_in.get_quad_index()),
+    y_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
+    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
     enrichment(&enrichment_in),
     n_q_points(phi_dg.n_q_points) {}
 
@@ -94,7 +87,7 @@ public:
     utau_eval.read_dof_values(enrichment->friction_velocity);
   }
 
-  void evaluate(dealii::EvaluationFlags::Flags flags)
+  void evaluate(dealii::EvaluationFlags::EvaluationFlags flags)
   {
     phi_dg.evaluate(flags);
     phi_cg.evaluate(flags);
@@ -103,10 +96,11 @@ public:
     utau_eval.evaluate(dealii::EvaluationFlags::values);
   }
 
-  void integrate(dealii::EvaluationFlags::Flags flags)
+  void integrate(dealii::EvaluationFlags::EvaluationFlags flags)
   {
     phi_dg.integrate(flags);
-    phi_cg.integrate(flags);
+    phi_cg.integrate(dealii::EvaluationFlags::values |
+                     dealii::EvaluationFlags::gradients);
   }
 
   value_type get_value(unsigned int q) const
@@ -139,7 +133,7 @@ public:
     // Wall normal vector
     vector grad_y = y_eval.get_gradient(q);
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector normal = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector normal = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi = enrichment->get_value(utau, y);
     scalar grad_psi = enrichment->get_gradient(utau, y);
@@ -155,7 +149,7 @@ public:
     vector grad_y = y_eval.get_gradient(q);
 
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector normal = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector normal = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi       = enrichment->get_value(utau, y);
     scalar grad_psi  = enrichment->get_gradient(utau, y);
@@ -175,7 +169,7 @@ public:
 
     vector grad_y = y_eval.get_gradient(q);
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector n_wall = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector n_wall = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi        = enrichment->get_value(utau, y);
     scalar grad_psi_y = enrichment->get_gradient(utau, y);
@@ -207,7 +201,7 @@ public:
     
     vector grad_y = y_eval.get_gradient(q);
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector normal = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector normal = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi      = enrichment->get_value(utau, y);
     scalar grad_psi = enrichment->get_gradient(utau, y);
@@ -228,7 +222,7 @@ public:
     
     vector grad_y = y_eval.get_gradient(q);
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector normal = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector normal = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi      = enrichment->get_value(utau, y);
     scalar grad_psi = enrichment->get_gradient(utau, y);
@@ -248,7 +242,7 @@ public:
 
     vector grad_y = y_eval.get_gradient(q);
     scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
-    vector n_wall = grad_y / dealii::max(grad_y.norm(), epsilon);
+    vector n_wall = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi        = enrichment->get_value(utau, y);
     scalar grad_psi_y = enrichment->get_gradient(utau, y);
@@ -265,7 +259,7 @@ public:
   }
 
   // Integrate and Scatter to BOTH global matrices safely
-  void integrate_scatter(dealii::EvaluationFlags::Flags flags,
+  void integrate_scatter(dealii::EvaluationFlags::EvaluationFlags flags,
                          std::pair<VectorType*, VectorType*> & dst)
   {
     phi_dg.integrate_scatter(flags, *(dst.first));
