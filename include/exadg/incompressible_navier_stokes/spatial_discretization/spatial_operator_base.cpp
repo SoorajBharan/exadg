@@ -20,6 +20,7 @@
  */
 
 // deal.II
+#include "spatial_operator_base.h"
 #include <deal.II/numerics/vector_tools.h>
 
 // ExaDG
@@ -1434,6 +1435,15 @@ unsigned int
 SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(VectorType &       dst,
                                                               VectorType const & src) const
 {
+  if(param.wall_enrichment_enabled)
+  {
+    // dst = \bar{U}
+    // src = \bar{R}
+    function_enrichment->apply_schur_inverse_mass(dst,
+                                                  function_enrichment->enrichment_velocity,
+                                                  src,
+                                                  function_enrichment->enrichment_residual);
+  }
   if(param.spatial_discretization == SpatialDiscretization::L2)
   {
     inverse_mass_velocity.apply(dst, src);
@@ -1980,6 +1990,16 @@ SpatialOperatorBase<dim, Number>::update_wall_enrichment_vectors(VectorType cons
   }
   else{
     AssertThrow(false, dealii::ExcMessage("update_wall_enrichment_vectors is only necessary when wall_enrichment_enabled is true"));
+  }
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::precompute_schur_matrices() const
+{
+  if(param.wall_enrichment_enabled)
+  {
+    function_enrichment->precompute_schur_matrices();
   }
 }
 

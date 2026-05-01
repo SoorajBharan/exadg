@@ -26,6 +26,7 @@
 #include <exadg/incompressible_navier_stokes/user_interface/parameters.h>
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/operator_base.h>
+#include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
 
 namespace ExaDG
 {
@@ -53,6 +54,8 @@ struct ConvectiveKernelData
   TypeDirichletBCs type_dirichlet_bc;
 
   bool ale;
+
+  bool wall_enrichment_enabled;
 };
 
 template<int dim, typename Number>
@@ -864,8 +867,6 @@ struct ConvectiveOperatorData : public OperatorBaseData
 
   std::shared_ptr<BoundaryDescriptorU<dim> const> bc;
 };
-
-
 
 template<int dim, typename Number>
 class ConvectiveOperator : public OperatorBase<dim, Number, dim>

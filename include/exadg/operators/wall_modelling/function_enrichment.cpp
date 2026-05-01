@@ -51,7 +51,7 @@ FunctionEnrichment<dim, Number>::initialize_dofs(
   dealii::Triangulation<dim> const & triangulation,
   unsigned int fe_degree_cg)
 {
-  fe_cg = std::make_unique<dealii::FE_Q<dim>>(fe_degree_cg);
+  fe_cg = std::make_unique<dealii::FE_DGQ<dim>>(fe_degree_cg);
   
   dof_handler_cg.reinit(triangulation);
   dof_handler_cg.distribute_dofs(*fe_cg);
@@ -91,8 +91,245 @@ FunctionEnrichment<dim, Number>::initialize(
   matrix_free->initialize_dof_vector(wall_distance,     dof_index_cg_scalar);
   matrix_free->initialize_dof_vector(friction_velocity, dof_index_cg_scalar);
   matrix_free->initialize_dof_vector(wall_velocity,     dof_index_cg_wall);
+
+  matrix_free->initialize_dof_vector(enrichment_velocity, dof_index_cg);
+  matrix_free->initialize_dof_vector(enrichment_residual, dof_index_cg);
 }
 
+// Helper lambda for general SIMD matrix inversion(Gauss Jordan Elimination)
+template<int dim, typename Number>
+std::vector<std::vector<dealii::VectorizedArray<Number>>>
+FunctionEnrichment<dim, Number>::invert_matrix_simd(std::vector<std::vector<dealii::VectorizedArray<Number>>> M, unsigned int n) 
+{
+  std::vector<std::vector<scalar>> M_copy = M;
+  std::vector<std::vector<dealii::VectorizedArray<Number>>> inv(n, std::vector<dealii::VectorizedArray<Number>>(n, dealii::make_vectorized_array<Number>(0.0)));
+  for (unsigned int i = 0; i < n; ++i)
+  {
+    inv[i][i] = dealii::make_vectorized_array<Number>(1.0);
+  }
+  for (unsigned int i = 0; i < n; ++i) 
+  {
+    auto pivot = dealii::make_vectorized_array<Number>(1.0) / M_copy[i][i];
+    for (unsigned int j = 0; j < n; ++j) 
+    {
+      M_copy[i][j] *= pivot; inv[i][j] *= pivot; 
+    }
+    for (unsigned int k = 0; k < n; ++k) 
+    {
+      if (k != i) 
+      {
+        auto factor = M_copy[k][i];
+        for (unsigned int j = 0; j < n; ++j) 
+        {
+          M_copy[k][j] -= factor * M_copy[i][j];
+          inv[k][j] -= factor * inv[i][j];
+        }
+      }
+    }
+  }
+  return inv;
+}
+
+// ============================================================================
+//   Precompute Schur Matrices
+// ============================================================================
+template<int dim, typename Number>
+void 
+FunctionEnrichment<dim, Number>::precompute_schur_matrices()
+{
+  // FIX 1: n_cell_batches() replaces n_macro_cells()
+  const unsigned int n_batches = matrix_free->n_cell_batches();
+  cell_schur_data.resize(n_batches);
+
+  dealii::FEEvaluation<dim, -1, 0, 1, Number> phi_dg(*matrix_free, dof_index_dg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, 1, Number> phi_cg(*matrix_free, dof_index_cg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, 1, Number> y_eval(*matrix_free, dof_index_cg_scalar, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, 1, Number> utau_eval(*matrix_free, dof_index_cg_scalar, quad_index);
+
+  const unsigned int n_dg = phi_dg.dofs_per_cell;
+  const unsigned int n_cg = phi_cg.dofs_per_cell;
+
+  for (unsigned int cell = 0; cell < n_batches; ++cell)
+  {
+    phi_dg.reinit(cell);
+    phi_cg.reinit(cell);
+    y_eval.reinit(cell);
+    utau_eval.reinit(cell);
+
+    y_eval.read_dof_values_plain(wall_distance);
+    utau_eval.read_dof_values_plain(friction_velocity);
+    y_eval.evaluate(dealii::EvaluationFlags::values);
+    utau_eval.evaluate(dealii::EvaluationFlags::values);
+
+    // FIX 2: Evaluate Shape Functions by submitting unit vectors!
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> N_cg(n_cg, std::vector<dealii::VectorizedArray<Number>>(phi_cg.n_q_points));
+    for(unsigned int i=0; i<n_cg; ++i) 
+    {
+      for(unsigned int d=0; d<n_cg; ++d)
+      {
+        phi_cg.submit_dof_value(dealii::make_vectorized_array<Number>((d==i)?1.0:0.0), d);
+      }
+      phi_cg.evaluate(dealii::EvaluationFlags::values);
+      for(unsigned int q=0; q<phi_cg.n_q_points; ++q)
+      {
+        N_cg[i][q] = phi_cg.get_value(q);
+      }
+    }
+
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> N_dg(n_dg, std::vector<dealii::VectorizedArray<Number>>(phi_dg.n_q_points));
+    for(unsigned int i=0; i<n_dg; ++i) 
+    {
+      for(unsigned int d=0; d<n_dg; ++d) 
+      {
+        phi_dg.submit_dof_value(dealii::make_vectorized_array<Number>((d==i)?1.0:0.0), d);
+      }
+      phi_dg.evaluate(dealii::EvaluationFlags::values);
+      for(unsigned int q=0; q<phi_dg.n_q_points; ++q)
+      {
+        N_dg[i][q] = phi_dg.get_value(q);
+      }
+    }
+
+    // Allocate SIMD Matrices
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde(n_cg, std::vector<dealii::VectorizedArray<Number>>(n_cg, dealii::make_vectorized_array<Number>(0.0)));
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde(n_dg, std::vector<dealii::VectorizedArray<Number>>(n_cg, dealii::make_vectorized_array<Number>(0.0)));
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar(n_dg, std::vector<dealii::VectorizedArray<Number>>(n_dg, dealii::make_vectorized_array<Number>(0.0)));
+
+    for (unsigned int q = 0; q < phi_dg.n_q_points; ++q)
+    {
+      auto y    = y_eval.get_value(q);
+      auto utau = utau_eval.get_value(q);
+      auto psi  = get_value(utau, y); 
+      auto JxW  = phi_dg.JxW(q);
+
+      for (unsigned int i = 0; i < n_cg; ++i) 
+      {
+        for (unsigned int j = 0; j < n_cg; ++j)
+        {
+          M_tilde_tilde[i][j] += (psi * N_cg[i][q]) * (psi * N_cg[j][q]) * JxW;
+        }
+        for (unsigned int j = 0; j < n_dg; ++j)
+        {
+          M_bar_tilde[j][i] += N_dg[j][q] * (psi * N_cg[i][q]) * JxW;
+        }
+      }
+      for (unsigned int i = 0; i < n_dg; ++i) 
+      {
+        for (unsigned int j = 0; j < n_dg; ++j)
+        {
+          M_bar_bar[i][j] += N_dg[i][q] * N_dg[j][q] * JxW;
+        }
+      }
+    }
+
+    // FIX 3: Explicitly Invert M_bar_bar to bypass missing MatrixFree API
+    auto M_bar_inverse = invert_matrix_simd(M_bar_bar, n_dg);
+
+    // Compute S = M_tilde_tilde - M_tilde_bar * (M_bar_bar^-1 * M_bar_tilde)
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> S = M_tilde_tilde;
+    for(unsigned int i=0; i<n_cg; ++i) 
+    {
+      for(unsigned int j=0; j<n_cg; ++j) 
+      {
+        dealii::VectorizedArray<Number> sum = dealii::make_vectorized_array<Number>(0.0);
+        for(unsigned int k=0; k<n_dg; ++k) 
+        {
+          for(unsigned int l=0; l<n_dg; ++l) 
+          {
+            sum += M_bar_tilde[k][i] * M_bar_inverse[k][l] * M_bar_tilde[l][j]; // transpose handling
+          }
+        }
+        S[i][j] -= sum;
+      }
+    }
+
+    cell_schur_data[cell].M_Vbar_Utilde  = M_bar_tilde;
+    cell_schur_data[cell].M_Vbar_inverse = M_bar_inverse;
+    cell_schur_data[cell].Schur_inverse  = invert_matrix_simd(S, n_cg);
+  }
+}
+
+// ============================================================================
+//   Apply Schur Inverse Mass
+// ============================================================================
+template<int dim, typename Number>
+void 
+FunctionEnrichment<dim, Number>::apply_schur_inverse_mass(
+                                VectorType & dst_bar,
+                                VectorType & dst_tilde,
+                                VectorType const & src_bar,
+                                VectorType const & src_tilde) const
+{
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(*matrix_free, dof_index_dg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_cg(*matrix_free, dof_index_cg, quad_index);
+
+  const unsigned int n_dg = phi_dg.dofs_per_cell;
+  const unsigned int n_cg = phi_cg.dofs_per_cell;
+  const unsigned int n_batches = matrix_free->n_cell_batches();
+
+  // Create a zeroed-out Tensor to safely initialize our arrays
+  using TensorType = dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>;
+  TensorType zero_tensor;
+  for (unsigned int d = 0; d < dim; ++d) {
+    zero_tensor[d] = dealii::make_vectorized_array<Number>(0.0);
+  }
+
+  for (unsigned int cell = 0; cell < n_batches; ++cell)
+  {
+    phi_dg.reinit(cell);
+    phi_cg.reinit(cell);
+
+    phi_dg.read_dof_values_plain(src_bar);
+    phi_cg.read_dof_values_plain(src_tilde);
+
+    // Grab the right hand sides as Velocity Tensors
+    std::vector<TensorType> R_bar(n_dg);
+    for(unsigned int i=0; i<n_dg; ++i) R_bar[i] = phi_dg.get_dof_value(i);
+
+    std::vector<TensorType> R_tilde(n_cg);
+    for(unsigned int i=0; i<n_cg; ++i) R_tilde[i] = phi_cg.get_dof_value(i);
+
+    auto const & M_bar_tilde   = cell_schur_data[cell].M_Vbar_Utilde;
+    auto const & M_bar_inverse = cell_schur_data[cell].M_Vbar_inverse;
+    auto const & S_inv         = cell_schur_data[cell].Schur_inverse;
+
+    // --- STEP 1: U_tilde ---
+    std::vector<TensorType> M_inv_R_bar(n_dg, zero_tensor);
+    for(unsigned int i=0; i<n_dg; ++i) {
+      for(unsigned int j=0; j<n_dg; ++j) M_inv_R_bar[i] += M_bar_inverse[i][j] * R_bar[j];
+    }
+
+    std::vector<TensorType> coupling(n_cg, zero_tensor);
+    for(unsigned int i=0; i<n_cg; ++i) {
+      for(unsigned int j=0; j<n_dg; ++j) coupling[i] += M_bar_tilde[j][i] * M_inv_R_bar[j];
+    }
+
+    std::vector<TensorType> U_tilde(n_cg, zero_tensor);
+    for(unsigned int i=0; i<n_cg; ++i) {
+      auto diff = R_tilde[i] - coupling[i];
+      for(unsigned int j=0; j<n_cg; ++j) U_tilde[i] += S_inv[i][j] * diff;
+    }
+
+    // --- STEP 2: U_bar ---
+    std::vector<TensorType> diff_bar(n_dg, zero_tensor);
+    for(unsigned int i=0; i<n_dg; ++i) {
+      diff_bar[i] = R_bar[i];
+      for(unsigned int j=0; j<n_cg; ++j) diff_bar[i] -= M_bar_tilde[i][j] * U_tilde[j];
+    }
+
+    std::vector<TensorType> U_bar(n_dg, zero_tensor);
+    for(unsigned int i=0; i<n_dg; ++i) {
+      for(unsigned int j=0; j<n_dg; ++j) U_bar[i] += M_bar_inverse[i][j] * diff_bar[j];
+    }
+
+    // --- STEP 3: Write back to memory ---
+    for(unsigned int i=0; i<n_dg; ++i) phi_dg.submit_dof_value(U_bar[i], i);
+    phi_dg.set_dof_values_plain(dst_bar);
+
+    for(unsigned int i=0; i<n_cg; ++i) phi_cg.submit_dof_value(U_tilde[i], i);
+    phi_cg.set_dof_values_plain(dst_tilde);
+  }
+}
 
 // ============================================================================
 //  setup_wall_distance

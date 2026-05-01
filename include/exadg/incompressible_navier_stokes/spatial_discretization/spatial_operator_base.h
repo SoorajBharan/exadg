@@ -442,6 +442,9 @@ public:
   void
   update_wall_enrichment_vectors(VectorType const & velocity) const;
 
+  void
+  precompute_schur_matrices() const;
+
 protected:
   /*
    * Projection step.

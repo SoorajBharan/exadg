@@ -317,6 +317,10 @@ template<int dim, typename Number>
 void
 TimeIntBDFPressureCorrection<dim, Number>::do_timestep_solve()
 {
+  if(this->param.wall_enrichment_enabled)
+  {
+    pde_operator->precompute_schur_matrices();
+  }
   // perform the sub-steps of the pressure-correction scheme
 
   momentum_step();

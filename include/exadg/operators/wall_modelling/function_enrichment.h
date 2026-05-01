@@ -24,7 +24,9 @@
 #include <deal.II/base/vectorization.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/mapping.h>
+#include <deal.II/lac/full_matrix.h>
 #include <deal.II/matrix_free/matrix_free.h>
 
 #include <map>
@@ -115,11 +117,31 @@ public:
   get_gradient(scalar const u_tau,
                scalar const y) const;
 
+  struct SchurData {
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_Vbar_Utilde; 
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> Schur_inverse;
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_Vbar_inverse; // Added explicit mass inverse
+  };
+
+  // Stored per macro-cell for fast matrix-free retrieval during the solver loop
+  std::vector<SchurData> cell_schur_data;
+
+  // New execution hooks for the Mass Operator
+  void precompute_schur_matrices();
+  
+  void apply_schur_inverse_mass(VectorType & dst_bar,
+                                VectorType & dst_tilde,
+                                VectorType const & src_bar,
+                                VectorType const & src_tilde) const;
+
   // ── Public output vectors (CG layout, index = dof_index_cg) ───────────
   VectorType wall_distance;
   VectorType friction_velocity;
 
   VectorType wall_velocity;
+
+  VectorType enrichment_velocity;
+  VectorType enrichment_residual;
 
 private:
   struct TractionVectors
@@ -160,6 +182,9 @@ private:
     VectorType const &                      src,
     std::pair<unsigned int, unsigned int> const & range) const;
 
+  std::vector<std::vector<dealii::VectorizedArray<Number>>>
+  invert_matrix_simd(std::vector<std::vector<dealii::VectorizedArray<Number>>> M, unsigned int n);
+
   // ── MatrixFree data ─────────────────────────────────────────────────────
   dealii::MatrixFree<dim, Number> const * matrix_free;
 
@@ -175,7 +200,7 @@ private:
   double beta;                ///< log-law intercept ≈ 5.2
 
   // ── CG finite-element infrastructure ───────────────────────────────────
-  std::unique_ptr<dealii::FE_Q<dim>>       fe_cg;         ///< Q1 continuous element 
+  std::unique_ptr<dealii::FE_DGQ<dim>>       fe_cg;         ///< Q1 continuous element 
   dealii::DoFHandler<dim> dof_handler_cg;
 
   std::unique_ptr<dealii::FE_Q<dim>>       fe_cg_linear;

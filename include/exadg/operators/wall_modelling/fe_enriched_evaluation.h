@@ -96,6 +96,23 @@ public:
     utau_eval.evaluate(dealii::EvaluationFlags::values);
   }
 
+  void gather_evaluate(
+    VectorType const & dg_sol,
+    VectorType const & cg_sol,
+    dealii::EvaluationFlags::EvaluationFlags flags)
+  {
+    phi_dg.read_dof_values(dg_sol);
+    phi_cg.read_dof_values(cg_sol);
+
+    y_eval.read_dof_values(enrichment->wall_distance);
+    utau_eval.read_dof_values(enrichment->friction_velocity);
+
+    phi_dg.evaluate(flags);
+    phi_cg.evaluate(flags);
+    y_eval.evaluate(dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+    utau_eval.evaluate(dealii::EvaluationFlags::values);
+  }
+
   void integrate(dealii::EvaluationFlags::EvaluationFlags flags)
   {
     phi_dg.integrate(flags);

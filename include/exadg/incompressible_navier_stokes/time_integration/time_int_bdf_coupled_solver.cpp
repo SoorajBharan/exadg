@@ -221,6 +221,11 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
   // calculate auxiliary variable p^{*} = 1/scaling_factor * p
   solution_np.block(1) *= 1.0 / scaling_factor_continuity;
 
+  if(this->param.wall_enrichment_enabled)
+  {
+    pde_operator->precompute_schur_matrices();
+  }
+
   bool const update_preconditioner =
     this->param.update_preconditioner_coupled and
     ((this->time_step_number - 1) % this->param.update_preconditioner_coupled_every_time_steps ==
