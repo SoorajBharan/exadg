@@ -165,6 +165,7 @@ SpatialOperatorBase<dim, Number>::initialize_dof_handler_and_constraints()
   constraint_u.close();
   constraint_p.close();
   constraint_u_scalar.close();
+  constraint_enrichment.close();
 
   // Output to pcout
   pcout << "Velocity:" << std::endl;
@@ -207,7 +208,7 @@ SpatialOperatorBase<dim, Number>::initialize_dof_handler_and_constraints()
    function_enrichment->initialize_dofs(*grid->triangulation, param.fe_degree_cg);
 
    pcout << "Wall Function CG Enrichment: Enabled" << std::endl;
-   pcout << "  number of CG dofs (total): " << function_enrichment->get_dof_handler_cg().n_dofs() << std::endl;
+   pcout << "  number of CG dofs (total): " << function_enrichment->get_dof_handler_en_vector().n_dofs() << std::endl;
   }
 
   pcout << std::flush;
@@ -356,20 +357,31 @@ SpatialOperatorBase<dim, Number>::fill_matrix_free_data(
   // dof handler for wall enrichment
   if(param.wall_enrichment_enabled)
   {
-    auto* cg_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg());
-    auto* cg_linear_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_linear());
+    auto* en_vector_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_en_vector());
+    auto* cg_scalar_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_scalar());
+    auto* cg_vector_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_vector());
 
-    // High-order CG space for velocity
-    matrix_free_data.insert_dof_handler(cg_handler, field + dof_index_cg);
-    // 1st-order linear spaces for distance, stresses, and projected wall velocity
-    matrix_free_data.insert_dof_handler(cg_linear_handler, field + dof_index_cg_scalar);
-    matrix_free_data.insert_dof_handler(cg_linear_handler, field + dof_index_cg_wall);
+    // 1. DG Space for Enrichment Velocity (U_en)
+    matrix_free_data.insert_dof_handler(en_vector_handler, field + dof_index_en);
+
+    // 2. Linear CG Space for scalar properties like distances (y_wall, u_tau)
+    matrix_free_data.insert_dof_handler(cg_scalar_handler, field + dof_index_cg_scalar);
+
+    // 3. Linear CG Space for projected wall velocities (U_wall)
+    matrix_free_data.insert_dof_handler(cg_vector_handler, field + dof_index_cg_vector);
   }
 
   // constraint
   matrix_free_data.insert_constraint(&constraint_u, field + dof_index_u);
   matrix_free_data.insert_constraint(&constraint_p, field + dof_index_p);
   matrix_free_data.insert_constraint(&constraint_u_scalar, field + dof_index_u_scalar);
+
+  if(param.wall_enrichment_enabled)
+  {
+    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_en);
+    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_cg_scalar);
+    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_cg_vector);
+  }
 
   // quadrature
   std::shared_ptr<dealii::Quadrature<dim>> quadrature_u =
@@ -421,15 +433,15 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   // wall enrichment
   if(param.wall_enrichment_enabled)
   {
-    unsigned int idx_cg        = matrix_free_data->get_dof_index(field + dof_index_cg);
-    unsigned int idx_cg_wall   = matrix_free_data->get_dof_index(field + dof_index_cg_wall);
-    unsigned int idx_cg_scalar = matrix_free_data->get_dof_index(field + dof_index_cg_scalar);
+    unsigned int idx_en        = matrix_free_data->get_dof_index(field + dof_index_en);
+    unsigned int idx_cg_scalar   = matrix_free_data->get_dof_index(field + dof_index_cg_scalar);
+    unsigned int idx_cg_vector = matrix_free_data->get_dof_index(field + dof_index_cg_vector);
 
     function_enrichment->initialize(*matrix_free,
                                     boundary_descriptor->velocity,
                                     get_dof_index_velocity(),
-                                    idx_cg,
-                                    idx_cg_wall,
+                                    idx_en,
+                                    idx_cg_vector,
                                     idx_cg_scalar,
                                     get_quad_index_velocity_standard());
 
@@ -2001,6 +2013,41 @@ SpatialOperatorBase<dim, Number>::precompute_schur_matrices() const
   {
     function_enrichment->precompute_schur_matrices();
   }
+}
+
+template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
+SpatialOperatorBase<dim, Number>::get_dof_handler_en_cg_scalar() const
+{
+  return function_enrichment->get_dof_handler_cg_scalar();
+}
+
+template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
+SpatialOperatorBase<dim, Number>::get_dof_handler_en_vector() const
+{
+  return function_enrichment->get_dof_handler_en_vector();
+}
+
+template<int dim, typename Number>
+dealii::LinearAlgebra::distributed::Vector<Number> const &
+SpatialOperatorBase<dim, Number>::get_friction_velocity() const
+{
+  return function_enrichment->friction_velocity;
+}
+
+template<int dim, typename Number>
+dealii::LinearAlgebra::distributed::Vector<Number> const &
+SpatialOperatorBase<dim, Number>::get_wall_distance() const
+{
+  return function_enrichment->wall_distance;
+}
+
+template<int dim, typename Number>
+bool
+SpatialOperatorBase<dim, Number>::get_wall_enrichment_enabled() const
+{
+  return param.wall_enrichment_enabled;
 }
 
 template class SpatialOperatorBase<2, float>;

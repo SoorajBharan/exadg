@@ -32,12 +32,12 @@ template<int dim, typename Number>
 FunctionEnrichment<dim, Number>::FunctionEnrichment(double kinematic_viscosity_in)
   : matrix_free(nullptr)
   , dof_index_dg(0)
-  , dof_index_cg(0)
+  , dof_index_en(0)
   , quad_index(0)
   , kinematic_viscosity(kinematic_viscosity_in)
   , kappa(0.41)
   , beta(5.2)
-  , dof_handler_cg()
+  , dof_handler_en_vector()
 {}
 
 
@@ -49,16 +49,33 @@ template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::initialize_dofs(
   dealii::Triangulation<dim> const & triangulation,
-  unsigned int fe_degree_cg)
+  unsigned int fe_degree_en)
 {
-  fe_cg = std::make_unique<dealii::FE_DGQ<dim>>(fe_degree_cg);
-  
-  dof_handler_cg.reinit(triangulation);
-  dof_handler_cg.distribute_dofs(*fe_cg);
+  ExaDG::ElementType type = ExaDG::ElementType::Hypercube;
 
-  fe_cg_linear = std::make_unique<dealii::FE_Q<dim>>(1);
-  dof_handler_cg_linear.reinit(triangulation);
-  dof_handler_cg_linear.distribute_dofs(*fe_cg_linear);
+  // FE enrichment vector
+  fe_en_vector = create_finite_element<dim>(type,
+                                            true /* is_dg*/,
+                                            dim /*n_components*/,
+                                            fe_degree_en);
+  dof_handler_en_vector.reinit(triangulation);
+  dof_handler_en_vector.distribute_dofs(*fe_en_vector);
+
+  // FE wall vector
+  fe_cg_vector = create_finite_element<dim>(type,
+                                            false /* is_dg*/,
+                                            dim /*n_components*/,
+                                            1);
+  dof_handler_cg_vector.reinit(triangulation);
+  dof_handler_cg_vector.distribute_dofs(*fe_cg_vector);
+
+  // FE wall scalar
+  fe_cg_scalar = create_finite_element<dim>(type,
+                                            false /* is_dg*/,
+                                            1 /*n_components*/,
+                                            1);
+  dof_handler_cg_scalar.reinit(triangulation);
+  dof_handler_cg_scalar.distribute_dofs(*fe_cg_scalar);
 }
 
 
@@ -72,8 +89,8 @@ FunctionEnrichment<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const & matrix_free_in,
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
   unsigned int                            dof_index_dg_in,
-  unsigned int                            dof_index_cg_in,
-  unsigned int                            dof_index_cg_wall_in,
+  unsigned int                            dof_index_en_in,
+  unsigned int                            dof_index_cg_vector_in,
   unsigned int                            dof_index_cg_scalar_in,
   unsigned int                            quad_index_in)
 {
@@ -82,18 +99,24 @@ FunctionEnrichment<dim, Number>::initialize(
   this->boundary_descriptor = boundary_descriptor_in;
 
   dof_index_dg = dof_index_dg_in;
-  dof_index_cg = dof_index_cg_in;
-  dof_index_cg_wall = dof_index_cg_wall_in;
+  dof_index_en = dof_index_en_in;
+  dof_index_cg_vector = dof_index_cg_vector_in;
   dof_index_cg_scalar = dof_index_cg_scalar_in;
   quad_index   = quad_index_in;
 
-  // Allocate CG vectors in the layout described by dof_index_cg
+  // Allocate CG vectors in the layout described by dof_index_en
   matrix_free->initialize_dof_vector(wall_distance,     dof_index_cg_scalar);
   matrix_free->initialize_dof_vector(friction_velocity, dof_index_cg_scalar);
-  matrix_free->initialize_dof_vector(wall_velocity,     dof_index_cg_wall);
+  friction_velocity = 0.0;
+  friction_velocity.update_ghost_values();
 
-  matrix_free->initialize_dof_vector(enrichment_velocity, dof_index_cg);
-  matrix_free->initialize_dof_vector(enrichment_residual, dof_index_cg);
+  matrix_free->initialize_dof_vector(wall_velocity,     dof_index_cg_vector);
+
+  matrix_free->initialize_dof_vector(enrichment_velocity, dof_index_en);
+  enrichment_velocity = 0.0;
+
+  matrix_free->initialize_dof_vector(enrichment_residual, dof_index_en);
+  enrichment_residual = 0.0;
 }
 
 // Helper lambda for general SIMD matrix inversion(Gauss Jordan Elimination)
@@ -137,22 +160,21 @@ template<int dim, typename Number>
 void 
 FunctionEnrichment<dim, Number>::precompute_schur_matrices()
 {
-  // FIX 1: n_cell_batches() replaces n_macro_cells()
   const unsigned int n_batches = matrix_free->n_cell_batches();
   cell_schur_data.resize(n_batches);
 
-  dealii::FEEvaluation<dim, -1, 0, 1, Number> phi_dg(*matrix_free, dof_index_dg, quad_index);
-  dealii::FEEvaluation<dim, -1, 0, 1, Number> phi_cg(*matrix_free, dof_index_cg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(*matrix_free, dof_index_dg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(*matrix_free, dof_index_en, quad_index);
   dealii::FEEvaluation<dim, -1, 0, 1, Number> y_eval(*matrix_free, dof_index_cg_scalar, quad_index);
   dealii::FEEvaluation<dim, -1, 0, 1, Number> utau_eval(*matrix_free, dof_index_cg_scalar, quad_index);
 
-  const unsigned int n_dg = phi_dg.dofs_per_cell;
-  const unsigned int n_cg = phi_cg.dofs_per_cell;
+  const unsigned int n_dg = phi_dg.tensor_dofs_per_cell;
+  const unsigned int n_en = phi_en.tensor_dofs_per_cell;
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
     phi_dg.reinit(cell);
-    phi_cg.reinit(cell);
+    phi_en.reinit(cell);
     y_eval.reinit(cell);
     utau_eval.reinit(cell);
 
@@ -161,38 +183,41 @@ FunctionEnrichment<dim, Number>::precompute_schur_matrices()
     y_eval.evaluate(dealii::EvaluationFlags::values);
     utau_eval.evaluate(dealii::EvaluationFlags::values);
 
-    // FIX 2: Evaluate Shape Functions by submitting unit vectors!
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> N_cg(n_cg, std::vector<dealii::VectorizedArray<Number>>(phi_cg.n_q_points));
-    for(unsigned int i=0; i<n_cg; ++i) 
+    std::vector<std::vector<scalar>> N_en(n_en, std::vector<scalar>(phi_en.n_q_points));
+    for(unsigned int i=0; i<n_en; ++i) 
     {
-      for(unsigned int d=0; d<n_cg; ++d)
+      dealii::Tensor<1, dim, scalar> unit_tensor;
+      for(unsigned int d=0; d<n_en; ++d)
       {
-        phi_cg.submit_dof_value(dealii::make_vectorized_array<Number>((d==i)?1.0:0.0), d);
+        unit_tensor[0]=dealii::make_vectorized_array<Number>((d==i)?1.0:0.0);
+        phi_en.submit_dof_value(unit_tensor, d);
       }
-      phi_cg.evaluate(dealii::EvaluationFlags::values);
-      for(unsigned int q=0; q<phi_cg.n_q_points; ++q)
+      phi_en.evaluate(dealii::EvaluationFlags::values);
+      for(unsigned int q=0; q<phi_en.n_q_points; ++q)
       {
-        N_cg[i][q] = phi_cg.get_value(q);
+        N_en[i][q] = phi_en.get_value(q)[0];
       }
     }
 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> N_dg(n_dg, std::vector<dealii::VectorizedArray<Number>>(phi_dg.n_q_points));
     for(unsigned int i=0; i<n_dg; ++i) 
     {
+      dealii::Tensor<1, dim, scalar> unit_tensor;
       for(unsigned int d=0; d<n_dg; ++d) 
       {
-        phi_dg.submit_dof_value(dealii::make_vectorized_array<Number>((d==i)?1.0:0.0), d);
+        unit_tensor[0]=dealii::make_vectorized_array<Number>((d==i)?1.0:0.0);
+        phi_dg.submit_dof_value(unit_tensor, d);
       }
       phi_dg.evaluate(dealii::EvaluationFlags::values);
       for(unsigned int q=0; q<phi_dg.n_q_points; ++q)
       {
-        N_dg[i][q] = phi_dg.get_value(q);
+        N_dg[i][q] = phi_dg.get_value(q)[0];
       }
     }
 
     // Allocate SIMD Matrices
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde(n_cg, std::vector<dealii::VectorizedArray<Number>>(n_cg, dealii::make_vectorized_array<Number>(0.0)));
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde(n_dg, std::vector<dealii::VectorizedArray<Number>>(n_cg, dealii::make_vectorized_array<Number>(0.0)));
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde(n_en, std::vector<dealii::VectorizedArray<Number>>(n_en, dealii::make_vectorized_array<Number>(0.0)));
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde(n_dg, std::vector<dealii::VectorizedArray<Number>>(n_en, dealii::make_vectorized_array<Number>(0.0)));
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar(n_dg, std::vector<dealii::VectorizedArray<Number>>(n_dg, dealii::make_vectorized_array<Number>(0.0)));
 
     for (unsigned int q = 0; q < phi_dg.n_q_points; ++q)
@@ -202,15 +227,15 @@ FunctionEnrichment<dim, Number>::precompute_schur_matrices()
       auto psi  = get_value(utau, y); 
       auto JxW  = phi_dg.JxW(q);
 
-      for (unsigned int i = 0; i < n_cg; ++i) 
+      for (unsigned int i = 0; i < n_en; ++i) 
       {
-        for (unsigned int j = 0; j < n_cg; ++j)
+        for (unsigned int j = 0; j < n_en; ++j)
         {
-          M_tilde_tilde[i][j] += (psi * N_cg[i][q]) * (psi * N_cg[j][q]) * JxW;
+          M_tilde_tilde[i][j] += (psi * N_en[i][q]) * (psi * N_en[j][q]) * JxW;
         }
         for (unsigned int j = 0; j < n_dg; ++j)
         {
-          M_bar_tilde[j][i] += N_dg[j][q] * (psi * N_cg[i][q]) * JxW;
+          M_bar_tilde[j][i] += N_dg[j][q] * (psi * N_en[i][q]) * JxW;
         }
       }
       for (unsigned int i = 0; i < n_dg; ++i) 
@@ -222,14 +247,13 @@ FunctionEnrichment<dim, Number>::precompute_schur_matrices()
       }
     }
 
-    // FIX 3: Explicitly Invert M_bar_bar to bypass missing MatrixFree API
     auto M_bar_inverse = invert_matrix_simd(M_bar_bar, n_dg);
 
     // Compute S = M_tilde_tilde - M_tilde_bar * (M_bar_bar^-1 * M_bar_tilde)
     std::vector<std::vector<dealii::VectorizedArray<Number>>> S = M_tilde_tilde;
-    for(unsigned int i=0; i<n_cg; ++i) 
+    for(unsigned int i=0; i<n_en; ++i) 
     {
-      for(unsigned int j=0; j<n_cg; ++j) 
+      for(unsigned int j=0; j<n_en; ++j) 
       {
         dealii::VectorizedArray<Number> sum = dealii::make_vectorized_array<Number>(0.0);
         for(unsigned int k=0; k<n_dg; ++k) 
@@ -245,7 +269,7 @@ FunctionEnrichment<dim, Number>::precompute_schur_matrices()
 
     cell_schur_data[cell].M_Vbar_Utilde  = M_bar_tilde;
     cell_schur_data[cell].M_Vbar_inverse = M_bar_inverse;
-    cell_schur_data[cell].Schur_inverse  = invert_matrix_simd(S, n_cg);
+    cell_schur_data[cell].Schur_inverse  = invert_matrix_simd(S, n_en);
   }
 }
 
@@ -261,10 +285,10 @@ FunctionEnrichment<dim, Number>::apply_schur_inverse_mass(
                                 VectorType const & src_tilde) const
 {
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(*matrix_free, dof_index_dg, quad_index);
-  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_cg(*matrix_free, dof_index_cg, quad_index);
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(*matrix_free, dof_index_en, quad_index);
 
-  const unsigned int n_dg = phi_dg.dofs_per_cell;
-  const unsigned int n_cg = phi_cg.dofs_per_cell;
+  const unsigned int n_dg = phi_dg.tensor_dofs_per_cell;
+  const unsigned int n_en = phi_en.tensor_dofs_per_cell;
   const unsigned int n_batches = matrix_free->n_cell_batches();
 
   // Create a zeroed-out Tensor to safely initialize our arrays
@@ -277,17 +301,17 @@ FunctionEnrichment<dim, Number>::apply_schur_inverse_mass(
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
     phi_dg.reinit(cell);
-    phi_cg.reinit(cell);
+    phi_en.reinit(cell);
 
     phi_dg.read_dof_values_plain(src_bar);
-    phi_cg.read_dof_values_plain(src_tilde);
+    phi_en.read_dof_values_plain(src_tilde);
 
     // Grab the right hand sides as Velocity Tensors
     std::vector<TensorType> R_bar(n_dg);
     for(unsigned int i=0; i<n_dg; ++i) R_bar[i] = phi_dg.get_dof_value(i);
 
-    std::vector<TensorType> R_tilde(n_cg);
-    for(unsigned int i=0; i<n_cg; ++i) R_tilde[i] = phi_cg.get_dof_value(i);
+    std::vector<TensorType> R_tilde(n_en);
+    for(unsigned int i=0; i<n_en; ++i) R_tilde[i] = phi_en.get_dof_value(i);
 
     auto const & M_bar_tilde   = cell_schur_data[cell].M_Vbar_Utilde;
     auto const & M_bar_inverse = cell_schur_data[cell].M_Vbar_inverse;
@@ -299,22 +323,22 @@ FunctionEnrichment<dim, Number>::apply_schur_inverse_mass(
       for(unsigned int j=0; j<n_dg; ++j) M_inv_R_bar[i] += M_bar_inverse[i][j] * R_bar[j];
     }
 
-    std::vector<TensorType> coupling(n_cg, zero_tensor);
-    for(unsigned int i=0; i<n_cg; ++i) {
+    std::vector<TensorType> coupling(n_en, zero_tensor);
+    for(unsigned int i=0; i<n_en; ++i) {
       for(unsigned int j=0; j<n_dg; ++j) coupling[i] += M_bar_tilde[j][i] * M_inv_R_bar[j];
     }
 
-    std::vector<TensorType> U_tilde(n_cg, zero_tensor);
-    for(unsigned int i=0; i<n_cg; ++i) {
+    std::vector<TensorType> U_tilde(n_en, zero_tensor);
+    for(unsigned int i=0; i<n_en; ++i) {
       auto diff = R_tilde[i] - coupling[i];
-      for(unsigned int j=0; j<n_cg; ++j) U_tilde[i] += S_inv[i][j] * diff;
+      for(unsigned int j=0; j<n_en; ++j) U_tilde[i] += S_inv[i][j] * diff;
     }
 
     // --- STEP 2: U_bar ---
     std::vector<TensorType> diff_bar(n_dg, zero_tensor);
     for(unsigned int i=0; i<n_dg; ++i) {
       diff_bar[i] = R_bar[i];
-      for(unsigned int j=0; j<n_cg; ++j) diff_bar[i] -= M_bar_tilde[i][j] * U_tilde[j];
+      for(unsigned int j=0; j<n_en; ++j) diff_bar[i] -= M_bar_tilde[i][j] * U_tilde[j];
     }
 
     std::vector<TensorType> U_bar(n_dg, zero_tensor);
@@ -326,8 +350,8 @@ FunctionEnrichment<dim, Number>::apply_schur_inverse_mass(
     for(unsigned int i=0; i<n_dg; ++i) phi_dg.submit_dof_value(U_bar[i], i);
     phi_dg.set_dof_values_plain(dst_bar);
 
-    for(unsigned int i=0; i<n_cg; ++i) phi_cg.submit_dof_value(U_tilde[i], i);
-    phi_cg.set_dof_values_plain(dst_tilde);
+    for(unsigned int i=0; i<n_en; ++i) phi_en.submit_dof_value(U_tilde[i], i);
+    phi_en.set_dof_values_plain(dst_tilde);
   }
 }
 
@@ -353,16 +377,16 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
 
   // Maps the global DoF index to its physical coordinates for all CG DoFs (including wall and near-wall)
   std::map<dealii::types::global_dof_index, dealii::Point<dim>> support_points;
-  dealii::DoFTools::map_dofs_to_support_points(mapping, dof_handler_cg, support_points);
+  dealii::DoFTools::map_dofs_to_support_points(mapping, dof_handler_cg_scalar, support_points);
 
   std::vector<std::pair<dealii::Point<dim>, dealii::types::global_dof_index>> local_wall_points;
   std::set<typename dealii::DoFHandler<dim>::active_cell_iterator> current_layer;
   std::set<typename dealii::DoFHandler<dim>::active_cell_iterator> all_near_wall_cells;
 
-  auto const & fe = dof_handler_cg.get_fe();
+  auto const & fe = dof_handler_cg_scalar.get_fe();
 
   // Step 1: Find wall DoFs and seed BFS
-  for(auto const & cell : dof_handler_cg.active_cell_iterators())
+  for(auto const & cell : dof_handler_cg_scalar.active_cell_iterators())
   {
     if(cell->is_locally_owned() && cell->at_boundary())
     {
@@ -387,8 +411,12 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
             {
               if(fe.has_support_on_face(i, face)) 
               {
-                // This DoF is on the wall boundary, so we add its coordinates to the local list
-                local_wall_points.push_back({support_points[local_dof_indices[i]], local_dof_indices[i]});
+                auto global_dof = local_dof_indices[i];
+                if(wall_distance.locally_owned_elements().is_element(global_dof))
+                {
+                  // This DoF is on the wall boundary, so we add its coordinates to the local list
+                  local_wall_points.push_back({support_points[local_dof_indices[i]], local_dof_indices[i]});
+                }
               }
             }
           }
@@ -429,6 +457,12 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
     for(unsigned int i = 0; i < fe.n_dofs_per_cell(); ++i)
     {
      auto global_dof = local_dof_indices[i];
+
+      if (!wall_distance.locally_owned_elements().is_element(global_dof))
+      {
+        continue;
+      }
+
      auto dof_point  = support_points[global_dof];
 
      Number min_dist = std::numeric_limits<Number>::max();
@@ -454,6 +488,8 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
 
   // CRITICAL: Resolves partition boundaries cleanly across MPI without Allgather
   wall_distance.compress(dealii::VectorOperation::min);
+
+  wall_distance.update_ghost_values();
 }
 
 template<int dim, typename Number>
@@ -461,15 +497,23 @@ void
 FunctionEnrichment<dim, Number>::project_velocity_to_wall(VectorType const & src)
 {
   VectorType rhs, lumped_mass;
-  matrix_free->initialize_dof_vector(rhs,         dof_index_cg_wall);
-  matrix_free->initialize_dof_vector(lumped_mass, dof_index_cg_wall);
+  matrix_free->initialize_dof_vector(rhs,         dof_index_cg_vector);
+  matrix_free->initialize_dof_vector(lumped_mass, dof_index_cg_vector);
 
-  auto dst_pair = std::make_pair(&rhs, &lumped_mass);
+  rhs = 0.0;
+  lumped_mass = 0.0;
+
   matrix_free->cell_loop(&FunctionEnrichment::loop_project_velocity_to_wall,
                          this,
-                         dst_pair,
+                         rhs,
                          src,
-                         true);
+                         false);
+
+  matrix_free->cell_loop(&FunctionEnrichment::loop_lumped_mass,
+                         this,
+                         lumped_mass,
+                         src,
+                         false);
 
   rhs.compress(dealii::VectorOperation::add);
   lumped_mass.compress(dealii::VectorOperation::add);
@@ -486,25 +530,60 @@ FunctionEnrichment<dim, Number>::project_velocity_to_wall(VectorType const & src
   wall_velocity.update_ghost_values();
 }
 
-// This function projects the DG solution over CG space
 template<int dim, typename Number>
 void
-FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
-  dealii::MatrixFree<dim, Number> const & data,
-  std::pair<VectorType*, VectorType*> &                           dst,
-  VectorType const &                     src,
+FunctionEnrichment<dim, Number>::loop_lumped_mass(
+  dealii::MatrixFree<dim, Number> const &       data,
+  VectorType &                                  dst,
+  VectorType const &                            src,
   std::pair<unsigned int, unsigned int> const & cell_range) const
 {
   dealii::FEEvaluation<dim, -1, 0, dim, Number> dg_eval(data, dof_index_dg, quad_index);
-  
-  dealii::FEEvaluation<dim, -1, 0, dim, Number> cg_eval(data, dof_index_cg_wall, quad_index);
+
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> cg_eval(data, dof_index_cg_vector, quad_index);
 
   dealii::Tensor<1, dim, scalar> one_vector;
   for (unsigned int d = 0; d < dim; ++d)
   {
     one_vector[d] = dealii::make_vectorized_array<Number>(1.0);
   }
-  
+
+  for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    dg_eval.reinit(cell);
+    dg_eval.read_dof_values(src);
+    dg_eval.evaluate(dealii::EvaluationFlags::values);
+
+    // Denominator
+    cg_eval.reinit(cell);
+    for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
+    {
+      cg_eval.submit_value(one_vector, q);
+    }
+    cg_eval.integrate(dealii::EvaluationFlags::values);
+    cg_eval.distribute_local_to_global(dst);
+  }
+}
+
+// This function projects the DG solution over CG space
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
+  dealii::MatrixFree<dim, Number> const & data,
+  VectorType &                           dst,
+  VectorType const &                     src,
+  std::pair<unsigned int, unsigned int> const & cell_range) const
+{
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> dg_eval(data, dof_index_dg, quad_index);
+
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> cg_eval(data, dof_index_cg_vector, quad_index);
+
+  dealii::Tensor<1, dim, scalar> one_vector;
+  for (unsigned int d = 0; d < dim; ++d)
+  {
+    one_vector[d] = dealii::make_vectorized_array<Number>(1.0);
+  }
+
   for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
     dg_eval.reinit(cell);
@@ -513,22 +592,13 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
 
     cg_eval.reinit(cell);
 
-   // Numerator
-   for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
-   {
-    cg_eval.submit_value(dg_eval.get_value(q), q);
-   }
-   cg_eval.integrate(dealii::EvaluationFlags::values);
-   cg_eval.distribute_local_to_global(*dst.first);
-
-   // Denominator
-   cg_eval.reinit(cell);
-   for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
-   {
-    cg_eval.submit_value(one_vector, q);
-   }
-   cg_eval.integrate(dealii::EvaluationFlags::values);
-   cg_eval.distribute_local_to_global(*dst.second);
+    // Numerator
+    for (unsigned int q = 0; q < cg_eval.n_q_points; ++q)
+    {
+      cg_eval.submit_value(dg_eval.get_value(q), q);
+    }
+    cg_eval.integrate(dealii::EvaluationFlags::values);
+    cg_eval.distribute_local_to_global(dst);
   }
 }
 
@@ -566,7 +636,8 @@ FunctionEnrichment<dim, Number>::integrate_wall_traction(
                     &This::local_integrate_wall_traction, 
                     this,
                     dst_vectors,
-                    wall_velocity);
+                    wall_velocity,
+                    false);
 }
 
 template<int dim, typename Number>
@@ -577,10 +648,10 @@ void FunctionEnrichment<dim, Number>::local_integrate_wall_traction(
   std::pair<unsigned int, unsigned int> const & face_range) const
 {
   // Face Evaluator for the high-order DG velocity
-  dealii::FEFaceEvaluation<dim, -1, 0, dim, Number> u_wall(matrix_free_data, dof_index_cg_wall, quad_index);
+  dealii::FEFaceEvaluation<dim, -1, 0, dim, Number> u_wall(matrix_free_data, true, dof_index_cg_vector, quad_index);
   
   // Face Evaluator for the continuous linear CG shape functions
-  dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> wss(matrix_free_data, dof_index_cg_scalar, quad_index);
+  dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> wss(matrix_free_data, true, dof_index_cg_scalar, quad_index);
 
   scalar nu = dealii::make_vectorized_array<Number>(kinematic_viscosity);
 
@@ -725,16 +796,23 @@ std::pair<unsigned int, unsigned int> const & range) const
 
 template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
-FunctionEnrichment<dim, Number>::get_dof_handler_cg() const
+FunctionEnrichment<dim, Number>::get_dof_handler_en_vector() const
 {
-  return dof_handler_cg;
+  return dof_handler_en_vector;
 }
 
 template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
-FunctionEnrichment<dim, Number>::get_dof_handler_cg_linear() const
+FunctionEnrichment<dim, Number>::get_dof_handler_cg_scalar() const
 {
-  return dof_handler_cg_linear;
+  return dof_handler_cg_scalar;
+}
+
+template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
+FunctionEnrichment<dim, Number>::get_dof_handler_cg_vector() const
+{
+  return dof_handler_cg_vector;
 }
 
 template<int dim, typename Number>
@@ -777,9 +855,9 @@ FunctionEnrichment<dim, Number>::get_dof_index_dg() const
 
 template<int dim, typename Number>
 unsigned int 
-FunctionEnrichment<dim, Number>::get_dof_index_cg() const
+FunctionEnrichment<dim, Number>::get_dof_index_en() const
 {
-  return dof_index_cg;
+  return dof_index_en;
 }
 
 template<int dim, typename Number>
@@ -791,9 +869,9 @@ FunctionEnrichment<dim, Number>::get_dof_index_cg_scalar() const
 
 template<int dim, typename Number>
 unsigned int 
-FunctionEnrichment<dim, Number>::get_dof_index_cg_wall() const
+FunctionEnrichment<dim, Number>::get_dof_index_cg_vector() const
 {
-  return dof_index_cg_wall;
+  return dof_index_cg_vector;
 }
 
 template<int dim, typename Number>

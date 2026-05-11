@@ -42,7 +42,10 @@ struct OutputData : public OutputDataBase
       write_q_criterion(false),
       mean_velocity(TimeControlData()),
       write_cfl(false),
-      write_aspect_ratio(false)
+      write_aspect_ratio(false),
+      write_friction_velocity(false),
+      write_wall_distance(false),
+      write_enrichment_function(false)
   {
   }
 
@@ -58,6 +61,9 @@ struct OutputData : public OutputDataBase
     print_parameter(pcout, "Write vorticity magnitude", write_vorticity_magnitude);
     print_parameter(pcout, "Write streamfunction", write_streamfunction);
     print_parameter(pcout, "Write Q criterion", write_q_criterion);
+    print_parameter(pcout, "Write friction velocity", write_friction_velocity);
+    print_parameter(pcout, "Write wall distance", write_wall_distance);
+    print_parameter(pcout, "Write enrichment function", write_enrichment_function);
 
     mean_velocity.print(pcout, unsteady);
   }
@@ -101,6 +107,13 @@ struct OutputData : public OutputDataBase
 
   // write aspect ratio
   bool write_aspect_ratio;
+
+  // Write the wall modelled velocity in the enrichment layer
+  bool write_friction_velocity;
+
+  bool write_wall_distance;
+
+  bool write_enrichment_function;
 };
 
 template<int dim, typename Number>

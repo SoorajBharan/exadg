@@ -198,7 +198,8 @@ OperatorDualSplitting<dim, Number>::local_rhs_ppe_div_term_convective_term_bound
     for(unsigned int q = 0; q < pressure.n_q_points; ++q)
     {
       if(boundary_type == BoundaryTypeU::Dirichlet or
-         boundary_type == BoundaryTypeU::DirichletCached)
+         boundary_type == BoundaryTypeU::DirichletCached or
+         boundary_type == BoundaryTypeU::WallEnrichment)
       {
         vector normal = pressure.get_normal_vector(q);
 
@@ -610,7 +611,7 @@ OperatorDualSplitting<dim, Number>::local_interpolate_velocity_dirichlet_bc_boun
     BoundaryTypeU const boundary_type =
       this->boundary_descriptor->velocity->get_boundary_type(boundary_id);
 
-    if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+    if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached or boundary_type == BoundaryTypeU::WallEnrichment)
     {
       integrator.reinit(face);
       integrator.read_dof_values(dst);
@@ -627,6 +628,13 @@ OperatorDualSplitting<dim, Number>::local_interpolate_velocity_dirichlet_bc_boun
         if(boundary_type == BoundaryTypeU::Dirichlet)
         {
           auto bc = this->boundary_descriptor->velocity->dirichlet_bc.find(boundary_id)->second;
+          auto q_points = integrator.quadrature_point(q);
+
+          g = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, this->evaluation_time);
+        }
+        else if(boundary_type == BoundaryTypeU::WallEnrichment)
+        {
+          auto bc = this->boundary_descriptor->velocity->wall_enrichment_bc.find(boundary_id)->second;
           auto q_points = integrator.quadrature_point(q);
 
           g = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, this->evaluation_time);

@@ -16,6 +16,7 @@
 
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/wall_modelling/wall_law_evaluator.h>
+#include <exadg/operators/finite_element.h>
 #include <exadg/incompressible_navier_stokes/user_interface/boundary_descriptor.h>
 
 #include <deal.II/base/mpi.h>
@@ -25,6 +26,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/mapping.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/matrix_free/matrix_free.h>
@@ -55,19 +57,19 @@ public:
    */
   void
   initialize_dofs(dealii::Triangulation<dim> const & triangulation,
-                  unsigned int fe_degree_cg);
+                  unsigned int fe_degree_en);
 
   // ──  link to MatrixFree and allocate vectors ──────────────────
   /**
    * Store the MatrixFree object and pre-allocate wall_distance and
-   * friction_velocity in the CG layout given by @p dof_index_cg_in.
+   * friction_velocity in the CG layout given by @p dof_index_en_in.
    */
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free_in,
              std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
              unsigned int                            dof_index_in,
-             unsigned int                            dof_index_cg_in,
-             unsigned int                            dof_index_cg_wall_in,
+             unsigned int                            dof_index_en_in,
+             unsigned int                            dof_index_cg_vector_in,
              unsigned int                            dof_index_cg_scalar_in,
              unsigned int                            quad_index_in);
 
@@ -89,19 +91,22 @@ public:
 
   // ── Accessors ──────────────────────────────────────────────────────────
   dealii::DoFHandler<dim> const &
-  get_dof_handler_cg() const;
+  get_dof_handler_en_vector() const;
 
   dealii::DoFHandler<dim> const & 
-  get_dof_handler_cg_linear() const;
+  get_dof_handler_cg_scalar() const;
+
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_cg_vector() const;
 
   unsigned int
   get_dof_index_dg() const;
 
   unsigned int
-  get_dof_index_cg() const;
+  get_dof_index_en() const;
 
   unsigned int
-  get_dof_index_cg_wall() const;
+  get_dof_index_cg_vector() const;
 
   unsigned int 
   get_dof_index_cg_scalar() const;
@@ -134,7 +139,7 @@ public:
                                 VectorType const & src_bar,
                                 VectorType const & src_tilde) const;
 
-  // ── Public output vectors (CG layout, index = dof_index_cg) ───────────
+  // ── Public output vectors (CG layout, index = dof_index_en) ───────────
   VectorType wall_distance;
   VectorType friction_velocity;
 
@@ -155,9 +160,17 @@ private:
 
   void
   loop_project_velocity_to_wall(dealii::MatrixFree<dim, Number> const & data,
-                                std::pair<VectorType*, VectorType*> &   dst,
+                                VectorType &   dst,
                                 VectorType const &                      src,
                                 std::pair<unsigned int, unsigned int> const & range) const;
+
+  void
+  loop_lumped_mass(
+    dealii::MatrixFree<dim, Number> const & data,
+    VectorType &                            dst,
+    VectorType const &                      src,
+    std::pair<unsigned int, unsigned int> const & range) const;
+
   // ── Internal helpers ───────────────────────────────────────────────────
 
   /**
@@ -185,29 +198,29 @@ private:
   std::vector<std::vector<dealii::VectorizedArray<Number>>>
   invert_matrix_simd(std::vector<std::vector<dealii::VectorizedArray<Number>>> M, unsigned int n);
 
-  // ── MatrixFree data ─────────────────────────────────────────────────────
   dealii::MatrixFree<dim, Number> const * matrix_free;
 
   unsigned int dof_index_dg; 
-  unsigned int dof_index_cg; 
+  unsigned int dof_index_en; 
   unsigned int dof_index_cg_scalar;
-  unsigned int dof_index_cg_wall;
+  unsigned int dof_index_cg_vector;
   unsigned int quad_index;
 
-  // ── Physical constants ──────────────────────────────────────────────────
   double kinematic_viscosity; ///< \nu
   double kappa;               ///< von Karman constant ≈ 0.41
   double beta;                ///< log-law intercept ≈ 5.2
 
-  // ── CG finite-element infrastructure ───────────────────────────────────
-  std::unique_ptr<dealii::FE_DGQ<dim>>       fe_cg;         ///< Q1 continuous element 
-  dealii::DoFHandler<dim> dof_handler_cg;
+  // DG Enrichment velocity
+  std::shared_ptr<dealii::FiniteElement<dim>>  fe_en_vector;
+  dealii::DoFHandler<dim>                      dof_handler_en_vector;
 
-  std::unique_ptr<dealii::FE_Q<dim>>       fe_cg_linear;
-  dealii::DoFHandler<dim> dof_handler_cg_linear;
+  // CG Wall variables
+  std::shared_ptr<dealii::FiniteElement<dim>>   fe_cg_scalar;
+  dealii::DoFHandler<dim>                      dof_handler_cg_scalar;
 
+  std::shared_ptr<dealii::FiniteElement<dim>>   fe_cg_vector;
+  dealii::DoFHandler<dim>                      dof_handler_cg_vector;
 
-  // ── Wall boundary data (stored for re-use in evaluate_friction_velocity) ─
   std::vector<dealii::types::boundary_id> wall_boundary_ids_;
 
   // Node to nearest wall node mapping (for quick lookup during distance computation)

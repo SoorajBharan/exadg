@@ -29,6 +29,7 @@
 #include <exadg/incompressible_navier_stokes/postprocessor/pointwise_output_generator.h>
 #include <exadg/incompressible_navier_stokes/postprocessor/postprocessor_base.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/spatial_operator_base.h>
+#include <exadg/operators/wall_modelling/wall_law_evaluator.h>
 #include <exadg/postprocessor/error_calculation.h>
 #include <exadg/postprocessor/kinetic_energy_spectrum.h>
 #include <exadg/postprocessor/lift_and_drag_calculation.h>
@@ -105,6 +106,11 @@ private:
   SolutionField<dim, Number> streamfunction;
   SolutionField<dim, Number> q_criterion;
   SolutionField<dim, Number> cfl_vector;
+
+  // Wall Enrichment Fields
+  SolutionField<dim, Number> friction_velocity;
+  SolutionField<dim, Number> wall_distance;
+  SolutionField<dim, Number> enrichment_function;
 
   TimeControl                time_control_mean_velocity;
   SolutionField<dim, Number> mean_velocity; // velocity field averaged over time

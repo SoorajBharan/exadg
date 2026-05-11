@@ -180,6 +180,21 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
       cfl_vector.evaluate(velocity);
       additional_fields_vtu.push_back(&cfl_vector);
     }
+    if(pp_data.output_data.write_friction_velocity)
+    {
+      friction_velocity.evaluate(velocity);
+      additional_fields_vtu.push_back(&friction_velocity);
+    }
+    if(pp_data.output_data.write_wall_distance)
+    {
+      wall_distance.evaluate(velocity);
+      additional_fields_vtu.push_back(&wall_distance);
+    }
+    if(pp_data.output_data.write_enrichment_function)
+    {
+      enrichment_function.evaluate(velocity);
+      additional_fields_vtu.push_back(&enrichment_function);
+    }
 
     output_generator.evaluate(velocity,
                               pressure,
@@ -414,6 +429,133 @@ PostProcessor<dim, Number>::initialize_derived_fields()
 
     cfl_vector.reinit();
   }
+
+  if(pp_data.output_data.write_friction_velocity)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    friction_velocity.type              = SolutionFieldType::scalar;
+    friction_velocity.name              = "friction_velocity";
+    friction_velocity.dof_handler       = &navier_stokes_operator->get_dof_handler_en_cg_scalar();
+
+    friction_velocity.initialize_vector = [&](VectorType & dst) {
+      dst.reinit(navier_stokes_operator->get_friction_velocity());
+    };
+
+    friction_velocity.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+      dst = navier_stokes_operator->get_friction_velocity();
+    };
+
+    friction_velocity.reinit();
+  }
+
+  if(pp_data.output_data.write_wall_distance)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    wall_distance.type              = SolutionFieldType::scalar;
+    wall_distance.name              = "wall_distance";
+    wall_distance.dof_handler       = &navier_stokes_operator->get_dof_handler_en_cg_scalar();
+
+    wall_distance.initialize_vector = [&](VectorType & dst) {
+      dst.reinit(navier_stokes_operator->get_wall_distance());
+    };
+
+    wall_distance.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+      dst = navier_stokes_operator->get_wall_distance();
+    };
+
+    wall_distance.reinit();
+  }
+
+  if(pp_data.output_data.write_enrichment_function)
+  {
+    enrichment_function.type        = SolutionFieldType::scalar;
+    enrichment_function.name        = "psi_enrichment";
+    enrichment_function.dof_handler = &navier_stokes_operator->get_dof_handler_u_scalar(); 
+
+    enrichment_function.initialize_vector = [&](VectorType & dst) {
+      auto const & dof_scalar = navier_stokes_operator->get_dof_handler_u_scalar();
+      dealii::IndexSet locally_owned = dof_scalar.locally_owned_dofs();
+
+      dealii::IndexSet locally_relevant;
+      dealii::DoFTools::extract_locally_relevant_dofs(dof_scalar, locally_relevant);
+
+      dst.reinit(locally_owned, locally_relevant, MPI_COMM_WORLD);
+    };
+
+    enrichment_function.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+
+      dst = 0.0; 
+
+      auto const & u_tau_vec  = navier_stokes_operator->get_friction_velocity();
+      auto const & y_dist_vec = navier_stokes_operator->get_wall_distance();
+
+      // Use the SCALAR handler for the DG loop
+      auto const & dof_handler_dg_scalar = navier_stokes_operator->get_dof_handler_u_scalar();
+      auto const & dof_handler_cg        = navier_stokes_operator->get_dof_handler_en_cg_scalar();
+
+      auto const & fe_dg_scalar          = dof_handler_dg_scalar.get_fe();
+
+      dealii::Quadrature<dim> dg_dof_locations(fe_dg_scalar.get_unit_support_points());
+      dealii::FEValues<dim> fe_values_cg(dof_handler_cg.get_fe(), dg_dof_locations, dealii::update_values);
+
+      std::vector<Number> local_u_tau(dg_dof_locations.size());
+      std::vector<Number> local_y_dist(dg_dof_locations.size());
+      std::vector<dealii::types::global_dof_index> local_dof_indices(fe_dg_scalar.dofs_per_cell);
+
+      WallLawEvaluator<dim, Number> wall_law;
+      double nu = 1.0e-1; // Match your kinematic viscosity
+
+      auto cell_dg = dof_handler_dg_scalar.begin_active();
+      auto cell_cg = dof_handler_cg.begin_active();
+      auto end_dg  = dof_handler_dg_scalar.end();
+
+      for (; cell_dg != end_dg; ++cell_dg, ++cell_cg)
+      {
+        if (cell_dg->is_locally_owned())
+        {
+          fe_values_cg.reinit(cell_cg);
+
+          fe_values_cg.get_function_values(u_tau_vec, local_u_tau);
+          fe_values_cg.get_function_values(y_dist_vec, local_y_dist);
+
+          cell_dg->get_dof_indices(local_dof_indices);
+
+          // Because fe_dg_scalar is a scalar FE, dofs_per_cell is now perfectly matched!
+          for (unsigned int i = 0; i < fe_dg_scalar.dofs_per_cell; ++i)
+          {
+            Number y  = local_y_dist[i];
+            Number ut = local_u_tau[i];
+            Number psi_val = 0.0;
+
+            if (y < 2.0 && ut > 1e-8) 
+            {
+              // ExaDG expects a VectorizedArray (SIMD) for the evaluator
+              auto y_plus = dealii::make_vectorized_array<Number>((y * ut) / nu);
+              auto u_plus = wall_law.get_value(y_plus);
+
+              // u_plus[0] perfectly extracts the scalar from the SIMD array
+              psi_val = u_plus[0] * ut; 
+            }
+
+            if (dst.locally_owned_elements().is_element(local_dof_indices[i]))
+            {
+              auto local_idx = dst.get_partitioner()->global_to_local(local_dof_indices[i]);
+              dst.local_element(local_idx) = psi_val;
+            }
+          }
+        }
+      }
+
+      dst.compress(dealii::VectorOperation::insert);
+      dst.update_ghost_values();
+    };
+
+    enrichment_function.reinit();
+  }
 }
 
 template<int dim, typename Number>
@@ -429,6 +571,10 @@ PostProcessor<dim, Number>::invalidate_derived_fields()
   q_criterion.invalidate();
   cfl_vector.invalidate();
   mean_velocity.invalidate();
+
+  friction_velocity.invalidate();
+  wall_distance.invalidate();
+  enrichment_function.invalidate();
 }
 
 template class PostProcessor<2, float>;

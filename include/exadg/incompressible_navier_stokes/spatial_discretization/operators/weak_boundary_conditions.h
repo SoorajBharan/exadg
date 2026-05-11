@@ -181,13 +181,20 @@ inline DEAL_II_ALWAYS_INLINE //
 {
   dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> u_p;
 
-  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+  if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached or boundary_type == BoundaryTypeU::WallEnrichment)
   {
     dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> g;
 
     if(boundary_type == BoundaryTypeU::Dirichlet)
     {
       auto bc       = boundary_descriptor->dirichlet_bc.find(boundary_id)->second;
+      auto q_points = integrator.quadrature_point(q);
+
+      g = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, time);
+    }
+    else if(boundary_type == BoundaryTypeU::WallEnrichment)
+    {
+      auto bc       = boundary_descriptor->wall_enrichment_bc.find(boundary_id)->second;
       auto q_points = integrator.quadrature_point(q);
 
       g = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, time);

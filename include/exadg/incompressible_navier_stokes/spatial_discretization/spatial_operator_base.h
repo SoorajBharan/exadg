@@ -198,6 +198,9 @@ public:
   get_dof_handler_u_scalar() const;
 
   dealii::DoFHandler<dim> const &
+  get_dof_handler_en_vector() const;
+
+  dealii::DoFHandler<dim> const &
   get_dof_handler_p() const;
 
   dealii::AffineConstraints<Number> const &
@@ -211,6 +214,9 @@ public:
 
   dealii::VectorizedArray<Number>
   get_viscosity_boundary_face(unsigned int const face, unsigned int const q) const;
+
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_en_cg_scalar() const;
 
   // Multiphysics coupling via "Cached" boundary conditions
   std::shared_ptr<ContainerInterfaceData<1, dim, double>>
@@ -445,6 +451,15 @@ public:
   void
   precompute_schur_matrices() const;
 
+  VectorType const &
+  get_friction_velocity() const;
+
+  VectorType const &
+  get_wall_distance() const;
+
+  bool
+  get_wall_enrichment_enabled() const;
+
 protected:
   /*
    * Projection step.
@@ -525,17 +540,18 @@ private:
   dealii::DoFHandler<dim> dof_handler_u_scalar;
 
   dealii::AffineConstraints<Number> constraint_u, constraint_p, constraint_u_scalar;
+  dealii::AffineConstraints<Number> constraint_enrichment;
 
   std::string const dof_index_u        = "velocity";
   std::string const dof_index_p        = "pressure";
   std::string const dof_index_u_scalar = "velocity_scalar";
   
   // DoF index for the enriched velocity field for wal modelling
-  std::string const dof_index_cg       = "cg_velocity";
+  std::string const dof_index_en       = "enrichment_velocity";
   // DoF index for the friction velocity and wall distance for wal modelling
   std::string const dof_index_cg_scalar= "cg_scalar";
   // DoF index for the CG with polynomial order 1 for wal modelling
-  std::string const dof_index_cg_wall  = "cg_wall";
+  std::string const dof_index_cg_vector  = "cg_vector";
 
   std::string const quad_index_u                 = "velocity";
   std::string const quad_index_p                 = "pressure";

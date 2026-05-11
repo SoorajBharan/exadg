@@ -331,20 +331,25 @@ void
     value_type nu_eff;
     scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
     scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+    scalar coefficient = dealii::make_vectorized_array<Number>(0.0);
 
     if(data.rans_model)
     {
       nu_t = integrator_cell_eddy_viscosity->get_value(q);
+      coefficient = dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
     }
+
 
     if constexpr(n_components == 1)
     {
-      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+      nu_eff = nu_laminar + nu_t * coefficient;
     }
     else
     {
       for(unsigned int c = 0; c < n_components; ++c)
+      {
         nu_eff[c] = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+      }
     }
 
     return nu_eff;
@@ -356,24 +361,24 @@ void
     value_type nu_eff;
     scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
     scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+    scalar coefficient = dealii::make_vectorized_array<Number>(0.0);
 
     if(data.rans_model)
     {
       nu_t = integrator_face_eddy_viscosity_m->get_value(q);
+      coefficient = dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
     }
 
     if constexpr(n_components == 1)
     {
-      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+      nu_eff = nu_laminar + nu_t * coefficient;
     }
     else
-    {
-    for(unsigned int c = 0; c < n_components; ++c)
-    {
-      scalar inverse_sigma = dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
-      nu_eff[c] =
-        nu_laminar + nu_t * inverse_sigma;
-    }
+  {
+      for(unsigned int c = 0; c < n_components; ++c)
+      {
+        nu_eff[c] = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+      }
     }
 
     return nu_eff;
@@ -385,20 +390,24 @@ void
     value_type nu_eff;
     scalar nu_laminar = dealii::make_vectorized_array<Number>(data.diffusivity);
     scalar nu_t = dealii::make_vectorized_array<Number>(0.0);
+    scalar coefficient = dealii::make_vectorized_array<Number>(0.0);
 
     if(data.rans_model)
     {
       nu_t = integrator_face_eddy_viscosity_p->get_value(q);
+      coefficient = dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
     }
 
     if constexpr(n_components == 1)
     {
-      nu_eff = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
+      nu_eff = nu_laminar + nu_t * coefficient;
     }
     else
     {
       for(unsigned int c = 0; c < n_components; ++c)
+      {
         nu_eff[c] = nu_laminar + nu_t * dealii::make_vectorized_array<Number>(data.inverse_sigma[c]);
+      }
     }
 
     return nu_eff;

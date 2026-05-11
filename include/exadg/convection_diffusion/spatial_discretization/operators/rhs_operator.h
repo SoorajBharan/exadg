@@ -185,6 +185,17 @@ public:
           square_gradient_term[1] = (data.diffusivity + viscosity /sigma_E) * scalar_product(solution_gradient[1], solution_gradient[1]);
         }
       }
+      else if(data.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
+      {
+        scalar sigma_star = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[4]);
+        scalar sigma = dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[3]);
+
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          square_gradient_term[0] = (data.diffusivity + viscosity /sigma_star) * scalar_product(solution_gradient[0], solution_gradient[0]);
+          square_gradient_term[1] = (data.diffusivity + viscosity /sigma) * scalar_product(solution_gradient[1], solution_gradient[1]);
+        }
+      }
 
       return square_gradient_term;
     }
