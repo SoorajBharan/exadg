@@ -221,7 +221,8 @@ Parameters::Parameters()
      
     // Wall Function
     wall_enrichment_enabled(false),
-    fe_degree_cg(1)
+    fe_degree_enrichment(1),
+    wall_enrichment_layers(1)
 {
 }
 
@@ -750,6 +751,9 @@ Parameters::print(dealii::ConditionalOStream const & pcout, std::string const & 
   {
     print_parameters_coupled_solver(pcout);
   }
+
+  // WALL FUNCTION
+  print_parameters_wall_model(pcout);
 }
 
 void
@@ -1303,6 +1307,19 @@ Parameters::print_parameters_coupled_solver(dealii::ConditionalOStream const & p
       print_parameters_projection_step(pcout);
     }
   }
+}
+
+void
+Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout) const
+{
+  if(!wall_enrichment_enabled)
+    return;
+
+  pcout << std::endl << "Wall Function:" << std::endl;
+
+  print_parameter(pcout, "Polynomial order of enrichment space: ", fe_degree_enrichment);
+
+  print_parameter(pcout, "Number of layer of near wall cells selected for enrichment: ", wall_enrichment_layers);
 }
 
 bool

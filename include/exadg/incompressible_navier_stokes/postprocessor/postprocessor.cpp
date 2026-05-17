@@ -195,6 +195,16 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
       enrichment_function.evaluate(velocity);
       additional_fields_vtu.push_back(&enrichment_function);
     }
+    if(pp_data.output_data.write_enrichment_velocity)
+    {
+      enrichment_velocity.evaluate(velocity);
+      additional_fields_vtu.push_back(&enrichment_velocity);
+    }
+    if(pp_data.output_data.write_shadow_velocity)
+    {
+      shadow_velocity.evaluate(velocity);
+      additional_fields_vtu.push_back(&shadow_velocity);
+    }
 
     output_generator.evaluate(velocity,
                               pressure,
@@ -450,6 +460,27 @@ PostProcessor<dim, Number>::initialize_derived_fields()
     friction_velocity.reinit();
   }
 
+  if(pp_data.output_data.write_shadow_velocity)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    shadow_velocity.type              = SolutionFieldType::vector;
+    shadow_velocity.name              = "shadow_velocity";
+    shadow_velocity.dof_handler       = &navier_stokes_operator->get_dof_handler_en_shadow_vector();
+
+    shadow_velocity.initialize_vector = [&](VectorType & dst) {
+      dst.reinit(navier_stokes_operator->get_shadow_velocity());
+    };
+
+    shadow_velocity.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+      dst = navier_stokes_operator->get_shadow_velocity();
+    };
+
+    shadow_velocity.reinit();
+  }
+
+
   if(pp_data.output_data.write_wall_distance)
   {
     bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
@@ -457,7 +488,7 @@ PostProcessor<dim, Number>::initialize_derived_fields()
 
     wall_distance.type              = SolutionFieldType::scalar;
     wall_distance.name              = "wall_distance";
-    wall_distance.dof_handler       = &navier_stokes_operator->get_dof_handler_en_cg_scalar();
+    wall_distance.dof_handler       = &navier_stokes_operator->get_dof_handler_en_scalar();
 
     wall_distance.initialize_vector = [&](VectorType & dst) {
       dst.reinit(navier_stokes_operator->get_wall_distance());
@@ -470,8 +501,31 @@ PostProcessor<dim, Number>::initialize_derived_fields()
     wall_distance.reinit();
   }
 
+  if(pp_data.output_data.write_enrichment_velocity)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    enrichment_velocity.type              = SolutionFieldType::vector;
+    enrichment_velocity.name              = "enrichment_velocity";
+    enrichment_velocity.dof_handler       = &navier_stokes_operator->get_dof_handler_en_vector();
+
+    enrichment_velocity.initialize_vector = [&](VectorType & dst) {
+      dst.reinit(navier_stokes_operator->get_enrichment_velocity());
+    };
+
+    enrichment_velocity.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+      dst = navier_stokes_operator->get_enrichment_velocity();
+    };
+
+    enrichment_velocity.reinit();
+  }
+
   if(pp_data.output_data.write_enrichment_function)
   {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
     enrichment_function.type        = SolutionFieldType::scalar;
     enrichment_function.name        = "psi_enrichment";
     enrichment_function.dof_handler = &navier_stokes_operator->get_dof_handler_u_scalar(); 
@@ -496,6 +550,7 @@ PostProcessor<dim, Number>::initialize_derived_fields()
       // Use the SCALAR handler for the DG loop
       auto const & dof_handler_dg_scalar = navier_stokes_operator->get_dof_handler_u_scalar();
       auto const & dof_handler_cg        = navier_stokes_operator->get_dof_handler_en_cg_scalar();
+      auto const & dof_handler_en_scalar = navier_stokes_operator->get_dof_handler_en_scalar();
 
       auto const & fe_dg_scalar          = dof_handler_dg_scalar.get_fe();
 
@@ -507,7 +562,7 @@ PostProcessor<dim, Number>::initialize_derived_fields()
       std::vector<dealii::types::global_dof_index> local_dof_indices(fe_dg_scalar.dofs_per_cell);
 
       WallLawEvaluator<dim, Number> wall_law;
-      double nu = 1.0e-1; // Match your kinematic viscosity
+      double nu = navier_stokes_operator->get_kinematic_viscosity();
 
       auto cell_dg = dof_handler_dg_scalar.begin_active();
       auto cell_cg = dof_handler_cg.begin_active();
@@ -575,6 +630,7 @@ PostProcessor<dim, Number>::invalidate_derived_fields()
   friction_velocity.invalidate();
   wall_distance.invalidate();
   enrichment_function.invalidate();
+  shadow_velocity.invalidate();
 }
 
 template class PostProcessor<2, float>;

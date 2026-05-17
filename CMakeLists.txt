@@ -97,6 +97,7 @@ SET(TARGET_SRC
      include/exadg/operators/navier_stokes_calculators.cpp
      include/exadg/operators/wall_modelling/function_enrichment.cpp
      include/exadg/operators/wall_modelling/wall_law_evaluator.cpp
+     include/exadg/operators/wall_modelling/coupler.cpp
      # Poisson equation
      include/exadg/poisson/user_interface/parameters.cpp
      include/exadg/poisson/spatial_discretization/operator.cpp

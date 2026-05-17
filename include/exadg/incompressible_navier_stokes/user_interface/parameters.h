@@ -112,6 +112,9 @@ private:
   void
   print_parameters_coupled_solver(dealii::ConditionalOStream const & pcout) const;
 
+  void
+  print_parameters_wall_model(dealii::ConditionalOStream const & pcout) const;
+
   // coupled solver
   bool
   involves_h_multigrid_velocity_block() const;
@@ -418,8 +421,10 @@ public:
 
   // Wall Modelling by function enrichment
   bool wall_enrichment_enabled;
-  // Polynomial order for CG space
-  unsigned int fe_degree_cg;
+  // Polynomial order for enrichment space
+  unsigned int fe_degree_enrichment;
+
+  unsigned int wall_enrichment_layers;
 
   /**************************************************************************************/
   /*                                                                                    */

@@ -111,6 +111,8 @@ private:
   SolutionField<dim, Number> friction_velocity;
   SolutionField<dim, Number> wall_distance;
   SolutionField<dim, Number> enrichment_function;
+  SolutionField<dim, Number> enrichment_velocity;
+  SolutionField<dim, Number> shadow_velocity;
 
   TimeControl                time_control_mean_velocity;
   SolutionField<dim, Number> mean_velocity; // velocity field averaged over time

@@ -58,6 +58,7 @@
 
 #include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
 #include <exadg/operators/wall_modelling/function_enrichment.h>
+#include <exadg/operators/wall_modelling/coupler.h>
 
 namespace ExaDG
 {
@@ -217,6 +218,12 @@ public:
 
   dealii::DoFHandler<dim> const &
   get_dof_handler_en_cg_scalar() const;
+
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_en_scalar() const;
+
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_en_shadow_vector() const;
 
   // Multiphysics coupling via "Cached" boundary conditions
   std::shared_ptr<ContainerInterfaceData<1, dim, double>>
@@ -457,8 +464,23 @@ public:
   VectorType const &
   get_wall_distance() const;
 
+  VectorType const &
+  get_enrichment_velocity() const;
+
+  VectorType const &
+  get_shadow_velocity() const;
+
   bool
   get_wall_enrichment_enabled() const;
+
+  std::shared_ptr<FunctionEnrichment<dim, Number>> const &
+  get_function_enrichment() const;
+
+  std::shared_ptr<WallDGCoupler<dim, Number>> const &
+  get_wall_dg_coupler() const;
+
+  Number
+  get_kinematic_viscosity() const;
 
 protected:
   /*
@@ -578,6 +600,7 @@ private:
    * Wall model by Function Enrichment
    */
   std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment;
+  std::shared_ptr<WallDGCoupler<dim, Number>>      wall_dg_coupler;
 
 protected:
   /*

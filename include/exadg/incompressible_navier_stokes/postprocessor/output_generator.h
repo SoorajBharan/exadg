@@ -45,7 +45,9 @@ struct OutputData : public OutputDataBase
       write_aspect_ratio(false),
       write_friction_velocity(false),
       write_wall_distance(false),
-      write_enrichment_function(false)
+      write_enrichment_function(false),
+      write_enrichment_velocity(false),
+      write_shadow_velocity(false)
   {
   }
 
@@ -64,6 +66,8 @@ struct OutputData : public OutputDataBase
     print_parameter(pcout, "Write friction velocity", write_friction_velocity);
     print_parameter(pcout, "Write wall distance", write_wall_distance);
     print_parameter(pcout, "Write enrichment function", write_enrichment_function);
+    print_parameter(pcout, "Write enrichment velocity", write_enrichment_velocity);
+    print_parameter(pcout, "Write shadow velocity", write_shadow_velocity);
 
     mean_velocity.print(pcout, unsteady);
   }
@@ -114,6 +118,10 @@ struct OutputData : public OutputDataBase
   bool write_wall_distance;
 
   bool write_enrichment_function;
+
+  bool write_enrichment_velocity;
+
+  bool write_shadow_velocity;
 };
 
 template<int dim, typename Number>

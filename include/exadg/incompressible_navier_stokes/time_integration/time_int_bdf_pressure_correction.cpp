@@ -402,6 +402,16 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
         update_preconditioner,
         this->get_scaling_factor_time_derivative_term());
 
+      if(this->param.wall_enrichment_enabled)
+      {
+        double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
+
+        pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
+          velocity_np, // This is \bar{U}^* that GMRES just found!
+          scaling
+        );
+      }
+
       iterations_momentum.first += 1;
       std::get<0>(iterations_momentum.second) += std::get<0>(iter);
       std::get<1>(iterations_momentum.second) += std::get<1>(iter);
@@ -428,6 +438,16 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
       // solve linear system of equations
       unsigned int n_iter = pde_operator->solve_linear_momentum_equation(
         velocity_np, rhs, update_preconditioner, this->get_scaling_factor_time_derivative_term());
+
+      if(this->param.wall_enrichment_enabled)
+      {
+        double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
+        
+        pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
+            velocity_np, // This is \bar{U}^* that GMRES just found!
+            scaling
+        );
+      }
 
       iterations_momentum.first += 1;
       std::get<1>(iterations_momentum.second) += n_iter;
@@ -885,7 +905,7 @@ TimeIntBDFPressureCorrection<dim, Number>::prepare_vectors_for_next_timestep()
 
   if(this->param.wall_enrichment_enabled)
   {
-    this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
+    this->pde_operator->update_wall_enrichment_vectors(velocity_np);
   }
 }
 

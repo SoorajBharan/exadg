@@ -201,16 +201,6 @@ SpatialOperatorBase<dim, Number>::initialize_dof_handler_and_constraints()
                   fe_u->n_dofs_per_cell() + fe_p->n_dofs_per_cell());
   print_parameter(pcout, "number of dofs (total)", get_number_of_dofs());
 
-  if(param.wall_enrichment_enabled)
-  {
-   function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
-
-   function_enrichment->initialize_dofs(*grid->triangulation, param.fe_degree_cg);
-
-   pcout << "Wall Function CG Enrichment: Enabled" << std::endl;
-   pcout << "  number of CG dofs (total): " << function_enrichment->get_dof_handler_en_vector().n_dofs() << std::endl;
-  }
-
   pcout << std::flush;
 }
 
@@ -354,34 +344,10 @@ SpatialOperatorBase<dim, Number>::fill_matrix_free_data(
   matrix_free_data.insert_dof_handler(&dof_handler_p, field + dof_index_p);
   matrix_free_data.insert_dof_handler(&dof_handler_u_scalar, field + dof_index_u_scalar);
 
-  // dof handler for wall enrichment
-  if(param.wall_enrichment_enabled)
-  {
-    auto* en_vector_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_en_vector());
-    auto* cg_scalar_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_scalar());
-    auto* cg_vector_handler = const_cast<dealii::DoFHandler<dim>*>(&function_enrichment->get_dof_handler_cg_vector());
-
-    // 1. DG Space for Enrichment Velocity (U_en)
-    matrix_free_data.insert_dof_handler(en_vector_handler, field + dof_index_en);
-
-    // 2. Linear CG Space for scalar properties like distances (y_wall, u_tau)
-    matrix_free_data.insert_dof_handler(cg_scalar_handler, field + dof_index_cg_scalar);
-
-    // 3. Linear CG Space for projected wall velocities (U_wall)
-    matrix_free_data.insert_dof_handler(cg_vector_handler, field + dof_index_cg_vector);
-  }
-
   // constraint
   matrix_free_data.insert_constraint(&constraint_u, field + dof_index_u);
   matrix_free_data.insert_constraint(&constraint_p, field + dof_index_p);
   matrix_free_data.insert_constraint(&constraint_u_scalar, field + dof_index_u_scalar);
-
-  if(param.wall_enrichment_enabled)
-  {
-    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_en);
-    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_cg_scalar);
-    matrix_free_data.insert_constraint(&constraint_enrichment, field + dof_index_cg_vector);
-  }
 
   // quadrature
   std::shared_ptr<dealii::Quadrature<dim>> quadrature_u =
@@ -433,20 +399,24 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   // wall enrichment
   if(param.wall_enrichment_enabled)
   {
-    unsigned int idx_en        = matrix_free_data->get_dof_index(field + dof_index_en);
-    unsigned int idx_cg_scalar   = matrix_free_data->get_dof_index(field + dof_index_cg_scalar);
-    unsigned int idx_cg_vector = matrix_free_data->get_dof_index(field + dof_index_cg_vector);
+    function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
+    wall_dg_coupler     = std::make_shared<WallDGCoupler<dim, Number>>();
 
-    function_enrichment->initialize(*matrix_free,
+    function_enrichment->initialize(*grid->triangulation,
+                                    get_mapping(),
+                                    get_dof_handler_u(),
+                                    param.degree_u,
+                                    param.fe_degree_enrichment,
                                     boundary_descriptor->velocity,
-                                    get_dof_index_velocity(),
-                                    idx_en,
-                                    idx_cg_vector,
-                                    idx_cg_scalar,
-                                    get_quad_index_velocity_standard());
+                                    get_quad_index_velocity_standard(),
+                                    param.wall_enrichment_layers);
 
-    function_enrichment->setup_wall_distance(*get_mapping(),
-                                             3); // BFS layers
+    wall_dg_coupler->initialize(*matrix_free, 
+                                get_dof_index_velocity(), 
+                                function_enrichment);
+
+    function_enrichment->setup_wall_distance(*get_mapping(), param.wall_enrichment_layers);
+    wall_dg_coupler->precompute_schur_matrices();
   }
   // mass operator
   MassOperatorData<dim> mass_operator_data;
@@ -1447,15 +1417,6 @@ unsigned int
 SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(VectorType &       dst,
                                                               VectorType const & src) const
 {
-  if(param.wall_enrichment_enabled)
-  {
-    // dst = \bar{U}
-    // src = \bar{R}
-    function_enrichment->apply_schur_inverse_mass(dst,
-                                                  function_enrichment->enrichment_velocity,
-                                                  src,
-                                                  function_enrichment->enrichment_residual);
-  }
   if(param.spatial_discretization == SpatialDiscretization::L2)
   {
     inverse_mass_velocity.apply(dst, src);
@@ -1467,6 +1428,16 @@ SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(VectorType &      
   else
   {
     AssertThrow(false, dealii::ExcMessage("Not implemented."));
+  }
+
+  if(param.wall_enrichment_enabled)
+  {
+    // dst = \bar{U}
+    // src = \bar{R}
+    wall_dg_coupler->apply_schur_complement(dst,
+                                            src,
+                                            function_enrichment->enrichment_velocity,
+                                            function_enrichment->enrichment_residual);
   }
   return 0;
 }
@@ -1998,7 +1969,7 @@ SpatialOperatorBase<dim, Number>::update_wall_enrichment_vectors(VectorType cons
 {
   if(param.wall_enrichment_enabled)
   {
-    function_enrichment->evaluate_friction_velocity(velocity);
+    wall_dg_coupler->update_wall_enrichment_vectors(velocity);
   }
   else{
     AssertThrow(false, dealii::ExcMessage("update_wall_enrichment_vectors is only necessary when wall_enrichment_enabled is true"));
@@ -2011,7 +1982,7 @@ SpatialOperatorBase<dim, Number>::precompute_schur_matrices() const
 {
   if(param.wall_enrichment_enabled)
   {
-    function_enrichment->precompute_schur_matrices();
+    wall_dg_coupler->precompute_schur_matrices();
   }
 }
 
@@ -2024,9 +1995,23 @@ SpatialOperatorBase<dim, Number>::get_dof_handler_en_cg_scalar() const
 
 template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
+SpatialOperatorBase<dim, Number>::get_dof_handler_en_scalar() const
+{
+  return function_enrichment->get_dof_handler_en_scalar();
+}
+
+template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
 SpatialOperatorBase<dim, Number>::get_dof_handler_en_vector() const
 {
   return function_enrichment->get_dof_handler_en_vector();
+}
+
+template<int dim, typename Number>
+dealii::DoFHandler<dim> const &
+SpatialOperatorBase<dim, Number>::get_dof_handler_en_shadow_vector() const
+{
+  return function_enrichment->get_dof_handler_shadow_vector();
 }
 
 template<int dim, typename Number>
@@ -2044,10 +2029,45 @@ SpatialOperatorBase<dim, Number>::get_wall_distance() const
 }
 
 template<int dim, typename Number>
+dealii::LinearAlgebra::distributed::Vector<Number> const &
+SpatialOperatorBase<dim, Number>::get_enrichment_velocity() const
+{
+  return wall_dg_coupler->get_enrichment_velocity();
+}
+
+template<int dim, typename Number>
+std::shared_ptr<FunctionEnrichment<dim, Number>> const &
+SpatialOperatorBase<dim, Number>::get_function_enrichment() const
+{
+  return function_enrichment;
+}
+
+template<int dim, typename Number>
+std::shared_ptr<WallDGCoupler<dim, Number>> const &
+SpatialOperatorBase<dim, Number>::get_wall_dg_coupler() const
+{
+  return wall_dg_coupler;
+}
+
+template<int dim, typename Number>
+dealii::LinearAlgebra::distributed::Vector<Number> const &
+SpatialOperatorBase<dim, Number>::get_shadow_velocity() const
+{
+  return wall_dg_coupler->get_shadow_velocity();
+}
+
+template<int dim, typename Number>
 bool
 SpatialOperatorBase<dim, Number>::get_wall_enrichment_enabled() const
 {
   return param.wall_enrichment_enabled;
+}
+
+template<int dim, typename Number>
+Number
+SpatialOperatorBase<dim, Number>::get_kinematic_viscosity() const
+{
+  return param.viscosity;
 }
 
 template class SpatialOperatorBase<2, float>;
