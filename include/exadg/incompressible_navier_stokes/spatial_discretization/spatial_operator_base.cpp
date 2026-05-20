@@ -408,6 +408,7 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
                                     param.degree_u,
                                     param.fe_degree_enrichment,
                                     boundary_descriptor->velocity,
+                                    grid->periodic_face_pairs,
                                     get_quad_index_velocity_standard(),
                                     param.wall_enrichment_layers);
 

@@ -110,7 +110,6 @@ private:
   // Wall Enrichment Fields
   SolutionField<dim, Number> friction_velocity;
   SolutionField<dim, Number> wall_distance;
-  SolutionField<dim, Number> enrichment_function;
   SolutionField<dim, Number> enrichment_velocity;
   SolutionField<dim, Number> shadow_velocity;
 

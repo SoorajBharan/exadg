@@ -54,6 +54,7 @@ FunctionEnrichment<dim, Number>::initialize(
   unsigned int                                           fe_degree_dg,
   unsigned int                                           fe_degree_en,
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
+  std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
   unsigned int                                           quad_index_in,
   unsigned int                                           layers)
 {
@@ -102,9 +103,12 @@ FunctionEnrichment<dim, Number>::initialize(
   std::set<typename dealii::DoFHandler<dim>::active_cell_iterator> current_layer;
   std::set<typename dealii::DoFHandler<dim>::active_cell_iterator> all_near_wall_cells;
 
+  std::set<unsigned int> globally_enriched_set;
+  std::vector<unsigned int> local_frontier;
+
   for(auto const & cell : dof_handler_en_vector.active_cell_iterators()) 
   {
-    if(cell->is_locally_owned() && cell->at_boundary()) 
+    if(!cell->is_artificial() && cell->at_boundary()) 
     {
       for(auto face : cell->face_indices()) 
       {
@@ -114,14 +118,21 @@ FunctionEnrichment<dim, Number>::initialize(
           {
             current_layer.insert(cell);
             all_near_wall_cells.insert(cell);
+            local_frontier.push_back(static_cast<unsigned int>(cell->global_active_cell_index()));
           }
         }
       }
     }
   }
+  // Sync the Seed Layer across all processors
+  std::vector<unsigned int> global_frontier = 
+    dealii::Utilities::MPI::compute_set_union(local_frontier, triangulation.get_communicator());
+
+  globally_enriched_set.insert(global_frontier.begin(), global_frontier.end());
 
   for(unsigned int l = 1; l < layers; ++l) 
   {
+    local_frontier.clear();
     std::set<typename dealii::DoFHandler<dim>::active_cell_iterator> next_layer;
     for(auto const & cell : current_layer) 
     {
@@ -130,15 +141,32 @@ FunctionEnrichment<dim, Number>::initialize(
         if(!cell->face(face)->at_boundary()) 
         {
           auto neighbor = cell->neighbor(face);
-          if(neighbor->is_locally_owned() && all_near_wall_cells.find(neighbor) == all_near_wall_cells.end()) 
+          if(neighbor->is_active() && !neighbor->is_artificial() && all_near_wall_cells.find(neighbor) == all_near_wall_cells.end()) 
           {
             next_layer.insert(neighbor);
             all_near_wall_cells.insert(neighbor);
+            local_frontier.push_back(neighbor->global_active_cell_index());
           }
         }
       }
     }
     current_layer = next_layer;
+
+    // Sync the newly discovered layer across all processors
+    global_frontier = dealii::Utilities::MPI::compute_set_union(local_frontier, triangulation.get_communicator());
+    globally_enriched_set.insert(global_frontier.begin(), global_frontier.end());
+
+    // This allows the local processor to search the neighbors of these cells in the next loop.
+    for(auto const & cell : dof_handler_en_vector.active_cell_iterators())
+    {
+      if(!cell->is_artificial() && 
+        all_near_wall_cells.find(cell) == all_near_wall_cells.end() &&
+        globally_enriched_set.count(static_cast<unsigned int>(cell->global_active_cell_index())) > 0)
+      {
+        next_layer.insert(cell);
+        all_near_wall_cells.insert(cell);
+      }
+    }
   }
 
   // ====================================================================
@@ -157,21 +185,18 @@ FunctionEnrichment<dim, Number>::initialize(
     {
       bool is_wall = (all_near_wall_cells.find(cell_en) != all_near_wall_cells.end());
       is_cell_enriched[cell_en->global_active_cell_index()] = is_wall;
+      bool is_ghost = (globally_enriched_set.count(static_cast<unsigned int>(cell_en->global_active_cell_index())) > 0);
+      is_cell_enriched[cell_en->global_active_cell_index()] = is_ghost;
 
-      if (is_wall) 
+      if (is_wall || is_ghost)
       {
         cell_en->set_active_fe_index(1); // Enriched Space (Allocates RAM)
         cell_shadow->set_active_fe_index(1);
         cell_cg_vector->set_active_fe_index(1);
         cell_cg_scalar->set_active_fe_index(1);
         cell_en_scalar->set_active_fe_index(1);
-      } else {
-        cell_en->set_active_fe_index(0); // FE_Nothing (0 RAM)
-        cell_shadow->set_active_fe_index(0);
-        cell_cg_vector->set_active_fe_index(0);
-        cell_cg_scalar->set_active_fe_index(0);
-        cell_en_scalar->set_active_fe_index(0);
       }
+
     }
   }
 
@@ -192,6 +217,26 @@ FunctionEnrichment<dim, Number>::initialize(
   dof_index_en_scalar     = 4;
 
   constraint_wall.clear();
+
+  for(auto const & face_pair : periodic_faces) 
+  {
+    // Glue the scalar field (friction velocity / wall distance)
+    dealii::DoFTools::make_periodicity_constraints(
+      dof_handler_cg_scalar,
+      face_pair.cell[0]->face(face_pair.face_idx[0])->boundary_id(),
+      face_pair.cell[1]->face(face_pair.face_idx[1])->boundary_id(),
+      face_pair.face_idx[0] / 2,
+      constraint_wall);
+
+    // Glue the vector field (wall velocity)
+    dealii::DoFTools::make_periodicity_constraints(
+      dof_handler_cg_vector,
+      face_pair.cell[0]->face(face_pair.face_idx[0])->boundary_id(),
+      face_pair.cell[1]->face(face_pair.face_idx[1])->boundary_id(),
+      face_pair.face_idx[0] / 2,
+      constraint_wall);
+  }
+
   constraint_wall.close();
 
   std::vector<const dealii::DoFHandler<dim>*> dof_handlers = { 
@@ -213,6 +258,12 @@ FunctionEnrichment<dim, Number>::initialize(
     dealii::update_JxW_values |
     dealii::update_quadrature_points | 
     dealii::update_normal_vectors;
+
+  additional_data.mapping_update_flags_boundary_faces = dealii::update_values |
+    dealii::update_gradients |
+    dealii::update_JxW_values |
+    dealii::update_quadrature_points | 
+    dealii::update_normal_vectors;
   
   matrix_free_en = std::make_shared<dealii::MatrixFree<dim, Number>>();
   matrix_free_en->reinit(*mapping_in, dof_handlers, constraints, quadratures, additional_data);
@@ -222,23 +273,24 @@ FunctionEnrichment<dim, Number>::initialize(
   // ====================================================================
   matrix_free_en->initialize_dof_vector(enrichment_velocity, dof_index_en);
   matrix_free_en->initialize_dof_vector(enrichment_residual, dof_index_en);
-  enrichment_velocity = 0.0;
-  enrichment_residual = 0.0;
 
   matrix_free_en->initialize_dof_vector(shadow_velocity, dof_index_shadow_vector);
-  shadow_velocity = 50.0;
   matrix_free_en->initialize_dof_vector(shadow_velocity_residual, dof_index_shadow_vector);
-  shadow_velocity_residual = 0.0;
 
   matrix_free_en->initialize_dof_vector(friction_velocity, dof_index_cg_scalar);
-  friction_velocity = 0.0;
-  friction_velocity.update_ghost_values();
 
   matrix_free_en->initialize_dof_vector(wall_distance,     dof_index_en_scalar);
-  wall_distance = 1e10;
 
   matrix_free_en->initialize_dof_vector(wall_velocity, dof_index_cg_vector);
+
+  enrichment_velocity = 0.0;
+  enrichment_residual = 0.0;
+  shadow_velocity = 0.0;
+  shadow_velocity_residual = 0.0;
+  friction_velocity = 0.0;
+  wall_distance = 1e10;
   wall_velocity = 0.0;
+
 }
 
 template<int dim, typename Number>
@@ -610,9 +662,6 @@ FunctionEnrichment<dim, Number>::loop_lumped_mass(
   VectorType const &                            src,
   std::pair<unsigned int, unsigned int> const & cell_range) const
 {
-  if (data.get_cell_iterator(cell_range.first, dof_index_shadow_vector)->active_fe_index() == 0){
-    return;
-  }
   dealii::FEEvaluation<dim, -1, 0, dim, Number> dg_eval(data, dof_index_shadow_vector, quad_index, 0, active_fe_index);
 
   dealii::FEEvaluation<dim, -1, 0, dim, Number> cg_eval(data, dof_index_cg_vector, quad_index, 0, active_fe_index);
@@ -625,6 +674,10 @@ FunctionEnrichment<dim, Number>::loop_lumped_mass(
 
   for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
+    if (data.get_cell_iterator(cell, 0)->active_fe_index() == 0)
+    {
+      continue;
+    }
     dg_eval.reinit(cell);
     dg_eval.read_dof_values(src);
     dg_eval.evaluate(dealii::EvaluationFlags::values);
@@ -649,10 +702,6 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
   VectorType const &                     src,
   std::pair<unsigned int, unsigned int> const & cell_range) const
 {
-  if (data.get_cell_iterator(cell_range.first, dof_index_shadow_vector)->active_fe_index() == 0){
-    return;
-  }
-
   dealii::FEEvaluation<dim, -1, 0, dim, Number> dg_eval(data, dof_index_shadow_vector, quad_index, 0, active_fe_index);
 
   dealii::FEEvaluation<dim, -1, 0, dim, Number> cg_eval(data, dof_index_cg_vector, quad_index, 0, active_fe_index);
@@ -665,6 +714,10 @@ FunctionEnrichment<dim, Number>::loop_project_velocity_to_wall(
 
   for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
+    if (data.get_cell_iterator(cell, 0)->active_fe_index() == 0)
+    {
+      continue;
+    }
     dg_eval.reinit(cell);
     dg_eval.read_dof_values(src);
     dg_eval.evaluate(dealii::EvaluationFlags::values);
@@ -726,59 +779,55 @@ void FunctionEnrichment<dim, Number>::local_integrate_wall_traction(
   VectorType const &                      src,
   std::pair<unsigned int, unsigned int> const & face_range) const
 {
-  bool is_wall_batch = false;
-  for (unsigned int face = face_range.first; face < face_range.second; ++face)
-  {
-    if (boundary_descriptor->get_boundary_type(matrix_free_data.get_boundary_id(face)) == IncNS::BoundaryTypeU::WallEnrichment)
-    {
-      is_wall_batch = true;
-      break;
-    }
-  }
-
-  if (!is_wall_batch) return;
-
   dealii::FEFaceEvaluation<dim, -1, 0, dim, Number> u_wall(
-      matrix_free_data, false, dof_index_cg_vector, quad_index, 0, active_fe_index);
+      matrix_free_data, true, dof_index_cg_vector, quad_index, 0, active_fe_index);
   
   dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> wss(
-      matrix_free_data, false, dof_index_cg_scalar, quad_index, 0, active_fe_index);
+      matrix_free_data, true, dof_index_cg_scalar, quad_index, 0, active_fe_index);
 
   scalar nu = dealii::make_vectorized_array<Number>(kinematic_viscosity);
 
   for (unsigned int face = face_range.first; face < face_range.second; ++face)
   {
-    auto boundary_id = matrix_free_data.get_boundary_id(face);
-    
-    if (boundary_descriptor->get_boundary_type(boundary_id) == IncNS::BoundaryTypeU::WallEnrichment)
+    if (boundary_descriptor->get_boundary_type(matrix_free_data.get_boundary_id(face)) != IncNS::BoundaryTypeU::WallEnrichment)
     {
-      // Extract smoothed gradients directly from the Continuous P1 field!
-      u_wall.reinit(face);
-      u_wall.read_dof_values(src);
-      u_wall.evaluate(dealii::EvaluationFlags::gradients);
+      continue;
+    }
+    // Extract smoothed gradients directly from the Continuous P1 field!
+    u_wall.reinit(face);
+    u_wall.read_dof_values(src);
+    u_wall.evaluate(dealii::EvaluationFlags::gradients);
 
-      std::vector<std::array<scalar, dim>> traction(u_wall.n_q_points); 
-      for (unsigned int q = 0; q < u_wall.n_q_points; ++q)
-      {
-        auto grad_u = u_wall.get_gradient(q);
-        auto n = u_wall.get_normal_vector(q);
-        auto tau_w = nu * (grad_u * n);
-        for (unsigned int d = 0; d < dim; ++d) traction[q][d] = tau_w[d];
-      }
-
+    std::vector<std::array<scalar, dim>> traction(u_wall.n_q_points); 
+    for (unsigned int q = 0; q < u_wall.n_q_points; ++q)
+    {
+      auto grad_u = u_wall.get_gradient(q);
+      auto n = u_wall.get_normal_vector(q);
+      auto tau_w = nu * (grad_u * n);
       for (unsigned int d = 0; d < dim; ++d)
       {
-        wss.reinit(face);
-        for (unsigned int q = 0; q < wss.n_q_points; ++q) wss.submit_value(traction[q][d], q);
-        wss.integrate(dealii::EvaluationFlags::values);
-        wss.distribute_local_to_global(*dst.num[d]);
+        traction[q][d] = tau_w[d];
       }
-
-      wss.reinit(face);
-      for (unsigned int q = 0; q < wss.n_q_points; ++q) wss.submit_value(dealii::make_vectorized_array<Number>(1.0), q);
-      wss.integrate(dealii::EvaluationFlags::values);
-      wss.distribute_local_to_global(*dst.den);
     }
+
+    for (unsigned int d = 0; d < dim; ++d)
+    {
+      wss.reinit(face);
+      for (unsigned int q = 0; q < wss.n_q_points; ++q)
+      {
+        wss.submit_value(traction[q][d], q);
+      }
+      wss.integrate(dealii::EvaluationFlags::values);
+      wss.distribute_local_to_global(*dst.num[d]);
+    }
+
+    wss.reinit(face);
+    for (unsigned int q = 0; q < wss.n_q_points; ++q)
+    {
+      wss.submit_value(dealii::make_vectorized_array<Number>(1.0), q);
+    }
+    wss.integrate(dealii::EvaluationFlags::values);
+    wss.distribute_local_to_global(*dst.den);
   }
 }
 
@@ -807,8 +856,10 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
   for(unsigned int d = 0; d < dim; ++d) 
   {
     traction_num[d].compress(dealii::VectorOperation::add);
+    constraint_wall.distribute(traction_num[d]);
   }
   traction_den.compress(dealii::VectorOperation::add);
+  constraint_wall.distribute(traction_den);
 
   // Compute Friction Velocity exactly at the Wall Nodes
   friction_velocity = 0.0;
@@ -831,6 +882,7 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
     }
   }
 
+  constraint_wall.distribute(friction_velocity);
   friction_velocity.update_ghost_values();
 
   // Vertical Copying: Propagate u_tau to the off-wall fluid nodes
@@ -846,6 +898,7 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
     }
   }
 
+  constraint_wall.distribute(friction_velocity);
   // Final share of the completely populated u_tau vector to the downstream solver
   friction_velocity.update_ghost_values();
 }

@@ -43,6 +43,9 @@ template <int dim, typename Number>
 void
 WallDGCoupler<dim, Number>::precompute_schur_matrices()
 {
+  function_enrichment->wall_distance.update_ghost_values();
+  function_enrichment->friction_velocity.update_ghost_values();
+
   auto const & mf_en = *(function_enrichment->get_matrix_free());
   const unsigned int n_batches = mf_en.n_cell_batches();
   cell_schur_data.resize(n_batches);
@@ -58,15 +61,15 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
   dealii::FEEvaluation<dim, -1, 0, 1, Number>   y_eval(mf_en, idx_en_scalar, quad_idx, 0, active_fe_index);
   dealii::FEEvaluation<dim, -1, 0, 1, Number>   utau_eval(mf_en, idx_cg, quad_idx, 0, active_fe_index);
 
-  const unsigned int n_dg = phi_dg.tensor_dofs_per_cell;
-  const unsigned int n_en = phi_en.tensor_dofs_per_cell;
+  const unsigned int n_dg = phi_dg.dofs_per_component;
+  const unsigned int n_en = phi_en.dofs_per_component;
 
   // The shape functions are vectors!
   using TensorType = dealii::Tensor<1, dim, scalar>;
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, idx_shadow)->active_fe_index() == 0)
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0)
     {
       continue;
     }
@@ -181,6 +184,15 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
       }
     }
 
+    /*
+     * Tikhonov Regularization
+     */
+    for(unsigned int i = 0; i < n_en; ++i) 
+    {
+      // Add a scale-invariant threshold to the diagonal (1e-10)
+      S[i][i] += dealii::make_vectorized_array<Number>(1e-10) * data.M_tilde_tilde[i][i]; 
+    }
+
     data.schur_inverse = invert_matrix_simd(S, n_en);
     cell_schur_data[cell] = data; 
   }
@@ -231,7 +243,7 @@ WallDGCoupler<dim, Number>::apply_schur_complement(
   VectorType & dst_enrichment,
   VectorType const & src_enrichment) const
 {
-  function_enrichment->copy_global_dg_to_wall_layout(src_global, function_enrichment->shadow_velocity);
+  function_enrichment->copy_global_dg_to_wall_layout(src_global, function_enrichment->shadow_velocity_residual);
 
   apply_schur_inverse_mass(function_enrichment->shadow_velocity,
                            function_enrichment->shadow_velocity_residual,
@@ -257,8 +269,8 @@ WallDGCoupler<dim, Number>::apply_schur_inverse_mass(
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(mf_en, idx_shadow, quad_idx, 0, active_fe_index);
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(mf_en, idx_en, quad_idx, 0, active_fe_index);
 
-  const unsigned int n_dg = phi_dg.tensor_dofs_per_cell;
-  const unsigned int n_en = phi_en.tensor_dofs_per_cell;
+  const unsigned int n_dg = phi_dg.dofs_per_component;
+  const unsigned int n_en = phi_en.dofs_per_component;
   const unsigned int n_batches = mf_en.n_cell_batches();
 
   using TensorType = dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>;
@@ -269,7 +281,7 @@ WallDGCoupler<dim, Number>::apply_schur_inverse_mass(
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, idx_shadow)->active_fe_index() == 0) continue;
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0) continue;
 
     phi_dg.reinit(cell); phi_en.reinit(cell);
 
@@ -378,8 +390,8 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity_from_residual(
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(mf_en, idx_shadow, quad_idx, 0, active_fe_index);
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(mf_en, idx_en, quad_idx, 0, active_fe_index);
 
-  const unsigned int n_dg = phi_dg.tensor_dofs_per_cell;
-  const unsigned int n_en = phi_en.tensor_dofs_per_cell;
+  const unsigned int n_dg = phi_dg.dofs_per_component;
+  const unsigned int n_en = phi_en.dofs_per_component;
   const unsigned int n_batches = mf_en.n_cell_batches();
 
   using TensorType = dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>;
@@ -393,7 +405,7 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity_from_residual(
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, idx_shadow)->active_fe_index() == 0)
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0)
     {
       continue;
     }
@@ -472,16 +484,36 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity(
   function_enrichment->copy_global_dg_to_wall_layout(inter_velocity, function_enrichment->shadow_velocity);
 
   auto const & mf_en = *(function_enrichment->get_matrix_free());
+
+ this->current_scaling_factor = scaling_factor; 
+
+  mf_en.cell_loop(&WallDGCoupler::local_compute_enrichment_velocity,
+                  this,
+                  function_enrichment->enrichment_velocity,
+                  function_enrichment->shadow_velocity);
+}
+
+template<int dim, typename Number>
+void
+WallDGCoupler<dim, Number>::local_compute_enrichment_velocity(
+  dealii::MatrixFree<dim, Number> const & mf_en,
+  VectorType & dst,
+  VectorType const & src,
+  std::pair<unsigned int, unsigned int> const & range) const
+{
   unsigned int idx_shadow = function_enrichment->get_dof_index_shadow_vector();
   unsigned int idx_en     = function_enrichment->get_dof_index_en();
   unsigned int quad_idx   = function_enrichment->get_quad_index();
+  unsigned int fe_idx     = active_fe_index; 
 
-  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(mf_en, idx_shadow, quad_idx, 0, active_fe_index);
-  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(mf_en, idx_en, quad_idx, 0, active_fe_index);
+  dealii::VectorizedArray<Number> vec_scaling = dealii::make_vectorized_array<Number>(this->current_scaling_factor);
 
-  const unsigned int n_dg      = phi_dg.tensor_dofs_per_cell;
-  const unsigned int n_en      = phi_en.tensor_dofs_per_cell;
-  const unsigned int n_batches = mf_en.n_cell_batches();
+  // Initialize FEEvaluation
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(mf_en, idx_shadow, quad_idx, 0, fe_idx);
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(mf_en, idx_en, quad_idx, 0, fe_idx);
+
+  const unsigned int n_dg = phi_dg.dofs_per_component;
+  const unsigned int n_en = phi_en.dofs_per_component;
 
   using TensorType = dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>;
   TensorType zero_tensor;
@@ -490,11 +522,11 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity(
     zero_tensor[d] = dealii::make_vectorized_array<Number>(0.0);
   }
 
-  dealii::VectorizedArray<Number> vec_scaling = dealii::make_vectorized_array<Number>(scaling_factor);
-
-  for (unsigned int cell = 0; cell < n_batches; ++cell)
+  // Process the batch chunk assigned to this thread
+  for (unsigned int cell = range.first; cell < range.second; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, idx_shadow)->active_fe_index() == 0)
+    // Safely skip any cell that isn't actively part of the wall layer
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() != fe_idx)
     {
       continue;
     }
@@ -502,24 +534,32 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity(
     phi_dg.reinit(cell);
     phi_en.reinit(cell);
 
-    // Read safely from the isolated wall model vectors
-    phi_dg.read_dof_values_plain(function_enrichment->shadow_velocity);
+    // Read from the source vectors
+    phi_dg.read_dof_values_plain(src); 
     phi_en.read_dof_values_plain(function_enrichment->enrichment_residual);
 
     std::vector<TensorType> U_bar_star(n_dg);
-    for(unsigned int i = 0; i < n_dg; ++i) 
+    for(unsigned int i = 0; i < n_dg; ++i)
     {
       U_bar_star[i] = phi_dg.get_dof_value(i);
     }
 
     std::vector<TensorType> R_tilde(n_en);
-    for(unsigned int i = 0; i < n_en; ++i) 
+    for(unsigned int i = 0; i < n_en; ++i)
     {
       R_tilde[i] = phi_en.get_dof_value(i);
     }
 
+    // Precomputed local Schur Complement Data
     auto const & M_tilde_tilde_inverse = cell_schur_data[cell].M_tilde_tilde_inverse;
     auto const & M_bar_tilde           = cell_schur_data[cell].M_bar_tilde; 
+
+    AssertThrow(M_bar_tilde.size() == n_dg, 
+                dealii::ExcMessage("M_bar_tilde outer size is wrong! Matrix was not precomputed."));
+    if (n_dg > 0) {
+      AssertThrow(M_bar_tilde[0].size() == n_en, 
+                  dealii::ExcMessage("M_bar_tilde inner size is wrong!"));
+    }
 
     // coupling = M_bar_tilde^T * U_bar_star
     std::vector<TensorType> coupling(n_en, zero_tensor);
@@ -542,14 +582,15 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity(
       }
     }
 
-    // Scale and write back
+    // Scale and push back to MatrixFree
     for(unsigned int i = 0; i < n_en; ++i) 
     {
       U_tilde[i] *= vec_scaling;
       phi_en.submit_dof_value(U_tilde[i], i);
     }
 
-    phi_en.set_dof_values_plain(function_enrichment->enrichment_velocity);
+    // Write directly to the destination vector
+    phi_en.set_dof_values_plain(dst);
   }
 }
 

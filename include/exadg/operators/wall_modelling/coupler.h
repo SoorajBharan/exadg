@@ -59,6 +59,13 @@ public:
                                    double scaling_factor);
 
   void
+  local_compute_enrichment_velocity(
+    dealii::MatrixFree<dim, Number> const & mf_en,
+    VectorType & dst,
+    VectorType const & src,
+    std::pair<unsigned int, unsigned int> const & range) const;
+
+  void
   update_wall_enrichment_vectors(VectorType const & global_velocity) const;
 
   /*
@@ -88,6 +95,8 @@ private:
   unsigned int dof_index_global_u;
 
   unsigned int active_fe_index;
+
+  Number current_scaling_factor;
 };
 
 } // namespace ExaDG

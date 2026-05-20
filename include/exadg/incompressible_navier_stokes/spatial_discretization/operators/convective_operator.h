@@ -26,6 +26,8 @@
 #include <exadg/incompressible_navier_stokes/user_interface/parameters.h>
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/operator_base.h>
+#include <exadg/operators/wall_modelling/coupler.h>
+#include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
 
 namespace ExaDG
 {

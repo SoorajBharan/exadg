@@ -33,6 +33,8 @@
 #include <deal.II/fe/mapping.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/matrix_free/matrix_free.h>
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/numerics/vector_tools_mean_value.h>
 
 #include <map>
 #include <vector>
@@ -60,6 +62,7 @@ void
              unsigned int                                           fe_degree_dg,
              unsigned int                                           fe_degree_en,
              std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
+             std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
              unsigned int                                           quad_index_in,
              unsigned int                                           layers = 3);
 
