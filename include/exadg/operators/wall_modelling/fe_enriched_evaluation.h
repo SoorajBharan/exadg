@@ -49,10 +49,10 @@ public:
   // Constructor for CellIntegrator
   FEEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
                        FunctionEnrichment<dim, Number> const & enrichment_in)
-    : phi_dg(mf, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index()),
-    phi_en(mf, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index()),
-    y_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
-    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
+    : phi_dg(mf, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    phi_en(mf, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    y_eval(mf, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
     enrichment(&enrichment_in),
     n_q_points(phi_dg.n_q_points) {}
 
@@ -60,10 +60,10 @@ public:
   FEEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
                        FunctionEnrichment<dim, Number> const & enrichment_in,
                        bool inner_face)
-    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index()),
-    phi_en(mf, inner_face, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index()),
-    y_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
-    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index()),
+    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    phi_en(mf, inner_face, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    y_eval(mf, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
+    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
     enrichment(&enrichment_in),
     n_q_points(phi_dg.n_q_points) {}
 
@@ -126,16 +126,18 @@ public:
   value_type get_value(unsigned int q) const
   {
     value_type u_dg = phi_dg.get_value(q);
-    value_type u_cg = phi_en.get_value(q); // The Continuous Galerkin component
+    value_type u_en = phi_en.get_value(q); // The Continuous Galerkin component
+
+    scalar utau = utau_eval.get_value(q);
+    scalar u_tau_safe = std::max(utau, dealii::make_vectorized_array<Number>(1e-6));
 
     scalar y    = y_eval.get_value(q);
-    scalar utau = utau_eval.get_value(q);
 
     // Get the scalar Spalding evaluation (psi)
-    scalar psi = enrichment->get_value(utau, y);
+    scalar psi = enrichment->get_value(u_tau_safe, y);
 
     // Total Velocity = DG + (enrichment function * CG)
-    return u_dg + (psi * u_cg);
+    return u_dg + (psi * u_en);
   }
 
   gradient_type get_gradient(unsigned int q) const
@@ -152,7 +154,7 @@ public:
 
     // Wall normal vector
     vector grad_y = y_eval.get_gradient(q);
-    scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
+    scalar epsilon = dealii::make_vectorized_array<Number>(1e-6);
     vector normal = grad_y / std::max(grad_y.norm(), epsilon);
 
     scalar psi = enrichment->get_value(utau, y);
@@ -291,6 +293,11 @@ public:
   {
     phi_dg.distribute_local_to_global(dst_dg);
     phi_en.distribute_local_to_global(dst_en);
+  }
+
+  vector get_normal_vector(unsigned int q) const
+  {
+    return phi_dg.get_normal_vector(q);
   }
 
 }; // FEEnrichedEvaluation declaration

@@ -81,9 +81,13 @@ public:
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde; 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> schur_inverse;
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar_inverse;
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar;
 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde;
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_inverse;
+
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_safe;
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_inverse_safe;
   };
 
   std::vector<SchurData> cell_schur_data;

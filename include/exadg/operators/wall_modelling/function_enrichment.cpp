@@ -283,6 +283,10 @@ FunctionEnrichment<dim, Number>::initialize(
 
   matrix_free_en->initialize_dof_vector(wall_velocity, dof_index_cg_vector);
 
+
+  matrix_free_en->initialize_dof_vector(src, dof_index_shadow_vector);
+  matrix_free_en->initialize_dof_vector(dst, dof_index_shadow_vector);
+
   enrichment_velocity = 0.0;
   enrichment_residual = 0.0;
   shadow_velocity = 0.0;
@@ -370,7 +374,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
   unsigned int                                           layers)
 {
   (void)layers;
-  wall_distance = 2.0; 
+  wall_distance = 1e10; 
 
   // ====================================================================
   // PART 1: Compute Exact DG Wall Distance (for y_dist_vec)
@@ -534,7 +538,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance_cg(
 {
   (void)layers;
 
-  wall_distance = 0.0; 
+  wall_distance = 1e10; 
 
   std::map<dealii::types::global_dof_index, dealii::Point<dim>> support_points;
   // FOR:CG

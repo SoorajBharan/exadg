@@ -165,6 +165,9 @@ void
   VectorType shadow_velocity;
   VectorType shadow_velocity_residual;
 
+  VectorType src;
+  VectorType dst;
+
   std::map<dealii::types::global_cell_index, bool> is_cell_enriched;
 
 private:

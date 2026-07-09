@@ -11,8 +11,10 @@
  *  ______________________________________________________________________
  */
 
-#include "coupler.h"
 #include <exadg/operators/wall_modelling/coupler.h>
+#include <iostream>
+#include <fstream>
+#include <iomanip>
 
 namespace ExaDG
 {
@@ -43,6 +45,7 @@ template <int dim, typename Number>
 void
 WallDGCoupler<dim, Number>::precompute_schur_matrices()
 {
+  cell_schur_data.clear();
   function_enrichment->wall_distance.update_ghost_values();
   function_enrichment->friction_velocity.update_ghost_values();
 
@@ -128,7 +131,7 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
 
     SchurData data;
     auto zero = dealii::make_vectorized_array<Number>(0.0);
-    auto M_bar_bar     = std::vector<std::vector<scalar>>(n_dg, std::vector<scalar>(n_dg, zero));
+    data.M_bar_bar     = std::vector<std::vector<scalar>>(n_dg, std::vector<scalar>(n_dg, zero));
     data.M_tilde_tilde = std::vector<std::vector<scalar>>(n_en, std::vector<scalar>(n_en, zero));
     data.M_bar_tilde   = std::vector<std::vector<scalar>>(n_dg, std::vector<scalar>(n_en, zero));
 
@@ -158,12 +161,12 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
       {
         for (unsigned int j = 0; j < n_dg; ++j)
         {
-          M_bar_bar[i][j] += (N_dg[i][q] * N_dg[j][q]) * JxW;
+          data.M_bar_bar[i][j] += (N_dg[i][q] * N_dg[j][q]) * JxW;
         }
       }
     }
 
-    data.M_bar_bar_inverse     = invert_matrix_simd(M_bar_bar, n_dg);
+    data.M_bar_bar_inverse     = invert_matrix_simd(data.M_bar_bar, n_dg);
     data.M_tilde_tilde_inverse = invert_matrix_simd(data.M_tilde_tilde, n_en);
 
     auto S = data.M_tilde_tilde; 
@@ -185,16 +188,108 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
     }
 
     /*
-     * Tikhonov Regularization
+     * Tikhonov Regularization (SIMD Safe - Absolute Floor)
      */
+    // 1. Find the maximum diagonal entry across all DOFs for this cell batch
+    auto M_safe = data.M_tilde_tilde; 
+    dealii::VectorizedArray<Number> max_diag = dealii::make_vectorized_array<Number>(0.0);
     for(unsigned int i = 0; i < n_en; ++i) 
     {
-      // Add a scale-invariant threshold to the diagonal (1e-10)
-      S[i][i] += dealii::make_vectorized_array<Number>(1e-10) * data.M_tilde_tilde[i][i]; 
+      for (unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v) 
+      {
+        max_diag[v] = std::max(max_diag[v], std::abs(data.M_tilde_tilde[i][i][v]));
+      }
     }
+
+    // 2. Add a threshold scaled by the MAXIMUM diagonal entry, not the local one
+    dealii::VectorizedArray<Number> epsilon = dealii::make_vectorized_array<Number>(1e-10);
+    for(unsigned int i = 0; i < n_en; ++i) 
+    {
+      M_safe[i][i] += epsilon * max_diag; 
+    }
+
+    data.M_tilde_tilde_inverse_safe = invert_matrix_simd(M_safe, n_en);
 
     data.schur_inverse = invert_matrix_simd(S, n_en);
     cell_schur_data[cell] = data; 
+
+
+    // ==========================================
+    // DEBUG: Print matrices for the very first valid wall cell
+    // ==========================================
+    static bool matrices_printed = false; // Remembers across loop iterations
+
+    if (!matrices_printed) 
+    {
+      matrices_printed = true; // Ensure it only prints exactly once
+      const unsigned int lane = 0; // Extract the 1st cell in this SIMD batch
+
+      std::ofstream out_file("enrichment_matrices_debug.txt");
+      out_file << std::scientific << std::setprecision(6);
+
+      out_file << "=== M_tilde_tilde (Mass Matrix) ===\n";
+      for (unsigned int i = 0; i < n_en; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_tilde_tilde[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file << "\n=== M_bar_tilde (Coupling Matrix) ===\n";
+      for (unsigned int i = 0; i < n_dg; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_bar_tilde[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file << "\n=== M_tilde_tilde_inverse ===\n";
+      for (unsigned int i = 0; i < n_en; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_tilde_tilde_inverse[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file << "\n=== M_tilde_tilde_inverse safe===\n";
+      for (unsigned int i = 0; i < n_en; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_tilde_tilde_inverse_safe[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file << "\n=== M_bar_bar ===\n";
+      for (unsigned int i = 0; i < n_dg; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_bar_bar[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file << "\n=== M_bar_bar_inverse ===\n";
+      for (unsigned int i = 0; i < n_dg; ++i) 
+      {
+        for (unsigned int j = 0; j < n_en; ++j) 
+        {
+          out_file << std::setw(15) << data.M_bar_bar_inverse[i][j][lane] << " ";
+        }
+        out_file << "\n";
+      }
+
+      out_file.close();
+      std::cout << "\n>>> SUCCESS: Debug matrices written to enrichment_matrices_debug.txt <<<\n\n";
+    }
   }
 }
 
@@ -243,14 +338,14 @@ WallDGCoupler<dim, Number>::apply_schur_complement(
   VectorType & dst_enrichment,
   VectorType const & src_enrichment) const
 {
-  function_enrichment->copy_global_dg_to_wall_layout(src_global, function_enrichment->shadow_velocity_residual);
-
-  apply_schur_inverse_mass(function_enrichment->shadow_velocity,
-                           function_enrichment->shadow_velocity_residual,
-                           dst_enrichment,
-                           src_enrichment);
-
-  function_enrichment->copy_wall_layout_to_global_dg(function_enrichment->shadow_velocity, dst_global);
+  // function_enrichment->copy_global_dg_to_wall_layout(src_global, function_enrichment->shadow_velocity_residual);
+  //
+  // apply_schur_inverse_mass(function_enrichment->shadow_velocity,
+  //                          function_enrichment->shadow_velocity_residual,
+  //                          dst_enrichment,
+  //                          src_enrichment);
+  //
+  // function_enrichment->copy_wall_layout_to_global_dg(function_enrichment->shadow_velocity, dst_global);
 }
 
 template<int dim, typename Number>
@@ -485,7 +580,8 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity(
 
   auto const & mf_en = *(function_enrichment->get_matrix_free());
 
- this->current_scaling_factor = scaling_factor; 
+ // this->current_scaling_factor = scaling_factor; 
+ this->current_scaling_factor = 1.0; 
 
   mf_en.cell_loop(&WallDGCoupler::local_compute_enrichment_velocity,
                   this,
@@ -551,7 +647,7 @@ WallDGCoupler<dim, Number>::local_compute_enrichment_velocity(
     }
 
     // Precomputed local Schur Complement Data
-    auto const & M_tilde_tilde_inverse = cell_schur_data[cell].M_tilde_tilde_inverse;
+    auto const & M_tilde_tilde_inverse = cell_schur_data[cell].M_tilde_tilde_inverse_safe;
     auto const & M_bar_tilde           = cell_schur_data[cell].M_bar_tilde; 
 
     AssertThrow(M_bar_tilde.size() == n_dg, 
@@ -575,10 +671,9 @@ WallDGCoupler<dim, Number>::local_compute_enrichment_velocity(
     std::vector<TensorType> U_tilde(n_en, zero_tensor);
     for(unsigned int i = 0; i < n_en; ++i) 
     {
-      auto diff = R_tilde[i] - coupling[i];
       for(unsigned int j = 0; j < n_en; ++j) 
       {
-        U_tilde[i] += M_tilde_tilde_inverse[i][j] * diff;
+        U_tilde[i] += M_tilde_tilde_inverse[i][j] * (R_tilde[j] - coupling[j]);
       }
     }
 

@@ -300,9 +300,12 @@ Operator<dim, n_components, Number>::setup_operators()
     param.turbulence_model_data.positivity_preserving_limiter;
   rhs_kernel_data.dof_index_velocity       = get_dof_index_velocity();
   rhs_kernel_data.dof_index                = get_dof_index();
-  rhs_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
   rhs_kernel_data.turbulence_model_data    = param.turbulence_model_data;
   rhs_kernel_data.diffusivity              = param.diffusivity;
+  if(param.turbulence_model_data.is_active)
+  {
+    rhs_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
+  }
 
   rhs_kernel_data.f = field_functions->right_hand_side;
 
