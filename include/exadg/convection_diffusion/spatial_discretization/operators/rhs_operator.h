@@ -138,26 +138,42 @@ public:
     value_type volume_flux;
     dealii::Point<dim, scalar> q_points = integrator.quadrature_point(q);
 
-    if constexpr(n_components == 1)
+    if(data.rans_model)
     {
-      volume_flux = FunctionEvaluator<0, dim, Number>::value(*(data.f), q_points, time);
+      if constexpr(n_components > 1)
+      {
+        volume_flux = MultiComponentFunctionEvaluator<n_components, dim,  Number>::value(*(data.f), q_points, time);
+      }
     }
-    else if constexpr(n_components == dim)
-    {
-      volume_flux = FunctionEvaluator<1, dim, Number>::value(*(data.f), q_points, time);
-    }
-    else
-    {
-      volume_flux = MultiComponentFunctionEvaluator<n_components, dim,  Number>::value(*(data.f), q_points, time);
+    else  {
+      if constexpr(n_components == 1)
+      {
+        volume_flux = FunctionEvaluator<0, dim, Number>::value(*(data.f), q_points, time);
+      }
+      else if constexpr(n_components == dim)
+      {
+        volume_flux = FunctionEvaluator<1, dim, Number>::value(*(data.f), q_points, time);
+      }
     }
 
     if(data.rans_model)
     {
-      volume_flux += get_production_term(q);
-      volume_flux -= get_dissipation_term(q);
-      if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+      if constexpr (n_components >= 2)
       {
-        volume_flux += get_square_gradient_term(q);
+        value_type production = get_production_term(q);
+        value_type dissipation = get_dissipation_term(q);
+
+        value_type limited_production;
+
+        limited_production[0] = std::min(production[0], dealii::make_vectorized_array<Number>(10.0) * dissipation[0]);
+        limited_production[1] = std::min(production[1], dealii::make_vectorized_array<Number>(10.0) * dissipation[1]);
+
+        volume_flux += limited_production;
+        volume_flux -= dissipation;
+        if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        {
+          volume_flux += get_square_gradient_term(q);
+        }
       }
     }
 
@@ -197,6 +213,15 @@ public:
           square_gradient_term[1] = (data.diffusivity + viscosity /sigma) * scalar_product(solution_gradient[1], solution_gradient[1]);
         }
       }
+
+      Number C_max = 2.0e-2;
+
+      value_type safe_limit;
+      safe_limit[0] = dealii::make_vectorized_array<Number>(C_max / data.time_step_size);
+      safe_limit[1] = dealii::make_vectorized_array<Number>(C_max / data.time_step_size);
+
+      square_gradient_term[0] = std::min(square_gradient_term[0], safe_limit[0]);
+      square_gradient_term[1] = std::min(square_gradient_term[1], safe_limit[1]);
 
       return square_gradient_term;
     }

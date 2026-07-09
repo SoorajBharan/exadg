@@ -54,6 +54,7 @@ TimeIntBDF<dim, n_components, Number>::TimeIntBDF(
     cfl(param.cfl / std::pow(2.0, refine_steps_time)),
     solution(param_in.order_time_integrator),
     vec_convective_term(param_in.order_time_integrator),
+    vec_source_term(param_in.order_time_integrator),
     iterations({0, 0}),
     postprocessor(postprocessor_in),
     helpers_ale(helpers_ale_in),
@@ -101,6 +102,14 @@ TimeIntBDF<dim, n_components, Number>::setup_derived()
       initialize_vec_convective_term();
     }
   }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(param.ale_formulation == false and param.restarted_simulation == false)
+    {
+      initialize_vec_source_term();
+    }
+  }
 }
 
 template<int dim, int n_components, typename Number>
@@ -123,6 +132,19 @@ TimeIntBDF<dim, n_components, Number>::allocate_vectors()
 
       if(param.ale_formulation == false)
         pde_operator->initialize_dof_vector(convective_term_np);
+    }
+  }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(param.ale_formulation == false)
+    {
+      pde_operator->initialize_dof_vector(source_term_np);
+    }
+
+    for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+    {
+      pde_operator->initialize_dof_vector(vec_source_term[i]);
     }
   }
 
@@ -164,6 +186,18 @@ TimeIntBDF<dim, n_components, Number>::get_vectors()
     if(param.ale_formulation == false)
     {
       vectors->emplace_back(&convective_term_np);
+    }
+  }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+    {
+      vectors->emplace_back(&vec_source_term[i]);
+    }
+    if(param.ale_formulation == false)
+    {
+      vectors->emplace_back(&source_term_np);
     }
   }
 
@@ -239,6 +273,28 @@ TimeIntBDF<dim, n_components, Number>::initialize_vec_convective_term()
         pde_operator->evaluate_convective_term(vec_convective_term[i],
                                                solution[i],
                                                this->get_previous_time(i));
+      }
+    }
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void
+TimeIntBDF<dim, n_components, Number>::initialize_vec_source_term()
+{
+  if(this->param.get_type_velocity_field() != TypeVelocityField::DoFVector)
+  {
+    pde_operator->update_time_step_size(this->get_time_step_size());
+    pde_operator->rhs(vec_source_term[0], solution[0], this->get_time());
+
+    if(this->param.start_with_low_order == false)
+    {
+      for(unsigned int i = 1; i < vec_source_term.size(); ++i)
+      {
+        pde_operator->update_time_step_size(this->get_time_step_size());
+        pde_operator->rhs(vec_source_term[i],
+                          solution[i],
+                          this->get_previous_time(i));
       }
     }
   }
@@ -398,6 +454,15 @@ TimeIntBDF<dim, n_components, Number>::prepare_vectors_for_next_timestep()
     push_back(vec_grid_coordinates);
     vec_grid_coordinates[0].swap(grid_coordinates_np);
   }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(param.ale_formulation == false)
+    {
+      push_back(vec_source_term);
+      vec_source_term[0].swap(source_term_np);
+    }
+  }
 }
 
 template<int dim, int n_components, typename Number>
@@ -446,6 +511,17 @@ TimeIntBDF<dim, n_components, Number>::read_restart_vectors(boost::archive::bina
     }
   }
 
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(this->param.ale_formulation == false)
+    {
+      for(unsigned int i = 0; i < this->order; i++)
+      {
+        ia >> vec_source_term[i];
+      }
+    }
+  }
+
   if(this->param.ale_formulation)
   {
     for(unsigned int i = 0; i < vec_grid_coordinates.size(); i++)
@@ -472,6 +548,17 @@ TimeIntBDF<dim, n_components, Number>::write_restart_vectors(boost::archive::bin
       for(unsigned int i = 0; i < this->order; i++)
       {
         oa << vec_convective_term[i];
+      }
+    }
+  }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(this->param.ale_formulation == false)
+    {
+      for(unsigned int i = 0; i < this->order; i++)
+      {
+        oa << vec_source_term[i];
       }
     }
   }
@@ -526,6 +613,7 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
     }
   }
 
+  pde_operator->update_time_step_size(this->get_time_step_size());
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
   pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
 
@@ -550,6 +638,25 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
 
     for(unsigned int i = 0; i < vec_convective_term.size(); ++i)
       rhs_vector.add(-this->extra.get_beta(i), vec_convective_term[i]);
+  }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(param.ale_formulation == true)
+    {
+      for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+      {
+        // Using rhs() as specified to compute the historical source terms
+        pde_operator->rhs(vec_source_term[i], 
+                          solution[i], 
+                          this->get_previous_time(i), 
+                          &velocity_np);
+      }
+    }
+
+    // Add extrapolated historical source terms to the right-hand side
+    for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+      rhs_vector.add(this->extra.get_beta(i), vec_source_term[i]);
   }
 
   VectorType sum_alphai_ui(solution[0]);
@@ -601,6 +708,19 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
                                                solution_np,
                                                this->get_next_time());
       }
+    }
+  }
+
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    if(param.ale_formulation == false)
+    {
+      // source_term_np must be declared in time_int_bdf.h and initialized 
+      // in allocate_vectors()
+      pde_operator->rhs(source_term_np, 
+                        solution_np, 
+                        this->get_next_time(), 
+                        &velocity_np);
     }
   }
 

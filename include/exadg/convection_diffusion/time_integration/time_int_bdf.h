@@ -96,6 +96,9 @@ private:
   void
   initialize_vec_convective_term();
 
+  void
+  initialize_vec_source_term();
+
   double
   calculate_time_step_size() final;
 
@@ -137,6 +140,8 @@ private:
   std::vector<VectorType> vec_convective_term;
   VectorType              convective_term_np;
 
+  std::vector<VectorType> vec_source_term;
+  VectorType              source_term_np;
   VectorType rhs_vector;
 
   // numerical velocity field
