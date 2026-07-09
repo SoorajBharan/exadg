@@ -162,6 +162,8 @@ public:
   // a purely diffusive problem, one also does not have to specify this parameter.
   TreatmentOfConvectiveTerm treatment_of_convective_term;
 
+  TreatmentOfSourceTerm treatment_of_source_term;
+
   // calculation of time step size
   TimeStepCalculation calculation_of_time_step_size;
 

@@ -137,6 +137,13 @@ enum class TreatmentOfConvectiveTerm
   Implicit
 };
 
+enum class TreatmentOfSourceTerm
+{
+  Undefined,
+  Explicit, // additive decomposition (IMEX)
+  Implicit
+};
+
 /*
  *  Temporal discretization method for OIF splitting:
  *

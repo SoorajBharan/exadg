@@ -22,6 +22,7 @@
 // ExaDG
 #include <exadg/convection_diffusion/user_interface/parameters.h>
 #include <exadg/utilities/print_functions.h>
+#include "enum_types.h"
 
 namespace ExaDG
 {
@@ -48,6 +49,7 @@ Parameters::Parameters()
     order_time_integrator(1),
     start_with_low_order(true),
     treatment_of_convective_term(TreatmentOfConvectiveTerm::Undefined),
+    treatment_of_source_term(TreatmentOfSourceTerm::Undefined),
     calculation_of_time_step_size(TimeStepCalculation::Undefined),
     adaptive_time_stepping(false),
     adaptive_time_stepping_limiting_factor(1.2),
@@ -503,6 +505,7 @@ Parameters::print_parameters_temporal_discretization(dealii::ConditionalOStream 
     print_parameter(pcout, "Order of time integrator", order_time_integrator);
     print_parameter(pcout, "Start with low order method", start_with_low_order);
     print_parameter(pcout, "Treatment of convective term", treatment_of_convective_term);
+    print_parameter(pcout, "Treatment of source term", treatment_of_source_term);
   }
 
   print_parameter(pcout, "Calculation of time step size", calculation_of_time_step_size);

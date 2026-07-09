@@ -311,6 +311,9 @@ public:
   void
   get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
 
+  void
+  update_time_step_size(double const dt) const;
+
 private:
   void
   do_setup();

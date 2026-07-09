@@ -301,11 +301,11 @@ Operator<dim, n_components, Number>::setup_operators()
   rhs_kernel_data.dof_index_velocity       = get_dof_index_velocity();
   rhs_kernel_data.dof_index                = get_dof_index();
   rhs_kernel_data.turbulence_model_data    = param.turbulence_model_data;
-  rhs_kernel_data.diffusivity              = param.diffusivity;
   if(param.turbulence_model_data.is_active)
   {
     rhs_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
   }
+  rhs_kernel_data.diffusivity              = param.diffusivity;
 
   rhs_kernel_data.f = field_functions->right_hand_side;
 
@@ -1194,6 +1194,13 @@ void
 Operator<dim, n_components, Number>::get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const
 {
   turbulence_model_ptr->get_turbulent_kinetic_energy(dst, solution);
+}
+
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::update_time_step_size(double const dt) const
+{
+  rhs_operator.set_time_step_size(dt);
 }
 
 template class Operator<2, 1, float>;

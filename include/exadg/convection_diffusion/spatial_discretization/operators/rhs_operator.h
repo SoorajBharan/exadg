@@ -48,6 +48,7 @@ struct RHSKernelData
   unsigned int                dof_index_velocity;
   unsigned int                dof_index;
   double                      diffusivity;
+  double                      time_step_size;
   TurbulenceModelData         turbulence_model_data;
   PositivityPreservingLimiter positivity_preserving_limiter;
 };
@@ -343,6 +344,12 @@ public:
     eddy_viscosity->update_ghost_values();
   }
 
+  void
+  set_time_step_size(double const dt) const
+  {
+    data.time_step_size = dt;
+  }
+
   std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr;
 
 private:
@@ -424,6 +431,8 @@ public:
   void
   set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in) const;
 
+  void
+  set_time_step_size(double const dt) const;
 private:
   void
   do_cell_integral(IntegratorCell & integrator) const;
