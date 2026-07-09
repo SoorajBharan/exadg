@@ -486,11 +486,12 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   divergence_operator.initialize(*matrix_free, divergence_operator_data);
 
   // convective operator
-  convective_kernel_data.formulation       = param.formulation_convective_term;
-  convective_kernel_data.upwind_factor     = param.upwind_factor;
-  convective_kernel_data.use_outflow_bc    = param.use_outflow_bc_convective_term;
-  convective_kernel_data.type_dirichlet_bc = param.type_dirichlet_bc_convective;
-  convective_kernel_data.ale               = param.ale_formulation;
+  convective_kernel_data.formulation             = param.formulation_convective_term;
+  convective_kernel_data.upwind_factor           = param.upwind_factor;
+  convective_kernel_data.use_outflow_bc          = param.use_outflow_bc_convective_term;
+  convective_kernel_data.type_dirichlet_bc       = param.type_dirichlet_bc_convective;
+  convective_kernel_data.ale                     = param.ale_formulation;
+  convective_kernel_data.wall_enrichment_enabled = param.wall_enrichment_enabled;
   convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, Number>>();
   convective_kernel->reinit(*matrix_free,
                             convective_kernel_data,
@@ -508,10 +509,20 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   convective_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
   convective_operator_data.quad_index_nonlinear = get_quad_index_velocity_overintegration();
   convective_operator_data.bc                   = boundary_descriptor->velocity;
-  convective_operator.initialize(*matrix_free,
-                                 constraint_dummy,
-                                 convective_operator_data,
-                                 convective_kernel);
+  if(param.wall_enrichment_enabled)
+  {
+    convective_operator.initialize(*matrix_free,
+                                   constraint_dummy,
+                                   convective_operator_data,
+                                   convective_kernel,
+                                   this->function_enrichment);
+  }
+  else{
+    convective_operator.initialize(*matrix_free,
+                                   constraint_dummy,
+                                   convective_operator_data,
+                                   convective_kernel);
+  }
 
   // viscous operator
   viscous_kernel_data.IP_factor                    = param.IP_factor_viscous;
@@ -2069,6 +2080,20 @@ Number
 SpatialOperatorBase<dim, Number>::get_kinematic_viscosity() const
 {
   return param.viscosity;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::reinit_enrichment_residual()
+{
+  function_enrichment->enrichment_residual = 0.0;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::update_schur_matrices() const
+{
+  wall_dg_coupler->precompute_schur_matrices();
 }
 
 template class SpatialOperatorBase<2, float>;

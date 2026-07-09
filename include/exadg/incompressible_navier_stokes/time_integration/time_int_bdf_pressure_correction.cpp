@@ -404,7 +404,13 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
 
       if(this->param.wall_enrichment_enabled)
       {
+        pde_operator->update_wall_enrichment_vectors(velocity_np);
+        
+        pde_operator->precompute_schur_matrices();
+
         double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
+
+        pde_operator->reinit_enrichment_residual();
 
         pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
           velocity_np, // This is \bar{U}^* that GMRES just found!

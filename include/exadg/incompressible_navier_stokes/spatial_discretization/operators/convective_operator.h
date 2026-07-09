@@ -42,7 +42,8 @@ struct ConvectiveKernelData
       upwind_factor(1.0),
       use_outflow_bc(false),
       type_dirichlet_bc(TypeDirichletBCs::Mirror),
-      ale(false)
+      ale(false),
+      wall_enrichment_enabled(false)
   {
   }
 
@@ -55,6 +56,8 @@ struct ConvectiveKernelData
   TypeDirichletBCs type_dirichlet_bc;
 
   bool ale;
+
+  bool wall_enrichment_enabled;
 };
 
 template<int dim, typename Number>
@@ -905,6 +908,13 @@ public:
              ConvectiveOperatorData<dim> const &                       data,
              std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel);
 
+
+  void
+  initialize(dealii::MatrixFree<dim, Number> const &                   matrix_free,
+             dealii::AffineConstraints<Number> const &                 affine_constraints,
+             ConvectiveOperatorData<dim> const &                       data,
+             std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel,
+             std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment);
   /*
    * Evaluate nonlinear operator.
    */
@@ -964,6 +974,36 @@ private:
   void
   do_boundary_integral_nonlinear_operator(IntegratorFace & integrator,
                                           IntegratorFace & integrator_grid_velocity,
+                                          dealii::types::boundary_id const & boundary_id) const;
+
+
+  void
+  cell_loop_nonlinear_operator_wall_enrichment(dealii::MatrixFree<dim, Number> const & matrix_free,
+                                               VectorType &                            dst,
+                                               VectorType const &                      src,
+                                               Range const &                           cell_range) const;
+
+  void
+  face_loop_nonlinear_operator_wall_enrichment(dealii::MatrixFree<dim, Number> const & matrix_free,
+                                               VectorType &                            dst,
+                                               VectorType const &                      src,
+                                               Range const &                           face_range) const;
+
+  void
+  boundary_face_loop_nonlinear_operator_wall_enrichment(dealii::MatrixFree<dim, Number> const & matrix_free,
+                                                        VectorType &                            dst,
+                                                        VectorType const &                      src,
+                                                        Range const &                           face_range) const;
+
+  void
+  do_cell_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorCell> & integrator) const;
+
+  void
+  do_face_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_m,
+                                      FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_p) const;
+
+  void
+  do_boundary_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator,
                                           dealii::types::boundary_id const & boundary_id) const;
 
   /*
@@ -1027,6 +1067,7 @@ private:
   ConvectiveOperatorData<dim> operator_data;
 
   std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel;
+  std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment;
 };
 
 } // namespace IncNS

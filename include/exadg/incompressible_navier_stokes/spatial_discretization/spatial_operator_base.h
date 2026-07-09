@@ -482,6 +482,12 @@ public:
   Number
   get_kinematic_viscosity() const;
 
+  void
+  reinit_enrichment_residual();
+
+  void
+  update_schur_matrices() const;
+
 protected:
   /*
    * Projection step.
