@@ -38,7 +38,15 @@ enum class BoundaryType
 {
   Undefined,
   Dirichlet,
-  Neumann
+  Neumann,
+  Mixed
+};
+
+template<int dim>
+struct MixedBoundaryData
+{
+  std::vector<BoundaryType> component_bc_type;
+  std::shared_ptr<dealii::Function<dim>> function;
 };
 
 template<int dim>
@@ -47,6 +55,8 @@ struct BoundaryDescriptor
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> dirichlet_bc;
 
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> neumann_bc;
+
+  std::map<dealii::types::boundary_id, MixedBoundaryData<dim>> mixed_bc;
 
   // returns the boundary type
   inline DEAL_II_ALWAYS_INLINE //
@@ -57,6 +67,8 @@ struct BoundaryDescriptor
       return BoundaryType::Dirichlet;
     else if(this->neumann_bc.find(boundary_id) != this->neumann_bc.end())
       return BoundaryType::Neumann;
+    else if(this->mixed_bc.find(boundary_id) != this->mixed_bc.end())
+      return BoundaryType::Mixed;
 
     AssertThrow(false, dealii::ExcMessage("Boundary type of face is invalid or not implemented."));
 
@@ -74,6 +86,9 @@ struct BoundaryDescriptor
       counter++;
 
     if(neumann_bc.find(boundary_id) != neumann_bc.end())
+      counter++;
+
+    if(mixed_bc.find(boundary_id) != mixed_bc.end())
       counter++;
 
     if(periodic_boundary_ids.find(boundary_id) != periodic_boundary_ids.end())

@@ -323,13 +323,13 @@ public:
 
         if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
         {
-          dissipation_term[0] = beta * std::exp(solution[1]);
-          dissipation_term[1] = beta_star * std::exp(solution[1]);
+          dissipation_term[0] = beta_star * std::exp(solution[1]);
+          dissipation_term[1] = beta * std::exp(solution[1]);
         }
         else if(data.turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
         {
-          dissipation_term[0] = beta * solution[0] * solution[1];
-          dissipation_term[1] = beta_star * solution[1] * solution[1];
+          dissipation_term[0] = beta_star * solution[0] * solution[1];
+          dissipation_term[1] = beta * solution[1] * solution[1];
         }
       }
       return dissipation_term;

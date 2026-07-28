@@ -154,6 +154,29 @@ inline DEAL_II_ALWAYS_INLINE //
   {
     value_p = value_m;
   }
+  else if(boundary_type == BoundaryType::Mixed)
+  {
+    auto const & mixed_data = boundary_descriptor->mixed_bc.find(boundary_id)->second;
+    auto q_points = integrator.quadrature_point(q);
+
+    // Evaluate the n-component function once for all components
+    auto g_mixed = BCEvaluator<dim, n_components, Number>::evaluate(*(mixed_data.function), q_points, time);
+
+    for(unsigned int c = 0; c < n_components; ++c)
+    {
+      if(mixed_data.component_bc_type[c] == BoundaryType::Dirichlet)
+      {
+        if(operator_type == OperatorType::full || operator_type == OperatorType::inhomogeneous)
+          value_p[c] = -value_m[c] + g_mixed[c] * 2.0;
+        else if(operator_type == OperatorType::homogeneous)
+          value_p[c] = -value_m[c];
+      }
+      else if(mixed_data.component_bc_type[c] == BoundaryType::Neumann)
+      {
+        value_p[c] = value_m[c];
+      }
+    }
+  }
   else
   {
     AssertThrow(false, dealii::ExcMessage("Boundary type of face is invalid or not implemented."));
@@ -256,6 +279,29 @@ inline DEAL_II_ALWAYS_INLINE //
     else
     {
       AssertThrow(false, dealii::ExcMessage("Specified OperatorType is not implemented!"));
+    }
+  }
+  else if(boundary_type == BoundaryType::Mixed)
+  {
+    auto const & mixed_data = boundary_descriptor->mixed_bc.find(boundary_id)->second;
+    auto q_points = integrator.quadrature_point(q);
+
+    // Evaluate the n-component function once for all components
+    auto h_mixed = BCEvaluator<dim, n_components, Number>::evaluate(*(mixed_data.function), q_points, time);
+
+    for(unsigned int c = 0; c < n_components; ++c)
+    {
+      if(mixed_data.component_bc_type[c] == BoundaryType::Dirichlet)
+      {
+        normal_gradient_p[c] = normal_gradient_m[c];
+      }
+      else if(mixed_data.component_bc_type[c] == BoundaryType::Neumann)
+      {
+        if(operator_type == OperatorType::full || operator_type == OperatorType::inhomogeneous)
+          normal_gradient_p[c] = -normal_gradient_m[c] + h_mixed[c] * 2.0;
+        else if(operator_type == OperatorType::homogeneous)
+          normal_gradient_p[c] = -normal_gradient_m[c];
+      }
     }
   }
   else
