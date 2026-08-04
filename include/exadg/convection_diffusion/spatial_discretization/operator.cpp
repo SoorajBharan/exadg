@@ -615,6 +615,13 @@ Operator<dim, n_components, Number>::initialize_dof_vector(VectorType & src) con
 
 template<int dim, int n_components, typename Number>
 void
+Operator<dim, n_components, Number>::initialize_dof_vector_eddy_viscosity(VectorType & eddy_viscosity) const
+{
+  matrix_free->initialize_dof_vector(eddy_viscosity, get_dof_index_eddy_viscosity());
+}
+
+template<int dim, int n_components, typename Number>
+void
 Operator<dim, n_components, Number>::initialize_dof_vector_velocity(VectorType & velocity) const
 {
   matrix_free->initialize_dof_vector(velocity, get_dof_index_velocity());
@@ -1047,6 +1054,13 @@ Operator<dim, n_components, Number>::get_dof_handler() const
 
 template<int dim, int n_components, typename Number>
 dealii::DoFHandler<dim> const &
+Operator<dim, n_components, Number>::get_dof_handler_eddy_viscosity() const
+{
+  return matrix_free_data->get_dof_handler(get_dof_name_eddy_viscosity());
+}
+
+template<int dim, int n_components, typename Number>
+dealii::DoFHandler<dim> const &
 Operator<dim, n_components, Number>::get_dof_handler_velocity() const
 {
   return matrix_free_data->get_dof_handler(get_dof_name_velocity());
@@ -1198,9 +1212,11 @@ Operator<dim, n_components, Number>::get_turbulent_kinetic_energy(VectorType & d
 
 template<int dim, int n_components, typename Number>
 void
-Operator<dim, n_components, Number>::update_time_step_size(double const dt) const
+Operator<dim, n_components, Number>::update_time_step_size(double const dt,
+                                                           double const time,
+                                                           double const end_time) const
 {
-  rhs_operator.set_time_step_size(dt);
+  rhs_operator.set_time_step_size(dt, time, end_time);
 }
 
 template class Operator<2, 1, float>;

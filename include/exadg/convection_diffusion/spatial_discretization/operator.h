@@ -99,6 +99,9 @@ public:
   void
   initialize_dof_vector(VectorType & src) const final;
 
+  void
+  initialize_dof_vector_eddy_viscosity(VectorType & src) const;
+
   /*
    * Initialization of velocity dof-vector (in case of numerical velocity field).
    */
@@ -275,6 +278,9 @@ public:
   dealii::DoFHandler<dim> const &
   get_dof_handler_velocity() const;
 
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_eddy_viscosity() const;
+
   dealii::types::global_dof_index
   get_number_of_dofs() const;
 
@@ -312,7 +318,9 @@ public:
   get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
 
   void
-  update_time_step_size(double const dt) const;
+  update_time_step_size(double const dt,
+                        double const time,
+                        double const end_time) const;
 
 private:
   void

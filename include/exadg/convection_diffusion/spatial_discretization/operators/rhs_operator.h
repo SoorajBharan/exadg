@@ -49,6 +49,8 @@ struct RHSKernelData
   unsigned int                dof_index;
   double                      diffusivity;
   double                      time_step_size;
+  double                      current_time;
+  double                      end_time;
   TurbulenceModelData         turbulence_model_data;
   PositivityPreservingLimiter positivity_preserving_limiter;
 };
@@ -220,8 +222,19 @@ public:
       safe_limit[0] = dealii::make_vectorized_array<Number>(C_max / data.time_step_size);
       safe_limit[1] = dealii::make_vectorized_array<Number>(C_max / data.time_step_size);
 
-      square_gradient_term[0] = std::min(square_gradient_term[0], safe_limit[0]);
-      square_gradient_term[1] = std::min(square_gradient_term[1], safe_limit[1]);
+      // square_gradient_term[0] = std::min(square_gradient_term[0], safe_limit[0]);
+      // square_gradient_term[1] = std::min(square_gradient_term[1], safe_limit[1]);
+
+      if(data.current_time < (0.1 * data.end_time))
+      {
+        square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.01);
+        square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.01);
+      }
+      else if(data.current_time < 0.2 * data.end_time)
+      {
+        square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.1);
+        square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.1);
+      }
 
       return square_gradient_term;
     }
@@ -370,9 +383,13 @@ public:
   }
 
   void
-  set_time_step_size(double const dt) const
+  set_time_step_size(double const dt,
+                     double const time,
+                     double const end_time) const
   {
     data.time_step_size = dt;
+    data.current_time = time;
+    data.end_time = end_time;
   }
 
   std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr;
@@ -457,7 +474,9 @@ public:
   set_eddy_viscosity_ptr(VectorType const & eddy_viscosity_in) const;
 
   void
-  set_time_step_size(double const dt) const;
+  set_time_step_size(double const dt,
+                     double const time,
+                     double const end_time) const;
 private:
   void
   do_cell_integral(IntegratorCell & integrator) const;

@@ -19,18 +19,21 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_CONVECTION_DIFFUSION_POSTPROCESSOR_H_
-#define INCLUDE_CONVECTION_DIFFUSION_POSTPROCESSOR_H_
+#ifndef INCLUDE_CONVECTION_DIFFUSION_EQUATIONS_POSTPROCESSOR_H_
+#define INCLUDE_CONVECTION_DIFFUSION_EQUATIONS_POSTPROCESSOR_H_
 
 // deal.II
 #include <deal.II/lac/la_parallel_vector.h>
 
 // ExaDG
-#include <exadg/convection_diffusion/postprocessor/postprocessor_base.h>
-#include <exadg/convection_diffusion/user_interface/analytical_solution.h>
 #include <exadg/postprocessor/error_calculation.h>
 #include <exadg/postprocessor/output_data_base.h>
-#include <exadg/postprocessor/output_generator_scalar.h>
+#include <exadg/convection_diffusion/postprocessor/output_generator.h>
+#include <exadg/convection_diffusion/postprocessor/postprocessor_base.h>
+#include <exadg/convection_diffusion/user_interface/analytical_solution.h>
+
+#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
+#include <exadg/convection_diffusion/spatial_discretization/operator.h>
 
 namespace ExaDG
 {
@@ -43,7 +46,7 @@ struct PostProcessorData
   {
   }
 
-  OutputDataBase            output_data;
+  OutputData                output_data;
   ErrorCalculationData<dim> error_data;
 };
 
@@ -73,14 +76,26 @@ protected:
   MPI_Comm const mpi_comm;
 
 private:
+  void
+  initialize_additional_fields();
+
+  void
+  invalidate_additional_fields();
+
   PostProcessorData<dim> pp_data;
 
   OutputGenerator<dim, Number> output_generator;
   ErrorCalculator<dim, Number> error_calculator;
+
+  SolutionField<dim, Number> eddy_viscosity;
+
+  dealii::SmartPointer<Operator<dim, n_components, Number> const> conv_diff_operator;
+
+  VectorType nu_t;
 };
 
 } // namespace ConvDiff
 } // namespace ExaDG
 
 
-#endif /* INCLUDE_CONVECTION_DIFFUSION_POSTPROCESSOR_H_ */
+#endif /* INCLUDE_RANS_EQUATIONS_POSTPROCESSOR_H_ */

@@ -122,9 +122,11 @@ RHSOperator<dim, Number, n_components>::set_solution_ptr(VectorType const & src)
 
 template<int dim, typename Number, int n_components>
 void
-RHSOperator<dim, Number, n_components>::set_time_step_size(double const dt) const
+RHSOperator<dim, Number, n_components>::set_time_step_size(double const dt,
+                                                           double const time,
+                                                           double const end_time) const
 {
-  kernel->set_time_step_size(dt);
+  kernel->set_time_step_size(dt, time, end_time);
 }
 
 template class RHSOperator<2, float, 1>;

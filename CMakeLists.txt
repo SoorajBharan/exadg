@@ -120,6 +120,7 @@ SET(TARGET_SRC
      include/exadg/convection_diffusion/time_integration/time_int_explicit_runge_kutta.cpp
      include/exadg/convection_diffusion/time_integration/driver_steady_problems.cpp
      include/exadg/convection_diffusion/postprocessor/postprocessor.cpp
+     include/exadg/convection_diffusion/postprocessor/output_generator.cpp
      include/exadg/postprocessor/output_generator_scalar.cpp
      include/exadg/postprocessor/pointwise_output_generator_base.cpp
      include/exadg/convection_diffusion/driver.cpp
