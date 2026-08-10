@@ -98,6 +98,8 @@ SET(TARGET_SRC
      include/exadg/operators/wall_modelling/function_enrichment.cpp
      include/exadg/operators/wall_modelling/wall_law_evaluator.cpp
      include/exadg/operators/wall_modelling/coupler.cpp
+     include/exadg/operators/vandermonde_matrix.cpp
+     include/exadg/operators/modal_filter.cpp
      # Poisson equation
      include/exadg/poisson/user_interface/parameters.cpp
      include/exadg/poisson/spatial_discretization/operator.cpp
@@ -121,6 +123,7 @@ SET(TARGET_SRC
      include/exadg/convection_diffusion/time_integration/driver_steady_problems.cpp
      include/exadg/convection_diffusion/postprocessor/postprocessor.cpp
      include/exadg/convection_diffusion/postprocessor/output_generator.cpp
+     include/exadg/convection_diffusion/postprocessor/line_plot_calculation.cpp
      include/exadg/postprocessor/output_generator_scalar.cpp
      include/exadg/postprocessor/pointwise_output_generator_base.cpp
      include/exadg/convection_diffusion/driver.cpp

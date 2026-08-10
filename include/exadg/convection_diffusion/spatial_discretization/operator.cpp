@@ -1214,9 +1214,10 @@ template<int dim, int n_components, typename Number>
 void
 Operator<dim, n_components, Number>::update_time_step_size(double const dt,
                                                            double const time,
-                                                           double const end_time) const
+                                                           double const end_time,
+                                                           double const time_step_number) const
 {
-  rhs_operator.set_time_step_size(dt, time, end_time);
+  rhs_operator.set_time_step_size(dt, time, end_time, time_step_number);
 }
 
 template class Operator<2, 1, float>;

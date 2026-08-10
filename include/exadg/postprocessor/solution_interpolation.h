@@ -105,6 +105,52 @@ evaluate_scalar_quantity_in_point(
   solution_value /= (double)counter;
 }
 
+template<int dim, int n_components, typename Number>
+void
+evaluate_vectorial_quantity_in_point(
+  dealii::Tensor<1, n_components, Number> &                  solution_value,
+  dealii::DoFHandler<dim> const &                            dof_handler,
+  dealii::Mapping<dim> const &                               mapping,
+  dealii::LinearAlgebra::distributed::Vector<Number> const & numerical_solution,
+  dealii::Point<dim> const &                                 point,
+  MPI_Comm const &                                           mpi_comm,
+  double const                                               tolerance = 1.e-10)
+{
+  typedef std::pair<typename dealii::DoFHandler<dim>::active_cell_iterator, dealii::Point<dim>>
+    Pair;
+
+  std::vector<Pair> adjacent_cells =
+    dealii::GridTools::find_all_active_cells_around_point(mapping, dof_handler, point, tolerance);
+
+  // processor local variables: initialize with zeros since we add values to these variables
+  unsigned int counter = 0;
+  solution_value       = 0.0;
+
+  // loop over all adjacent cells
+  for(auto cell : adjacent_cells)
+  {
+    // go on only if cell is owned by the processor
+    if(cell.first->is_locally_owned())
+    {
+      dealii::Vector<Number> value(n_components);
+      my_point_value(value, mapping, dof_handler, numerical_solution, cell.first, cell.second);
+
+      for(unsigned int d = 0; d < n_components; ++d)
+        solution_value[d] += value(d);
+
+      ++counter;
+    }
+  }
+
+  // parallel computations: add results of all processors and calculate mean value
+  counter = dealii::Utilities::MPI::sum(counter, mpi_comm);
+  AssertThrow(counter > 0, dealii::ExcMessage("No points found."));
+
+  for(unsigned int d = 0; d < n_components; ++d)
+    solution_value[d] = dealii::Utilities::MPI::sum(solution_value[d], mpi_comm);
+  solution_value /= (double)counter;
+}
+
 template<int dim, typename Number>
 void
 evaluate_vectorial_quantity_in_point(

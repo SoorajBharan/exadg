@@ -35,7 +35,8 @@ PostProcessor<dim, n_components, Number>::PostProcessor(PostProcessorData<dim> c
   : mpi_comm(mpi_comm_in),
   pp_data(pp_data_in),
   output_generator(mpi_comm_in),
-  error_calculator(mpi_comm_in)
+  error_calculator(mpi_comm_in),
+  line_plot_calculator(std::make_shared<LinePlotCalculator<dim, n_components, Number>>(mpi_comm_in))
 {
 }
 
@@ -52,7 +53,14 @@ PostProcessor<dim, n_components, Number>::setup(Operator<dim, n_components, Numb
                          *pde_operator.get_mapping(),
                          pp_data.output_data);
 
+  line_plot_calculator->setup(pde_operator.get_dof_handler(),
+                              pde_operator.get_dof_handler_eddy_viscosity(),
+                              *pde_operator.get_mapping(),
+                              pp_data.line_plot_data);
+
   initialize_additional_fields();
+
+  conv_diff_operator->initialize_dof_vector_eddy_viscosity(nu_t);
 }
 
 template<int dim, int n_components, typename Number>
@@ -85,6 +93,13 @@ PostProcessor<dim, n_components, Number>::do_postprocessing(VectorType const &  
                               additional_fields_vtu,
                               time,
                               Utilities::is_unsteady_timestep(time_step_number));
+
+  if(line_plot_calculator->time_control.needs_evaluation(time, time_step_number))
+  {
+    conv_diff_operator->get_eddy_viscosity(nu_t);
+    
+    line_plot_calculator->evaluate(solution, nu_t);
+  }
 }
 
 

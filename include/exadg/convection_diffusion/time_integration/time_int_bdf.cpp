@@ -286,7 +286,8 @@ TimeIntBDF<dim, n_components, Number>::initialize_vec_source_term()
   {
     pde_operator->update_time_step_size(this->get_time_step_size(),
                                         this->get_time(),
-                                        param.end_time);
+                                        param.end_time,
+                                        this->time_step_number);
     pde_operator->rhs(vec_source_term[0], solution[0], this->get_time());
 
     if(this->param.start_with_low_order == false)
@@ -295,7 +296,8 @@ TimeIntBDF<dim, n_components, Number>::initialize_vec_source_term()
       {
         pde_operator->update_time_step_size(this->get_time_step_size(),
                                             this->get_time(),
-                                            param.end_time);
+                                            param.end_time,
+                                            this->time_step_number);
         pde_operator->rhs(vec_source_term[i],
                           solution[i],
                           this->get_previous_time(i));
@@ -619,7 +621,8 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
 
   pde_operator->update_time_step_size(this->get_time_step_size(),
                                       this->get_time(),
-                                      param.end_time);
+                                      param.end_time,
+                                      this->time_step_number);
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
   pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
 

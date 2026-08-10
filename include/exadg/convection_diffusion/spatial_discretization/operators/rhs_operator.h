@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_OPERATORS_RHS_OPERATOR
-#define INCLUDE_OPERATORS_RHS_OPERATOR
+#ifndef INCLUDE_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_OPERATORS_RHS_OPERATOR
+#define INCLUDE_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_OPERATORS_RHS_OPERATOR
 
 #include <exadg/functions_and_boundary_conditions/evaluate_functions.h>
 #include <exadg/matrix_free/integrators.h>
@@ -49,6 +49,7 @@ struct RHSKernelData
   unsigned int                dof_index;
   double                      diffusivity;
   double                      time_step_size;
+  double                      time_step_number;
   double                      current_time;
   double                      end_time;
   TurbulenceModelData         turbulence_model_data;
@@ -225,16 +226,29 @@ public:
       // square_gradient_term[0] = std::min(square_gradient_term[0], safe_limit[0]);
       // square_gradient_term[1] = std::min(square_gradient_term[1], safe_limit[1]);
 
-      if(data.current_time < (0.1 * data.end_time))
+      bool time_ramping = true;
+
+      if(time_ramping)
       {
-        square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.01);
-        square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.01);
+        Number ramp_factor = -5.0;
+        Number final_time_step = 100.0;
+        Number ramp_value = 1.0 - std::exp(ramp_factor * data.time_step_number / final_time_step);
+        scalar ramp_vec = dealii::make_vectorized_array<Number>(ramp_value);
+
+        square_gradient_term[0] *= ramp_vec;
+        square_gradient_term[1] *= ramp_vec;
       }
-      else if(data.current_time < 0.2 * data.end_time)
-      {
-        square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.1);
-        square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.1);
-      }
+
+      // if(data.current_time < (0.1 * data.end_time))
+      // {
+      //   square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.01);
+      //   square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.01);
+      // }
+      // else if(data.current_time < 0.2 * data.end_time)
+      // {
+      //   square_gradient_term[0] *=  dealii::make_vectorized_array<Number>(0.1);
+      //   square_gradient_term[1] *=  dealii::make_vectorized_array<Number>(0.1);
+      // }
 
       return square_gradient_term;
     }
@@ -385,11 +399,13 @@ public:
   void
   set_time_step_size(double const dt,
                      double const time,
-                     double const end_time) const
+                     double const end_time,
+                     double const time_step_size) const
   {
     data.time_step_size = dt;
     data.current_time = time;
     data.end_time = end_time;
+    data.time_step_number = time_step_size;
   }
 
   std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr;
@@ -476,7 +492,8 @@ public:
   void
   set_time_step_size(double const dt,
                      double const time,
-                     double const end_time) const;
+                     double const end_time,
+                     double const time_step_number) const;
 private:
   void
   do_cell_integral(IntegratorCell & integrator) const;

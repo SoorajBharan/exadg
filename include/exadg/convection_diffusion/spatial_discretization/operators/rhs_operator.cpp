@@ -124,9 +124,10 @@ template<int dim, typename Number, int n_components>
 void
 RHSOperator<dim, Number, n_components>::set_time_step_size(double const dt,
                                                            double const time,
-                                                           double const end_time) const
+                                                           double const end_time,
+                                                           double const time_step_number) const
 {
-  kernel->set_time_step_size(dt, time, end_time);
+  kernel->set_time_step_size(dt, time, end_time, time_step_number);
 }
 
 template class RHSOperator<2, float, 1>;

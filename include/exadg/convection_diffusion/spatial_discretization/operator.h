@@ -320,7 +320,8 @@ public:
   void
   update_time_step_size(double const dt,
                         double const time,
-                        double const end_time) const;
+                        double const end_time,
+                        double const time_step_number) const;
 
 private:
   void

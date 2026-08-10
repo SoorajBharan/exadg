@@ -35,6 +35,10 @@
 #include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operator.h>
 
+#include <exadg/convection_diffusion/postprocessor/line_plot_calculation.h>
+#include <exadg/convection_diffusion/postprocessor/line_plot_data.h>
+#include "line_plot_calculation.h"
+
 namespace ExaDG
 {
 namespace ConvDiff
@@ -48,6 +52,7 @@ struct PostProcessorData
 
   OutputData                output_data;
   ErrorCalculationData<dim> error_data;
+  LinePlotData<dim>         line_plot_data;
 };
 
 template<int dim, int n_components, typename Number>
@@ -92,6 +97,8 @@ private:
   dealii::SmartPointer<Operator<dim, n_components, Number> const> conv_diff_operator;
 
   VectorType nu_t;
+
+  std::shared_ptr<LinePlotCalculator<dim, n_components, Number>> line_plot_calculator;
 };
 
 } // namespace ConvDiff
