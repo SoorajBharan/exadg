@@ -39,6 +39,7 @@
 #include <exadg/operators/inverse_mass_operator.h>
 #include <exadg/operators/mass_operator.h>
 #include <exadg/operators/solution_transfer.h>
+#include <exadg/operators/modal_filter.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 
 namespace ExaDG
@@ -323,6 +324,9 @@ public:
                         double const end_time,
                         double const time_step_number) const;
 
+  void
+  apply_modal_filter(VectorType & solution) const;
+
 private:
   void
   do_setup();
@@ -495,6 +499,11 @@ private:
    * Turbulence models.
    */
   std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr = std::make_shared<TurbulenceModel<dim, n_components, Number>>();
+
+  /*
+   * Modal Filter
+   */
+  ModalFilter<dim, n_components, Number> modal_filter;
 };
 
 } // namespace ConvDiff

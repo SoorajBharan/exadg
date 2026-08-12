@@ -464,6 +464,13 @@ Parameters::print_parameters_mathematical_model(dealii::ConditionalOStream const
     print_parameter(pcout, "ALE formulation", ale_formulation);
     print_parameter(pcout, "Formulation convective term", formulation_convective_term);
   }
+
+  if(modal_filter_is_active)
+  {
+    pcout << std::endl << " Modal Filter: " << std::endl;
+    print_parameter(pcout, "Cut-off degree", cut_off_degree);
+    print_parameter(pcout, "Gradient threshold", gradient_threshold);
+  }
 }
 
 void

@@ -585,6 +585,8 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
   dealii::Timer timer;
   timer.restart();
 
+  pde_operator->apply_modal_filter(solution_np);
+
   // transport velocity
   VectorType velocity_np;
 

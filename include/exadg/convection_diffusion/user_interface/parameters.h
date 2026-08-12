@@ -371,6 +371,15 @@ public:
 
   TreatmentOfVariableViscosity treatment_of_variable_viscosity;
   TurbulenceModelData          turbulence_model_data;
+
+  /**************************************************************************************/
+  /*                                                                                    */
+  /*                            Modal Filter                                            */
+  /*                                                                                    */
+  /**************************************************************************************/
+  bool modal_filter_is_active;
+  double gradient_threshold;
+  unsigned int cut_off_degree;
 };
 
 } // namespace ConvDiff

@@ -28,13 +28,16 @@
 
 namespace ExaDG
 {
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class ModalFilter
 {
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
   typedef dealii::VectorizedArray<Number> scalar;
-  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number> Integrator;
+  typedef dealii::FEEvaluation<dim, -1, 0, n_components, Number> Integrator;
+
+  typedef ModalFilter<dim, n_components, Number> This;
+  typedef std::pair<unsigned int, unsigned int> Range;
 
   ModalFilter();
 
@@ -49,7 +52,12 @@ public:
 private:
   bool is_selected(unsigned int const cell_batch_id,
                    VectorType const & solution,
-                   scalar & filter_mask) const;
+                   typename Integrator::value_type & filter_mask) const;
+
+  void cell_loop_filter(dealii::MatrixFree<dim, Number> const & matrix_free_in,
+                        VectorType & dst,
+                        VectorType const & src,
+                        Range const & cell_range) const;
 
   dealii::MatrixFree<dim, Number> const * matrix_free;
   unsigned int dof_index;
@@ -59,7 +67,10 @@ private:
   unsigned int n_1D;
   Number gradient_threshold;
 
-  VanderMondeMatrixOperator<dim, Number> VDM_operator;
+  VanderMondeMatrixOperator<dim, n_components, Number> VDM_operator;
+
+  mutable VectorType modal_vector;
+  mutable std::atomic<bool> requires_ghost_update;
 };
 
 } // namepsace ExaDG

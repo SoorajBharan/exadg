@@ -23,13 +23,13 @@
 
 namespace ExaDG
 {
-template<int dim, typename Number>
-ModalFilter<dim, Number>::ModalFilter() 
+template<int dim, int n_components, typename Number>
+ModalFilter<dim, n_components, Number>::ModalFilter() 
   : matrix_free(nullptr), dof_index(0), quad_index(0), cut_off_degree(0), n_1D(0)
 {}
 
-template<int dim, typename Number>
-void ModalFilter<dim, Number>::initialize(
+template<int dim, int n_components, typename Number>
+void ModalFilter<dim, n_components, Number>::initialize(
   dealii::MatrixFree<dim, Number> const & matrix_free_in,
   unsigned int const dof_index_in,
   unsigned int const quad_index_in,
@@ -40,7 +40,7 @@ void ModalFilter<dim, Number>::initialize(
   dof_index = dof_index_in;
   quad_index = quad_index_in;
   cut_off_degree = cut_off_degree_in;
-  gradient_threshold = gradient_threshold_in;;
+  gradient_threshold = gradient_threshold_in;
 
   unsigned int const fe_degree = matrix_free->get_dof_handler(dof_index).get_fe().degree;
   n_1D = fe_degree + 1;
@@ -48,27 +48,41 @@ void ModalFilter<dim, Number>::initialize(
   VDM_operator.initialize(matrix_free_in, dof_index, quad_index);
 }
 
-template<int dim, typename Number>
-void ModalFilter<dim, Number>::apply_filter(VectorType & solution) const
+template<int dim, int n_components, typename Number>
+void ModalFilter<dim, n_components, Number>::apply_filter(VectorType & solution) const
 {
-  VectorType modal_vector;
-  matrix_free->initialize_dof_vector(modal_vector, dof_index);
+  requires_ghost_update = false;
 
-  Integrator integrator(*matrix_free, dof_index, quad_index);
-  unsigned int const n_cells = matrix_free->n_cell_batches() * matrix_free->n_active_entries_per_cell_batch(0);
+  VectorType src;
+  matrix_free->cell_loop(&This::cell_loop_filter, this, solution, src, false);
 
-  bool requires_ghost_update = false;
-  scalar filter_mask;
-
-  for (unsigned int cell = 0; cell < n_cells; ++cell)
+  if (requires_ghost_update)
   {
-    if (is_selected(cell, solution, filter_mask))
+    solution.update_ghost_values();
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void ModalFilter<dim, n_components, Number>::cell_loop_filter(
+  dealii::MatrixFree<dim, Number> const & matrix_free_in,
+  VectorType & dst,
+  VectorType const & src,
+  Range const & cell_range) const
+{
+  (void)src;
+
+  Integrator integrator(matrix_free_in, dof_index, quad_index);
+
+  typename Integrator::value_type filter_mask;
+
+  for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    if (is_selected(cell, dst, filter_mask))
     {
       requires_ghost_update = true;
 
-      VDM_operator.transform_to_modal(solution, modal_vector, cell);
+      VDM_operator.transform_to_modal(dst, modal_vector, cell);
 
-      // 2. Apply Sharp Cut-off
       integrator.reinit(cell);
       integrator.read_dof_values(modal_vector);
 
@@ -81,10 +95,22 @@ void ModalFilter<dim, Number>::apply_filter(VectorType & solution) const
             if (i > cut_off_degree || j > cut_off_degree)
             {
               unsigned int const idx = i + j * n_1D;
-              scalar modal_val = integrator.get_dof_value(idx); // Get current batch modes
+              if constexpr (n_components == 1)
+              {
+                scalar modal_val = integrator.get_dof_value(idx);
+                modal_val *= filter_mask;
+                integrator.submit_dof_value(modal_val, idx);
+              }
+              else
+            {
+                dealii::Tensor<1, n_components, scalar> modal_val = integrator.get_dof_value(idx); 
 
-              modal_val *= filter_mask;
-              integrator.submit_dof_value(modal_val, idx);
+                for (unsigned int c = 0; c < n_components; ++c)
+                {
+                  modal_val[c] *= filter_mask[c];
+                }
+                integrator.submit_dof_value(modal_val, idx);
+              }
             }
           }
         }
@@ -100,10 +126,22 @@ void ModalFilter<dim, Number>::apply_filter(VectorType & solution) const
               if (i > cut_off_degree || j > cut_off_degree || k > cut_off_degree)
               {
                 unsigned int const idx = i + j * n_1D + k * n_1D * n_1D;
-                scalar modal_val = integrator.get_dof_value(idx); 
+                if constexpr (n_components == 1)
+                {
+                  scalar modal_val = integrator.get_dof_value(idx);
+                  modal_val *= filter_mask;
+                  integrator.submit_dof_value(modal_val, idx);
+                }
+                else
+              {
+                  dealii::Tensor<1, n_components, scalar> modal_val = integrator.get_dof_value(idx); 
 
-                modal_val *= filter_mask;
-                integrator.submit_dof_value(modal_val, idx);
+                  for (unsigned int c = 0; c < n_components; ++c)
+                  {
+                    modal_val[c] *= filter_mask[c];
+                  }
+                  integrator.submit_dof_value(modal_val, idx);
+                }
               }
             }
           }
@@ -112,74 +150,120 @@ void ModalFilter<dim, Number>::apply_filter(VectorType & solution) const
 
       integrator.set_dof_values(modal_vector, 0);
 
-      VDM_operator.transform_to_nodal(modal_vector, solution, cell);
+      VDM_operator.transform_to_nodal(modal_vector, dst, cell);
     }
-  }
-
-  if (requires_ghost_update)
-  {
-    solution.update_ghost_values();
   }
 }
 
-template<int dim, typename Number>
-bool ModalFilter<dim, Number>::is_selected(
+template<int dim, int n_components, typename Number>
+bool ModalFilter<dim, n_components, Number>::is_selected(
   unsigned int const cell_batch_id, 
   VectorType const & solution,
-  scalar & filter_mask) const
+  typename Integrator::value_type & filter_mask) const
 {
   Integrator integrator(*matrix_free, dof_index, quad_index);
   integrator.reinit(cell_batch_id);
   integrator.read_dof_values(solution);
   integrator.evaluate(dealii::EvaluationFlags::gradients);
 
-  std::vector<double> max_grad_norm(scalar::size(), 0.0);
+  std::vector<std::vector<double>> max_grad_norm(n_components, std::vector<double>(scalar::size(), 0.0));
 
   for (unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     auto gradient = integrator.get_gradient(q);
-
-    scalar grad_norm_sq = 0.0;
-    for (unsigned int d = 0; d < dim; ++d)
+    if constexpr (n_components == 1)
     {
-      grad_norm_sq += gradient[d] * gradient[d];
-    }
-    
-    scalar grad_norm = std::sqrt(grad_norm_sq);
-
-    for (unsigned int v = 0; v < scalar::size(); ++v)
-    {
-      if (grad_norm[v] > max_grad_norm[v])
+      scalar grad_norm_sq = 0.0;
+      for (unsigned int d = 0; d < dim; ++d)
       {
-        max_grad_norm[v] = grad_norm[v];
+        grad_norm_sq += gradient[d] * gradient[d]; // Only one bracket needed!
+      }
+
+      scalar grad_norm = std::sqrt(grad_norm_sq);
+
+      for (unsigned int v = 0; v < scalar::size(); ++v)
+      {
+        if (grad_norm[v] > max_grad_norm[0][v])
+        {
+          max_grad_norm[0][v] = grad_norm[v];
+        }
+      }
+    }
+    else
+  {
+      for(unsigned int c = 0; c < n_components; ++c)
+      {
+        scalar grad_norm_sq = 0.0;
+        for (unsigned int d = 0; d < dim; ++d)
+        {
+          grad_norm_sq += gradient[c][d] * gradient[c][d];
+        }
+
+        scalar grad_norm = std::sqrt(grad_norm_sq);
+
+        for (unsigned int v = 0; v < scalar::size(); ++v)
+        {
+          if (grad_norm[v] > max_grad_norm[c][v])
+          {
+            max_grad_norm[c][v] = grad_norm[v];
+          }
+        }
       }
     }
   }
 
   bool any_cells_selected = false;
 
-  // Build the multiplicative mask
-  for (unsigned int v = 0; v < scalar::size(); ++v)
+  if constexpr (n_components == 1)
   {
-    if (max_grad_norm[v] > gradient_threshold)
+    for (unsigned int v = 0; v < scalar::size(); ++v)
     {
-      filter_mask[v] = 0.0; // Gradient too high -> zero out the mode
-      any_cells_selected = true;
+      if (max_grad_norm[0][v] > gradient_threshold)
+      {
+        filter_mask[v] = 0.0; // Only one bracket!
+        any_cells_selected = true;
+      }
+      else
+    {
+        filter_mask[v] = 1.0; 
+      }
     }
-    else
+  }
+  else
+{
+    for (unsigned int c = 0; c < n_components; ++c)
     {
-      filter_mask[v] = 1.0; // Gradient is fine -> multiply by 1 to keep original mode
+      for (unsigned int v = 0; v < scalar::size(); ++v)
+      {
+        if (max_grad_norm[c][v] > gradient_threshold)
+        {
+          filter_mask[c][v] = 0.0; // Gradient too high -> zero out the mode
+          any_cells_selected = true;
+        }
+        else
+      {
+          filter_mask[c][v] = 1.0; // Gradient is fine -> multiply by 1 to keep original mode
+        }
+      }
     }
   }
 
   return any_cells_selected;
 }
 
-template class ModalFilter<1, float>;
-template class ModalFilter<1, double>;
-template class ModalFilter<2, float>;
-template class ModalFilter<2, double>;
-template class ModalFilter<3, float>;
-template class ModalFilter<3, double>;
+template class ModalFilter<2, 1, float>;
+template class ModalFilter<2, 1, double>;
+template class ModalFilter<3, 1, float>;
+template class ModalFilter<3, 1, double>;
+
+template class ModalFilter<2, 2, float>;
+template class ModalFilter<2, 2, double>;
+template class ModalFilter<3, 2, float>;
+template class ModalFilter<3, 2, double>;
+
+template class ModalFilter<2, 3, float>;
+template class ModalFilter<2, 3, double>;
+template class ModalFilter<3, 3, float>;
+template class ModalFilter<3, 3, double>;
 
 } // namespace ExaDG

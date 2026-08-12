@@ -381,6 +381,12 @@ Operator<dim, n_components, Number>::setup_operators()
                                  convective_kernel,
                                  diffusive_kernel);
   }
+
+  modal_filter.initialize(*matrix_free,
+                          get_dof_index(),
+                          get_quad_index(),
+                          param.cut_off_degree,
+                          param.gradient_threshold);
 }
 
 template<int dim, int n_components, typename Number>
@@ -1218,6 +1224,13 @@ Operator<dim, n_components, Number>::update_time_step_size(double const dt,
                                                            double const time_step_number) const
 {
   rhs_operator.set_time_step_size(dt, time, end_time, time_step_number);
+}
+
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::apply_modal_filter(VectorType & solution) const
+{
+  modal_filter.apply_filter(solution);
 }
 
 template class Operator<2, 1, float>;

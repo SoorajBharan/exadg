@@ -34,7 +34,7 @@
 namespace ExaDG
 {
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class VanderMondeMatrixKernel
 {
 public:
@@ -205,13 +205,13 @@ private:
   dealii::FullMatrix<Number> V_1D_inverse;
 };
 
-template<int dim, typename Number>
+template<int dim, int n_components, typename Number>
 class VanderMondeMatrixOperator
 {
 public:
   typedef dealii::VectorizedArray<Number> scalar;
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
-  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number> Integrator;
+  typedef dealii::FEEvaluation<dim, -1, 0, n_components, Number> Integrator;
 
   VanderMondeMatrixOperator();
 
@@ -232,7 +232,7 @@ private:
   unsigned int dof_index;
   unsigned int quad_index;
 
-  VanderMondeMatrixKernel<dim, Number> kernel;
+  VanderMondeMatrixKernel<dim, n_components, Number> kernel;
 };
 
 } // namespace ExaDG
