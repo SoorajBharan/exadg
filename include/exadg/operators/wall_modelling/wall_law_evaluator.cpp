@@ -29,7 +29,8 @@ WallLawEvaluator<dim, Number>::get_value(
   if(wall_law_type == WallLawType::Spalding)
   {
     SpaldingLaw spalding_law;
-    return solve_newton_raphson(y_plus, y_plus, spalding_law, 10);
+    scalar const initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
+    return solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
   }
   else
 {
@@ -48,7 +49,8 @@ WallLawEvaluator<dim, Number>::get_gradient(
   {
     SpaldingLaw spalding_law;
 
-    scalar u_plus = solve_newton_raphson(y_plus, y_plus, spalding_law, 10);
+    scalar initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
+    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
 
     scalar dy_du_plus = spalding_law(u_plus).second;
 
@@ -61,6 +63,31 @@ WallLawEvaluator<dim, Number>::get_gradient(
     AssertThrow(false,
                 dealii::ExcMessage("Not Implemented"));
     return scalar();
+  }
+}
+
+template<int dim, typename Number>
+std::pair<dealii::VectorizedArray<Number>, dealii::VectorizedArray<Number>> 
+WallLawEvaluator<dim, Number>::get_value_and_gradient(
+  scalar const y_plus) const
+{
+  if(wall_law_type == WallLawType::Spalding)
+  {
+    SpaldingLaw spalding_law;
+
+    scalar initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
+    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
+
+    scalar dy_du_plus = spalding_law(u_plus).second;
+
+    scalar du_dy_plus = 1.0 / dy_du_plus;
+
+    return std::make_pair(u_plus, du_dy_plus);
+  }
+  else {
+    AssertThrow(false,
+                dealii::ExcMessage("Not Implemented"));
+    return std::make_pair(scalar(), scalar());
   }
 }
 

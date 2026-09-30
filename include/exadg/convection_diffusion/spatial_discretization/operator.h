@@ -31,6 +31,7 @@
 #include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/combined_operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/rhs_operator.h>
+#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
 #include <exadg/convection_diffusion/user_interface/boundary_descriptor.h>
 #include <exadg/convection_diffusion/user_interface/field_functions.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>
@@ -301,7 +302,8 @@ public:
   get_constraints() const;
 
   void
-  update_eddy_viscosity(VectorType const & src) const;
+  update_eddy_viscosity(VectorType const & src,
+                        VectorType const * velocity = nullptr) const;
 
   void
   get_eddy_viscosity(VectorType & dst) const;
@@ -326,6 +328,9 @@ public:
 
   void
   apply_modal_filter(VectorType & solution) const;
+
+  void
+  enforce_positivity(VectorType & solution) const;
 
 private:
   void
@@ -367,6 +372,9 @@ private:
   std::string
   get_dof_name_velocity() const;
 
+  std::string
+  get_quad_name_eddy_velocity() const;
+
   /*
    * Dof index for velocity (in case of numerical velocity field)
    */
@@ -375,6 +383,9 @@ private:
 
   unsigned int
   get_quad_index_overintegration() const;
+
+  unsigned int
+  get_quad_index_eddy_velocity() const;
 
   /*
    * Initializes the preconditioner.
@@ -447,6 +458,7 @@ private:
 
   std::string const quad_index_std             = "conv_diff";
   std::string const quad_index_overintegration = "conv_diff_overintegration";
+  std::string const quad_index_eddy_velocity   = "conv_diff_eddy_velocity";
 
   std::string dof_index_velocity_external;
 
@@ -467,12 +479,14 @@ private:
   std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
   std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
   std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>>  rhs_kernel;
+  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>>  turbulence_source_kernel;
 
   MassOperator<dim, n_components, Number>        mass_operator;
   InverseMassOperator<dim, n_components, Number> inverse_mass_operator;
   ConvectiveOperator<dim, n_components, Number>     convective_operator;
   DiffusiveOperator<dim, n_components, Number>      diffusive_operator;
   RHSOperator<dim, Number, n_components>            rhs_operator;
+  TurbulenceSourceOperator<dim, Number, n_components>            turbulence_source_operator;
 
   /*
    * Combined operator.

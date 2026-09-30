@@ -38,8 +38,7 @@ struct DiffusiveKernelData
 {
   DiffusiveKernelData() : IP_factor(1.0),
     diffusivity(1.0),
-    rans_model(false),
-    positivity_preserving_limiter(PositivityPreservingLimiter::Undefined)
+    rans_model(false)
   {
   }
 
@@ -47,7 +46,6 @@ struct DiffusiveKernelData
   double diffusivity;
 
   bool rans_model;
-  PositivityPreservingLimiter positivity_preserving_limiter;
 
   TurbulenceModelData turbulence_model_data;
   unsigned int dof_index_eddy_viscosity;
@@ -233,21 +231,34 @@ void
 
   inline DEAL_II_ALWAYS_INLINE //
     value_type
-    calculate_gradient_flux(value_type const & value_m,
+    calculate_gradient_flux_m(value_type const & value_m,
                             value_type const & value_p,
-                            unsigned int const q,
-                            bool boundary_face) const
+                            unsigned int const q) const
   {
     value_type gradient_flux;
-    value_type effective_viscosity;
-    if(boundary_face)
+    value_type effective_viscosity = get_int_face_eddy_viscosity(q);
+
+    if constexpr(n_components == 1)
     {
-      effective_viscosity = get_int_face_eddy_viscosity(q);
+      gradient_flux = -0.5 * effective_viscosity * (value_m - value_p);
     }
     else
     {
-      effective_viscosity = 0.5 * (get_int_face_eddy_viscosity(q) + get_ext_face_eddy_viscosity(q));
+      for(unsigned int c = 0; c < n_components; ++c)
+        gradient_flux[c] = -0.5 * effective_viscosity[c] * (value_m[c] - value_p[c]);
     }
+
+    return gradient_flux;
+  }
+
+  inline DEAL_II_ALWAYS_INLINE //
+    value_type
+    calculate_gradient_flux_p(value_type const & value_m,
+                            value_type const & value_p,
+                            unsigned int const q) const
+  {
+    value_type gradient_flux;
+    value_type effective_viscosity = get_ext_face_eddy_viscosity(q);
 
     if constexpr(n_components == 1)
     {
@@ -277,25 +288,40 @@ void
                          bool boundary_face) const
   {
     value_type value_flux;
-    value_type effective_viscosity;
+    value_type effective_viscosity_m = get_int_face_eddy_viscosity(q);
+    value_type effective_viscosity_p, effective_viscosity_penalty;
+
     if(boundary_face)
     {
-      effective_viscosity = get_int_face_eddy_viscosity(q);
+      effective_viscosity_p = effective_viscosity_m;
+      effective_viscosity_penalty = effective_viscosity_m;
     }
     else
     {
-      effective_viscosity = 0.5 * (get_int_face_eddy_viscosity(q) + get_ext_face_eddy_viscosity(q));
+      effective_viscosity_p = get_ext_face_eddy_viscosity(q);
+      if constexpr(n_components == 1)
+      {
+        effective_viscosity_penalty = std::max(effective_viscosity_m, effective_viscosity_p);
+      }
+      else{
+        for(unsigned int c = 0; c < n_components; ++c)
+        {
+          effective_viscosity_penalty[c] = std::max(effective_viscosity_m[c], effective_viscosity_p[c]);
+        }
+      }
     }
 
     if constexpr(n_components == 1)
     {
-      value_flux = effective_viscosity * (0.5 * (normal_gradient_m + normal_gradient_p) - tau * (value_m - value_p));
+      value_flux = 0.5 * (effective_viscosity_m * normal_gradient_m + effective_viscosity_p * normal_gradient_p) - tau * effective_viscosity_penalty * (value_m - value_p);
     }
     else
     {
       for(unsigned int c = 0; c < n_components; ++c)
+      {
         value_flux[c] =
-          effective_viscosity[c] * (0.5 * (normal_gradient_m[c] + normal_gradient_p[c]) - tau * (value_m[c] - value_p[c]));
+          0.5 * (effective_viscosity_m[c] * normal_gradient_m[c] + effective_viscosity_p[c] * normal_gradient_p[c]) - tau * effective_viscosity_penalty[c] * (value_m[c] - value_p[c]);
+      }
     }
 
     return value_flux;
@@ -335,7 +361,8 @@ void
 
     if(data.rans_model)
     {
-      nu_t = integrator_cell_eddy_viscosity->get_value(q);
+      nu_t = std::max(integrator_cell_eddy_viscosity->get_value(q),
+                      dealii::make_vectorized_array<Number>(0.0));
       coefficient = dealii::make_vectorized_array<Number>(data.inverse_sigma[0]);
     }
 

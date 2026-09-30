@@ -119,9 +119,13 @@ private:
     for (unsigned int i = 0; i < n_1D; ++i)
     {
       double const x = quad_1d.point(i)[0];
+      double const xi = 2.0 * x - 1.0;
       for (unsigned int j = 0; j < n_1D; ++j)
       {
-        V_1D(i, j) = legendre_polys[j].value(x);
+        // Scale standard Legendre to be Orthonormal on [0, 1]
+        double const normalization_factor = std::sqrt(2.0 * j + 1.0);
+        V_1D(i, j) = normalization_factor * legendre_polys[j].value(xi);
+        // V_1D(i, j) = std::pow(x, j);
       }
     }
 

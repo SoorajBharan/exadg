@@ -470,10 +470,10 @@ ConvectiveOperator<dim, Number>::face_loop_nonlinear_operator_wall_enrichment(
     return;
   }
 
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
                                                                  *(this->function_enrichment),
                                                                  true);
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> integrator_p(matrix_free,
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_p(matrix_free,
                                                                  *(this->function_enrichment),
                                                                  false);
 
@@ -523,7 +523,7 @@ ConvectiveOperator<dim, Number>::boundary_face_loop_nonlinear_operator_wall_enri
     return;
   }
 
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
                                                                  *(this->function_enrichment),
                                                                  true);
 
@@ -590,8 +590,8 @@ ConvectiveOperator<dim, Number>::do_cell_integral_nonlinear_operator(
 template<int dim, typename Number>
 void
 ConvectiveOperator<dim, Number>::do_face_integral_nonlinear_operator(
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_m,
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_p) const
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_m,
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_p) const
 {
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
@@ -613,7 +613,7 @@ ConvectiveOperator<dim, Number>::do_face_integral_nonlinear_operator(
 template<int dim, typename Number>
 void
 ConvectiveOperator<dim, Number>::do_boundary_integral_nonlinear_operator(
-  FEEnrichedEvaluation<dim, Number, IntegratorFace> &                   integrator,
+  FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> &                   integrator,
   dealii::types::boundary_id const & boundary_id) const
 {
   BoundaryTypeU boundary_type = operator_data.bc->get_boundary_type(boundary_id);

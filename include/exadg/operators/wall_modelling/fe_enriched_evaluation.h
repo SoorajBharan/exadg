@@ -54,18 +54,8 @@ public:
     y_eval(mf, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
     utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
     enrichment(&enrichment_in),
-    n_q_points(phi_dg.n_q_points) {}
-
-  // Constructor for FaceIntegrator (needs the inner_face boolean)
-  FEEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
-                       FunctionEnrichment<dim, Number> const & enrichment_in,
-                       bool inner_face)
-    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    phi_en(mf, inner_face, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    y_eval(mf, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    utau_eval(mf, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    enrichment(&enrichment_in),
-    n_q_points(phi_dg.n_q_points) {}
+    n_q_points(phi_dg.n_q_points),
+    en_gradient_submitted(false) {}
 
   // Reinit for both spaces
   template<typename Iterator>
@@ -76,14 +66,16 @@ public:
 
     y_eval.reinit(iter);
     utau_eval.reinit(iter);
+
+    en_gradient_submitted = false;
   }
 
   // Read DOFs for all required fields simultaneously
-  void read_dof_values(VectorType const & dg_sol, VectorType const & cg_sol)
+  void read_dof_values(VectorType const & dg_sol, VectorType const & en_sol)
   {
     phi_dg.read_dof_values(dg_sol);
 
-    phi_en.read_dof_values(cg_sol);
+    phi_en.read_dof_values(en_sol);
 
     y_eval.read_dof_values(enrichment->wall_distance);
 
@@ -101,11 +93,11 @@ public:
 
   void gather_evaluate(
     VectorType const & dg_sol,
-    VectorType const & cg_sol,
+    VectorType const & en_sol,
     dealii::EvaluationFlags::EvaluationFlags flags)
   {
     phi_dg.read_dof_values(dg_sol);
-    phi_en.read_dof_values(cg_sol);
+    phi_en.read_dof_values(en_sol);
 
     y_eval.read_dof_values(enrichment->wall_distance);
     utau_eval.read_dof_values(enrichment->friction_velocity);
@@ -119,14 +111,20 @@ public:
   void integrate(dealii::EvaluationFlags::EvaluationFlags flags)
   {
     phi_dg.integrate(flags);
-    phi_en.integrate(dealii::EvaluationFlags::values |
-                     dealii::EvaluationFlags::gradients);
+
+    dealii::EvaluationFlags::EvaluationFlags enrichment_flags = dealii::EvaluationFlags::values;
+    if (en_gradient_submitted)
+    {
+      enrichment_flags |= dealii::EvaluationFlags::gradients;
+    }
+
+    phi_en.integrate(enrichment_flags);
   }
 
   value_type get_value(unsigned int q) const
   {
     value_type u_dg = phi_dg.get_value(q);
-    value_type u_en = phi_en.get_value(q); // The Continuous Galerkin component
+    value_type u_en = phi_en.get_value(q);
 
     scalar utau = utau_eval.get_value(q);
     scalar u_tau_safe = std::max(utau, dealii::make_vectorized_array<Number>(1e-6));
@@ -145,8 +143,8 @@ public:
     gradient_type grad_u_dg = phi_dg.get_gradient(q);
 
     // CG properties
-    value_type u_cg      = phi_en.get_value(q);
-    gradient_type grad_u_cg = phi_en.get_gradient(q);
+    value_type u_en      = phi_en.get_value(q);
+    gradient_type grad_u_en = phi_en.get_gradient(q);
 
     // Wall physics
     scalar y    = y_eval.get_value(q);
@@ -160,7 +158,7 @@ public:
     scalar psi = enrichment->get_value(utau, y);
     scalar grad_psi = enrichment->get_gradient(utau, y);
 
-    return grad_u_dg +  (psi * grad_u_cg) + dealii::outer_product(u_cg, grad_psi * normal);
+    return grad_u_dg +  (psi * grad_u_en) + dealii::outer_product(u_en, grad_psi * normal);
   }
 
   scalar
@@ -183,8 +181,8 @@ public:
   value_type get_normal_derivative(unsigned int q) const
   {
     value_type du_dn_dg = phi_dg.get_normal_derivative(q);
-    value_type du_dn_cg = phi_en.get_normal_derivative(q);
-    value_type u_cg     = phi_en.get_value(q);
+    value_type du_dn_en = phi_en.get_normal_derivative(q);
+    value_type u_en     = phi_en.get_value(q);
 
     scalar y    = y_eval.get_value(q);
     scalar utau = utau_eval.get_value(q);
@@ -202,7 +200,7 @@ public:
 
     scalar dpsi_dn_face = nabla_psi * n_face;
 
-    return du_dn_dg + (psi * du_dn_cg) + (dpsi_dn_face * u_cg);
+    return du_dn_dg + (psi * du_dn_en) + (dpsi_dn_face * u_en);
   }
 
   // Submit values to BOTH test functions (Galerkin requirement)
@@ -234,6 +232,8 @@ public:
     phi_en.submit_gradient(psi * val, q);
 
     phi_en.submit_value(val * nabla_psi, q); 
+
+    en_gradient_submitted = true;
   }
 
   void
@@ -255,6 +255,8 @@ public:
     phi_en.submit_divergence(psi * val, q);
 
     phi_en.submit_value(val * nabla_psi, q);
+
+    en_gradient_submitted = true;
   }
 
   void submit_normal_derivative(value_type const & val, unsigned int q)
@@ -278,6 +280,8 @@ public:
     phi_en.submit_normal_derivative(psi * val, q);
 
     phi_en.submit_value(dpsi_dn_face * val, q);
+
+    en_gradient_submitted = true;
   }
 
   // Integrate and Scatter to BOTH global matrices safely
@@ -299,6 +303,9 @@ public:
   {
     return phi_dg.get_normal_vector(q);
   }
+
+private:
+  bool en_gradient_submitted;
 
 }; // FEEnrichedEvaluation declaration
 

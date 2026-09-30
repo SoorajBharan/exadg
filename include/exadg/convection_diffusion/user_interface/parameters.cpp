@@ -435,6 +435,10 @@ Parameters::print(dealii::ConditionalOStream const & pcout, std::string const & 
   if(turbulence_model_data.is_active)
   {
     turbulence_model_data.print(pcout);
+    print_parameter(pcout, "Treatment of variable viscosity", treatment_of_variable_viscosity);
+    print_parameter(pcout, "Treatment of production term", treatment_of_production);
+    print_parameter(pcout, "Treatment of dissipation term", treatment_of_dissipation);
+    print_parameter(pcout, "Treatment of square gradient term", treatment_of_square_gradient);
   }
 
   // SOLVER
@@ -465,9 +469,10 @@ Parameters::print_parameters_mathematical_model(dealii::ConditionalOStream const
     print_parameter(pcout, "Formulation convective term", formulation_convective_term);
   }
 
+  pcout << std::endl << " Modal Filter: " << std::endl;
+  print_parameter(pcout, "Modal Filter is used", modal_filter_is_active);
   if(modal_filter_is_active)
   {
-    pcout << std::endl << " Modal Filter: " << std::endl;
     print_parameter(pcout, "Cut-off degree", cut_off_degree);
     print_parameter(pcout, "Gradient threshold", gradient_threshold);
   }

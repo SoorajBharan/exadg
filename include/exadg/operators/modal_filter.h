@@ -69,7 +69,6 @@ private:
 
   VanderMondeMatrixOperator<dim, n_components, Number> VDM_operator;
 
-  mutable VectorType modal_vector;
   mutable std::atomic<bool> requires_ghost_update;
 };
 

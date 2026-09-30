@@ -28,6 +28,7 @@
 #include <exadg/operators/operator_base.h>
 #include <exadg/operators/wall_modelling/coupler.h>
 #include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
+#include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 
 namespace ExaDG
 {
@@ -999,11 +1000,11 @@ private:
   do_cell_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorCell> & integrator) const;
 
   void
-  do_face_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_m,
-                                      FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_p) const;
+  do_face_integral_nonlinear_operator(FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_m,
+                                      FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> & integrator_p) const;
 
   void
-  do_boundary_integral_nonlinear_operator(FEEnrichedEvaluation<dim, Number, IntegratorFace> & integrator,
+  do_boundary_integral_nonlinear_operator(FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> & integrator,
                                           dealii::types::boundary_id const & boundary_id) const;
 
   /*

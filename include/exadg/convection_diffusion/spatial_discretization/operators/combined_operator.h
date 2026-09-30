@@ -24,6 +24,8 @@
 
 #include <exadg/convection_diffusion/spatial_discretization/operators/convective_operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/diffusive_operator.h>
+#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
+
 #include <exadg/operators/mass_kernel.h>
 
 namespace ExaDG
@@ -37,13 +39,19 @@ struct CombinedOperatorData : public OperatorBaseData
     : OperatorBaseData(),
       unsteady_problem(false),
       convective_problem(false),
-      diffusive_problem(false)
+      diffusive_problem(false),
+      dissipation_implicit(false),
+      production_implicit(false),
+      square_gradient_implicit(false)
   {
   }
 
   bool unsteady_problem;
   bool convective_problem;
   bool diffusive_problem;
+  bool dissipation_implicit;
+  bool production_implicit;
+  bool square_gradient_implicit;
 
   Operators::ConvectiveKernelData<dim> convective_kernel_data;
   Operators::DiffusiveKernelData       diffusive_kernel_data;
@@ -112,6 +120,9 @@ public:
   void
   set_scaling_factor_mass_operator(Number const & scaling_factor);
 
+  void
+  set_turbulence_source_kernel(std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel_in);
+
 private:
   void
   reinit_cell_derived(IntegratorCell & integrator, unsigned int const cell) const final;
@@ -159,6 +170,7 @@ private:
   std::shared_ptr<MassKernel<dim, Number>>                  mass_kernel;
   std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
   std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
+  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel;
 
   double scaling_factor_mass;
 };

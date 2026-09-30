@@ -40,29 +40,62 @@ TurbulenceModel<dim, n_components, Number>::initialize(dealii::MatrixFree<dim, N
                                             TurbulenceModelData const &                 turbulence_model_data_in,
                                             unsigned int const                      dof_index_in,
                                             unsigned int const                      dof_index_viscosity_in,
-                                            unsigned int const                      quad_index_in)
+                                                       unsigned int const dof_index_velocity_in,
+                                            unsigned int const                      quad_index_in,
+                                                       unsigned int const quad_index_eddy_velocity_in)
 {
   matrix_free = &matrix_free_in;
 
   dof_index  = dof_index_in;
   dof_index_viscosity  = dof_index_viscosity_in;
+  dof_index_velocity = dof_index_velocity_in;
   quad_index = quad_index_in;
+  quad_index_eddy_velocity = quad_index_eddy_velocity_in;
 
   turbulence_model_data = turbulence_model_data_in;
 
   model_coefficients = turbulence_model_data_in.turbulence_data_base->get_all_coefficients();
 
   matrix_free->initialize_dof_vector(eddy_viscosity, dof_index_viscosity_in);
+
+  matrix_free->initialize_dof_vector(velocity.own(), dof_index_velocity_in);
+  velocity.own() = 0.0;
+
+  InverseMassOperatorData inv_mass_data;
+  inv_mass_data.dof_index = dof_index_viscosity_in;
+  inv_mass_data.quad_index = quad_index_in;
+  inverse_mass_viscosity.initialize(*matrix_free, inv_mass_data);
 }
 
 template<int dim, int n_components, typename Number>
 void
 TurbulenceModel<dim, n_components, Number>::set_viscosity(VectorType const & solution)
 {
+  VectorType rhs_viscosity;
+  matrix_free->initialize_dof_vector(rhs_viscosity, dof_index_viscosity);
+  rhs_viscosity = 0.0;
+
   matrix_free->cell_loop(&TurbulenceModel<dim, n_components, Number>::cell_loop,
                          this,
-                         eddy_viscosity,
+                         rhs_viscosity,
                          solution);
+
+  eddy_viscosity = rhs_viscosity;
+  // inverse_mass_viscosity.apply(eddy_viscosity, rhs_viscosity);
+
+  for(unsigned int i = 0; i < eddy_viscosity.locally_owned_size(); ++i)
+  {
+    eddy_viscosity.local_element(i) = std::max(eddy_viscosity.local_element(i), Number(0.0));
+  }
+  eddy_viscosity.update_ghost_values();
+}
+
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::set_velocity_ptr(VectorType const & velocity_in)
+{
+  velocity.own() = velocity_in;
+  velocity->update_ghost_values();
 }
 
 template<int dim, int n_components, typename Number>
@@ -81,6 +114,10 @@ TurbulenceModel<dim, n_components, Number>::cell_loop(
   IntegratorCell integrator(matrix_free, dof_index, quad_index);
   IntegratorCellScalar integrator_viscosity(matrix_free, dof_index_viscosity, quad_index);
 
+  CellIntegrator<dim, dim, Number> integrator_velocity(matrix_free,
+                                                       dof_index_velocity,
+                                                       quad_index_eddy_velocity);
+
   for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
     integrator.reinit(cell);
@@ -88,13 +125,58 @@ TurbulenceModel<dim, n_components, Number>::cell_loop(
 
     integrator_viscosity.reinit(cell);
 
+    integrator_velocity.reinit(cell);
+    integrator_velocity.gather_evaluate(*velocity, dealii::EvaluationFlags::gradients);
+
+    // for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    // {
+    //   auto solution_values = integrator.get_value(q);
+    //   auto velocity_gradient = integrator_velocity.get_gradient(q);
+    //
+    //   scalar eddy_viscosity_q;
+    //
+    //   evaluate_eddy_viscosity(solution_values, velocity_gradient, eddy_viscosity_q);
+    //
+    //   integrator_viscosity.submit_value(eddy_viscosity_q, q);
+    // }
+    // integrator_viscosity.integrate(dealii::EvaluationFlags::values);
+    // integrator_viscosity.distribute_local_to_global(dst);
+
     for(unsigned int dof = 0; dof < integrator_viscosity.dofs_per_cell; ++dof)
     {
       auto solution_values = integrator.get_dof_value(dof);
-      
+      auto velocity_gradient = integrator_velocity.get_gradient(dof);
+
       scalar eddy_viscosity_dof;
 
-      evaluate_eddy_viscosity(solution_values, eddy_viscosity_dof);
+      evaluate_eddy_viscosity(solution_values,
+                              velocity_gradient,
+                              eddy_viscosity_dof);
+
+      dealii::Point<dim, scalar> const q_point = integrator_velocity.quadrature_point(dof);
+      for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
+      {
+        Number const val = eddy_viscosity_dof[v];
+        if(!(val >= Number(0.0)) || !dealii::numbers::is_finite(val))
+        {
+          dealii::Point<dim> p;
+          for(unsigned int d = 0; d < dim; ++d)
+            p[d] = q_point[d][v];
+
+          std::cout << "[rank " << dealii::Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) << "] "
+            << "bad eddy_viscosity = " << val
+            << " at cell " << cell << ", dof " << dof << ", lane " << v
+            << ", coords = " << p;
+
+          if constexpr (n_components >= 2)
+          {
+            std::cout << ", raw solution (psi_k, psi_omega or k, omega) = ("
+              << solution_values[0][v] << ", " << solution_values[1][v] << ")";
+          }
+
+          std::cout << std::endl;
+        }
+      }
 
       integrator_viscosity.submit_dof_value(eddy_viscosity_dof, dof);
     }
@@ -106,6 +188,7 @@ template<int dim, int n_components, typename Number>
 template<typename DataType>
 void
 TurbulenceModel<dim, n_components, Number>::evaluate_eddy_viscosity(DataType const & solution_values,
+                                                                    dealii::Tensor<2, dim, scalar> const & velocity_gradient,
                                                                     scalar & viscosity) const
 {
   if constexpr (n_components == 1)
@@ -123,7 +206,7 @@ TurbulenceModel<dim, n_components, Number>::evaluate_eddy_viscosity(DataType con
         standard_k_epsilon_model(solution_values, viscosity);
         break;
       case TurbulenceEddyViscosityModel::StandardKOmega1988:
-        standard_k_omega_1988_model(solution_values, viscosity);
+        standard_k_omega_1988_model(solution_values, velocity_gradient, viscosity);
         break;
       case TurbulenceEddyViscosityModel::Undefined:
         AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
@@ -146,46 +229,126 @@ TurbulenceModel<dim, n_components, Number>::standard_k_epsilon_model(dealii::Ten
   scalar tke = solution_values[0];
   scalar epsilon = solution_values[1];
 
-  if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+  if(turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable)
   {
-    scalar log_terms = (dealii::make_vectorized_array<Number>(2.0) * tke) - epsilon;
-    viscosity = C_mu * std::exp(log_terms);
+    tke = std::exp(tke);
   }
-  else if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+  if(turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable)
   {
-    viscosity = C_mu * tke * tke / std::max(epsilon, dealii::make_vectorized_array<Number>(1.e-6));
+    epsilon = std::exp(epsilon);
   }
-  else
-  {
-    AssertThrow(false,
-                dealii::ExcMessage(
-                  "PositivityPreservingLimiter needs to be specified for  calculating viscosity"));
-  }
+
+  viscosity = std::max(C_mu * tke * tke / epsilon, dealii::make_vectorized_array<Number>(0.0));
 }
 
 template<int dim, int n_components, typename Number>
 void
 TurbulenceModel<dim, n_components, Number>::standard_k_omega_1988_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
+                                                                        dealii::Tensor<2, dim, scalar> const & velocity_gradient,
                                                                         scalar & viscosity) const
 {
   scalar tke = solution_values[0];
   scalar omega = solution_values[1];
+  scalar omega_inverse;
 
-  if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+  if(turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable)
   {
-    scalar log_terms = tke - omega;
-    viscosity = std::exp(log_terms);
+    tke = std::exp(tke);
   }
-  else if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::Clipper)
+  else if(turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::Clipper)
   {
-    viscosity = tke / std::max(omega, dealii::make_vectorized_array<Number>(1.e-6));
+    tke = std::max(tke, dealii::make_vectorized_array<Number>(0.0));
   }
-  else
+
+  if(turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable)
   {
-    AssertThrow(false,
-                dealii::ExcMessage(
-                  "PositivityPreservingLimiter needs to be specified for  calculating viscosity"));
+    scalar omega_r = compute_ln_omega_r(velocity_gradient, omega);
+    omega_inverse = std::exp(-omega_r);
   }
+  else if(turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::Clipper)
+  {
+    scalar omega_r = compute_omega_r(velocity_gradient, omega);
+    omega_inverse = dealii::make_vectorized_array<Number>(1.0) / omega_r;
+  }
+
+  viscosity = tke * omega_inverse;
+}
+
+template<int dim, int n_components, typename Number>
+typename TurbulenceModel<dim, n_components, Number>::scalar
+TurbulenceModel<dim, n_components, Number>::compute_realizability_alpha(
+  dealii::Tensor<2, dim, scalar> const & grad_u) const
+{
+  scalar zero = dealii::make_vectorized_array<Number>(0.0);
+
+  dealii::Tensor<2, 3, scalar> S;
+  for (unsigned int i = 0; i < 3; ++i) 
+  {
+    for (unsigned int j = 0; j < 3; ++j) 
+    {
+      S[i][j] = zero;
+    }
+  }
+
+  for (unsigned int i = 0; i < dim; ++i) 
+  {
+    for (unsigned int j = 0; j < dim; ++j) 
+    {
+      S[i][j] = dealii::make_vectorized_array<Number>(0.5) * (grad_u[i][j] + grad_u[j][i]);
+    }
+  }
+
+  scalar alpha = zero;
+  scalar three = dealii::make_vectorized_array<Number>(3.0);
+
+  for (unsigned int i = 0; i < 3; ++i) 
+  {
+    for (unsigned int j = i + 1; j < 3; ++j) 
+    {
+      scalar B = three * (S[i][i] + S[j][j]);
+      scalar S_ij = S[i][j]; 
+
+      // Discriminant Delta = 9(Sd_ii - Sd_jj)^2 + 4(S_ij)^2
+      scalar diff = S[i][i] - S[j][j];
+      scalar delta = dealii::make_vectorized_array<Number>(9.0) * diff * diff + 
+        dealii::make_vectorized_array<Number>(36.0) * S_ij * S_ij;
+
+      delta = std::max(delta, zero);
+
+      // The largest positive root bounds alpha
+      scalar root_1 = dealii::make_vectorized_array<Number>(0.5) * (B + std::sqrt(delta));
+      scalar root_2 = dealii::make_vectorized_array<Number>(0.5) * (B - std::sqrt(delta));
+      scalar root = std::max(root_1, root_2);
+      alpha = std::max(alpha, root);
+    }
+  }
+
+  scalar alpha_safe = std::max(alpha, dealii::make_vectorized_array<Number>(1.0e-6));
+
+  return alpha_safe;
+}
+
+template<int dim, int n_components, typename Number>
+typename TurbulenceModel<dim, n_components, Number>::scalar
+TurbulenceModel<dim, n_components, Number>::compute_omega_r(
+  dealii::Tensor<2, dim, scalar> const & grad_u, 
+  scalar const & tilde_omega) const
+{
+  scalar alpha = compute_realizability_alpha(grad_u);
+
+  return std::max(tilde_omega, alpha);
+}
+
+template<int dim, int n_components, typename Number>
+typename TurbulenceModel<dim, n_components, Number>::scalar
+TurbulenceModel<dim, n_components, Number>::compute_ln_omega_r(
+  dealii::Tensor<2, dim, scalar> const & grad_u, 
+  scalar const & tilde_omega) const
+{
+  scalar alpha = compute_realizability_alpha(grad_u);
+  scalar omega_r0 = std::log(alpha);
+
+  return std::max(tilde_omega, omega_r0);
 }
 
 template<int dim, int n_components, typename Number>
@@ -242,7 +405,7 @@ TurbulenceModel<dim, n_components, Number>::cell_loop_extract_tke(
         auto solution_values = integrator.get_dof_value(dof);
         scalar tke = solution_values[0];
 
-        if(turbulence_model_data.positivity_preserving_limiter == PositivityPreservingLimiter::LogarithmicTransportVariable)
+        if(turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable)
         {
           tke = std::exp(tke);
         }
@@ -250,6 +413,56 @@ TurbulenceModel<dim, n_components, Number>::cell_loop_extract_tke(
         integrator_tke.submit_dof_value(tke, dof);
       }
       integrator_tke.set_dof_values(dst);
+    }
+  }
+}
+
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::enforce_positivity(VectorType & solution) const
+{
+  VectorType tmp;
+  matrix_free->initialize_dof_vector(tmp, dof_index);
+
+  matrix_free->cell_loop(&TurbulenceModel<dim, n_components, Number>::cell_loop_enforce_positivity,
+                         this,
+                         tmp,
+                         solution);
+  solution = tmp;
+}
+
+template<int dim, int n_components, typename Number>
+void
+TurbulenceModel<dim, n_components, Number>::cell_loop_enforce_positivity(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType & dst,
+  VectorType const & src,
+  Range const & cell_range) const
+{
+  if constexpr (n_components == 2)
+  {
+    IntegratorCell integrator(matrix_free, dof_index, quad_index);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    {
+      integrator.reinit(cell);
+      integrator.read_dof_values(src);
+      for(unsigned int dof = 0; dof < integrator.dofs_per_component; ++dof)
+      {
+        auto values = integrator.get_dof_value(dof);
+
+        if(turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::Clipper)
+        {
+          values[0] = std::max(values[0], dealii::make_vectorized_array<Number>(0.0));
+        }
+
+        if(turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::Clipper)
+        {
+          values[1] = std::max(values[1], dealii::make_vectorized_array<Number>(0.0));
+        }
+        integrator.submit_dof_value(values, dof);
+      }
+      integrator.set_dof_values(dst);
     }
   }
 }

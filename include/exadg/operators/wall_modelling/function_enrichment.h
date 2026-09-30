@@ -81,10 +81,6 @@ void
                       unsigned int                                          layers = 3);
 
   void
-  setup_wall_distance_cg(dealii::Mapping<dim> const &                          mapping,
-                         unsigned int                                          layers = 3);
-
-  void
   evaluate_friction_velocity(VectorType const & global_velocity);
 
   void 
@@ -141,16 +137,6 @@ void
   unsigned int
   get_active_fe_index() const;
 
-  struct SchurData {
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_Vbar_Utilde; 
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> Schur_inverse;
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_Vbar_inverse;
-
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_inv;
-
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_Utilde_inverse;
-  };
-
   // Add this pointer to store the global fluid layout
   dealii::DoFHandler<dim> const * global_dof_handler;
 
@@ -178,7 +164,7 @@ private:
   };
 
   void
-  project_velocity_to_wall(VectorType const & src);
+  project_velocity_to_wall();
 
   void
   loop_project_velocity_to_wall(dealii::MatrixFree<dim, Number> const & data,
@@ -226,9 +212,7 @@ private:
 
   const unsigned int active_fe_index = 1;
 
-  double kinematic_viscosity; ///< \nu
-  double kappa;               ///< von Karman constant ≈ 0.41
-  double beta;                ///< log-law intercept ≈ 5.2
+  double kinematic_viscosity; 
 
   std::shared_ptr<dealii::MatrixFree<dim, Number>> matrix_free_en;
   dealii::AffineConstraints<Number>                constraint_wall;
@@ -255,8 +239,6 @@ private:
   std::shared_ptr<dealii::FiniteElement<dim>> fe_cg_vector;
   dealii::DoFHandler<dim>                     dof_handler_cg_vector;
   dealii::hp::FECollection<dim>               fe_cg_vector_collection;
-
-  std::vector<dealii::types::boundary_id> wall_boundary_ids_;
 
   // Node to nearest wall node mapping (for quick lookup during distance computation)
   std::map<dealii::types::global_dof_index, dealii::types::global_dof_index> node_to_wall_node;

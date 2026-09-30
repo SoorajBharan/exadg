@@ -585,7 +585,25 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
   dealii::Timer timer;
   timer.restart();
 
-  pde_operator->apply_modal_filter(solution_np);
+  VectorType solution_extrapolated;
+
+  if(param.turbulence_model_data.is_active)
+  {
+    AssertThrow(velocities.size() > 0 and velocities[0] != nullptr,
+                dealii::ExcMessage(
+                  "Velocity must be set (via set_velocities_and_times) before "
+                  "do_timestep_solve() can update eddy viscosity."));
+
+    pde_operator->initialize_dof_vector(solution_extrapolated);
+    extrapolate_solution(solution_extrapolated);
+
+    pde_operator->update_eddy_viscosity(solution_extrapolated, velocities[0]);
+  }
+
+  if(param.modal_filter_is_active)
+  {
+    pde_operator->apply_modal_filter(solution_np);
+  }
 
   // transport velocity
   VectorType velocity_np;
@@ -626,7 +644,10 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
                                       param.end_time,
                                       this->time_step_number);
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
-  pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
+  pde_operator->rhs(rhs_vector,
+                    param.turbulence_model_data.is_active ? solution_extrapolated : solution_np,
+                    this->get_next_time(),
+                    &velocity_np);
 
   // if the convective term is involved in the equations:
   // add the convective term to the right-hand side of the equations
@@ -698,6 +719,8 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
 
   iterations.first += 1;
   iterations.second += N_iter;
+
+  pde_operator->enforce_positivity(solution_np);
 
   // evaluate convective term at end time t_{n+1} at which we know the boundary condition
   // g_u(t_{n+1})

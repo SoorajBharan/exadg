@@ -51,15 +51,16 @@ void ModalFilter<dim, n_components, Number>::initialize(
 template<int dim, int n_components, typename Number>
 void ModalFilter<dim, n_components, Number>::apply_filter(VectorType & solution) const
 {
-  requires_ghost_update = false;
+  VectorType filtered_solution;
+  matrix_free->initialize_dof_vector(filtered_solution,
+                                     dof_index);
 
-  VectorType src;
-  matrix_free->cell_loop(&This::cell_loop_filter, this, solution, src, false);
+  matrix_free->cell_loop(&This::cell_loop_filter,
+                         this,
+                         filtered_solution,
+                         solution);
 
-  if (requires_ghost_update)
-  {
-    solution.update_ghost_values();
-  }
+  solution = filtered_solution;
 }
 
 template<int dim, int n_components, typename Number>
@@ -70,6 +71,9 @@ void ModalFilter<dim, n_components, Number>::cell_loop_filter(
   Range const & cell_range) const
 {
   (void)src;
+  VectorType modal_vector;
+
+  matrix_free->initialize_dof_vector(modal_vector, dof_index);
 
   Integrator integrator(matrix_free_in, dof_index, quad_index);
 
@@ -77,11 +81,9 @@ void ModalFilter<dim, n_components, Number>::cell_loop_filter(
 
   for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
-    if (is_selected(cell, dst, filter_mask))
+    if (is_selected(cell, src, filter_mask))
     {
-      requires_ghost_update = true;
-
-      VDM_operator.transform_to_modal(dst, modal_vector, cell);
+      VDM_operator.transform_to_modal(src, modal_vector, cell);
 
       integrator.reinit(cell);
       integrator.read_dof_values(modal_vector);

@@ -16,6 +16,7 @@
 
 #include <deal.II/base/vectorization.h>
 #include <deal.II/base/tensor.h>
+#include <cmath>
 
 namespace ExaDG
 {
@@ -28,6 +29,24 @@ enum class WallLawType
   PowerLaw,
   Undefined
 };
+
+template<typename Number>
+dealii::VectorizedArray<Number>
+initial_guess_u_plus(dealii::VectorizedArray<Number> const y_plus,
+                     double kappa = 0.41,
+                     double beta = 5.2)
+{
+  using scalar = dealii::VectorizedArray<Number>;
+
+  scalar safe_y_plus = std::max(y_plus, dealii::make_vectorized_array<Number>(1e-6));
+
+  scalar const linear_guess = safe_y_plus;
+  scalar const log_guess = std::log(safe_y_plus) / kappa + dealii::make_vectorized_array<Number>(beta);
+
+  scalar const threshold = dealii::make_vectorized_array<Number>(5.0);
+
+  return dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(safe_y_plus, threshold, log_guess, linear_guess);
+}
 
 template<typename Number, typename Functor>
 dealii::VectorizedArray<Number>
@@ -44,7 +63,15 @@ solve_newton_raphson(
   {
     std::pair<scalar, scalar> values = function(u_plus);
 
-    u_plus -= (values.first - y_plus) / values.second;
+    scalar sign = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than>(
+      values.second,
+      dealii::make_vectorized_array<Number>(0.0),
+      dealii::make_vectorized_array<Number>(-1.0),
+      dealii::make_vectorized_array<Number>(1.0));
+
+    scalar safe_derivative = sign * std::max(std::abs(values.second), dealii::make_vectorized_array<Number>(1e-12));
+
+    u_plus -= (values.first - y_plus) / safe_derivative;
   }
   return u_plus;
 }
@@ -92,6 +119,9 @@ public:
 
   scalar
   get_gradient(scalar const y_plus) const;
+
+  std::pair<scalar, scalar>
+  get_value_and_gradient(scalar const y_plus) const;
 
 private:
 

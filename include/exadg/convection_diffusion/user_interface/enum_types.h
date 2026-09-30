@@ -98,6 +98,27 @@ enum class TreatmentOfVariableViscosity
   Implicit
 };
 
+enum class TreatmentOfProduction
+{
+  Undefined,
+  Explicit,
+  Implicit
+};
+
+enum class TreatmentOfSquareGradient
+{
+  Undefined,
+  Explicit,
+  Implicit
+};
+
+enum class TreatmentOfDissipation
+{
+  Undefined,
+  Explicit,
+  Implicit
+};
+
 /**************************************************************************************/
 /*                                                                                    */
 /*                                 PHYSICAL QUANTITIES                                */

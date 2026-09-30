@@ -29,7 +29,9 @@
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>
 #include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/utilities/lazy_ptr.h>
 
+#include <exadg/operators/inverse_mass_operator.h>
 
 
 namespace ExaDG
@@ -72,7 +74,9 @@ public:
              TurbulenceModelData const &             turbulence_model_data_in,
              unsigned int const                      dof_index_in,
              unsigned int const                      dof_index_viscosity_in,
-             unsigned int const                      quad_index_in);
+             unsigned int const                      dof_index_velocity_in,
+             unsigned int const                      quad_index_in,
+             unsigned int const                      quad_index_eddy_velocity_in);
 
   /**
    * Function for *setting* the eddy viscosity
@@ -89,8 +93,15 @@ public:
   void
   get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
 
+  void
+  set_velocity_ptr(VectorType const & velocity_in);
+
+  void
+  enforce_positivity(VectorType & solution) const;
+
   double       diffusivity;
   unsigned int quad_index;
+  unsigned int quad_index_eddy_velocity;
 
   std::vector<double> model_coefficients;
 
@@ -104,6 +115,7 @@ private:
   template<typename DataType>
   void
   evaluate_eddy_viscosity(DataType const & solution_values,
+                          dealii::Tensor<2, dim, scalar> const & velocity_gradient,
                           scalar & viscosity) const;
 
   void
@@ -112,7 +124,19 @@ private:
 
   void
   standard_k_omega_1988_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
-                              scalar & viscosity) const;
+                              dealii::Tensor<2, dim, scalar> const & velocity_gradient,
+                           scalar & viscosity) const;
+
+  typename TurbulenceModel<dim, n_components, Number>::scalar
+  compute_realizability_alpha(dealii::Tensor<2, dim, scalar> const & grad_u) const;
+
+  typename TurbulenceModel<dim, n_components, Number>::scalar
+  compute_omega_r(dealii::Tensor<2, dim, scalar> const & grad_u, 
+                  scalar const & tilde_omega) const;
+
+  typename TurbulenceModel<dim, n_components, Number>::scalar
+  compute_ln_omega_r(dealii::Tensor<2, dim, scalar> const & grad_u, 
+                     scalar const & tilde_omega) const;
 
   void
   cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & data,
@@ -120,14 +144,24 @@ private:
                         VectorType const & src,
                         Range const &      cell_range) const;
 
+  void
+  cell_loop_enforce_positivity(dealii::MatrixFree<dim, Number> const & matrix_free,
+                               VectorType & dst,
+                               VectorType const & src,
+                               Range const & cell_range) const;
+
   TurbulenceModelData                                   turbulence_model_data;
 
   VectorType eddy_viscosity;
   VectorType effective_viscosity;
+  InverseMassOperator<dim, 1, Number> inverse_mass_viscosity;
+
+  mutable lazy_ptr<VectorType> velocity;
 
 protected:
   unsigned int dof_index;
   unsigned int dof_index_viscosity;
+  unsigned int dof_index_velocity;
 
   dealii::MatrixFree<dim, Number> const * matrix_free;
 };

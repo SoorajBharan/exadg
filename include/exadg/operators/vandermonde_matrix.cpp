@@ -50,50 +50,49 @@ void VanderMondeMatrixOperator<dim, n_components, Number>::transform_to_modal(
   unsigned int const cell_id) const
 {
   Integrator integrator(*matrix_free, dof_index, quad_index);
-  std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
 
   integrator.reinit(cell_id);
   integrator.read_dof_values(src);
 
   if constexpr (n_components == 1)
   {
-    std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
-    for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+    std::vector<scalar> local_data(integrator.dofs_per_component);
+    for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       local_data[i] = integrator.get_dof_value(i);
     }
 
     kernel.transform_local_to_modal(local_data);
 
-    for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+    for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       integrator.submit_dof_value(local_data[i], i);
     }
   }
   else
 {
-    std::vector<dealii::Tensor<1, n_components, scalar>> all_components(integrator.tensor_dofs_per_cell);
-    for (unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+    std::vector<dealii::Tensor<1, n_components, scalar>> all_components(integrator.dofs_per_component);
+    for (unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       all_components[i] = integrator.get_dof_value(i);
     }
 
-    std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
+    std::vector<scalar> local_data(integrator.dofs_per_component);
     for (unsigned int c = 0; c < n_components; ++c)
     {
-      for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         local_data[i] = all_components[i][c];
       }
 
       kernel.transform_local_to_modal(local_data);
 
-      for (unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for (unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         all_components[i][c] = local_data[i];
       }
 
-      for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         integrator.submit_dof_value(all_components[i], i);
       }
@@ -110,50 +109,49 @@ void VanderMondeMatrixOperator<dim, n_components, Number>::transform_to_nodal(
   unsigned int const cell_id) const
 {
   Integrator integrator(*matrix_free, dof_index, quad_index);
-  std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
 
   integrator.reinit(cell_id);
   integrator.read_dof_values(src);
 
   if constexpr (n_components == 1)
   {
-    std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
-    for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+    std::vector<scalar> local_data(integrator.dofs_per_component);
+    for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       local_data[i] = integrator.get_dof_value(i);
     }
 
     kernel.transform_local_to_nodal(local_data);
 
-    for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+    for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       integrator.submit_dof_value(local_data[i], i);
     }
   }
   else
 {
-    std::vector<dealii::Tensor<1, n_components, scalar>> all_components(integrator.tensor_dofs_per_cell);
-    for (unsigned int i = 0; i < n_components; ++i)
+    std::vector<dealii::Tensor<1, n_components, scalar>> all_components(integrator.dofs_per_component);
+    for (unsigned int i = 0; i < integrator.dofs_per_component; ++i)
     {
       all_components[i] = integrator.get_dof_value(i);
     }
 
-    std::vector<scalar> local_data(integrator.tensor_dofs_per_cell);
+    std::vector<scalar> local_data(integrator.dofs_per_component);
     for (unsigned int c = 0; c < n_components; ++c)
     {
-      for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         local_data[i] = all_components[i][c];
       }
 
       kernel.transform_local_to_nodal(local_data);
 
-      for (unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for (unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         all_components[i][c] = local_data[i];
       }
 
-      for(unsigned int i = 0; i < integrator.tensor_dofs_per_cell; ++i)
+      for(unsigned int i = 0; i < integrator.dofs_per_component; ++i)
       {
         integrator.submit_dof_value(all_components[i], i);
       }

@@ -77,6 +77,18 @@ Operator<dim, n_components, Number>::Operator(
     // Create a 1-component element with the same polynomial degree as the solution
     fe_eddy_viscosity = create_finite_element<dim>(ElementType::Hypercube, true, 1, param.degree);
     dof_handler_eddy_viscosity = std::make_shared<dealii::DoFHandler<dim>>(*grid->triangulation);
+
+    dealii::QGaussLobatto<dim> const check_quad(param.degree + 1);
+    auto const &                     support_points = fe_eddy_viscosity->get_unit_support_points();
+    AssertDimension(support_points.size(), check_quad.size());
+    for(unsigned int i = 0; i < support_points.size(); ++i)
+      AssertThrow(support_points[i].distance(check_quad.point(i)) < 1e-12,
+             dealii::ExcMessage(
+             "fe_eddy_viscosity's unit support points do not coincide with "
+             "quad_index_eddy_velocity (QGaussLobatto). The nodal collocation "
+             "in TurbulenceModel::cell_loop() is invalid for this deal.II "
+             "version/FE choice -- build quad_index_eddy_velocity from "
+             "fe_eddy_viscosity->get_unit_support_points() directly instead."));
   }
 
   initialize_dof_handler_and_constraints();
@@ -171,6 +183,12 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
       create_quadrature<dim>(param.grid.element_type, param.degree + (param.degree + 2) / 2);
     matrix_free_data.insert_quadrature(*quadrature_over, get_quad_name_overintegration());
   }
+
+  if(param.turbulence_model_data.is_active)
+  {
+    std::shared_ptr<dealii::Quadrature<dim>> quadrature_eddy_velocity = std::make_shared<dealii::QGaussLobatto<dim>>(param.degree + 1);
+    matrix_free_data.insert_quadrature(*quadrature_eddy_velocity, get_quad_name_eddy_velocity());
+  }
 }
 
 template<int dim, int n_components, typename Number>
@@ -238,7 +256,9 @@ Operator<dim, n_components, Number>::setup_operators()
                                      param.turbulence_model_data,
                                      get_dof_index(),
                                      get_dof_index_eddy_viscosity(),
-                                     get_quad_index());
+                                     get_dof_index_velocity(),
+                                     get_quad_index(),
+                                     get_quad_index_eddy_velocity());
     turbulence_model_ptr->model_coefficients       = param.turbulence_model_data.turbulence_data_base->get_all_coefficients();
   }
 
@@ -296,26 +316,39 @@ Operator<dim, n_components, Number>::setup_operators()
 
   Operators::RHSKernelData<dim> rhs_kernel_data;
   rhs_kernel_data.rans_model = param.turbulence_model_data.is_active;
-  rhs_kernel_data.positivity_preserving_limiter =
-    param.turbulence_model_data.positivity_preserving_limiter;
-  rhs_kernel_data.dof_index_velocity       = get_dof_index_velocity();
-  rhs_kernel_data.dof_index                = get_dof_index();
-  rhs_kernel_data.turbulence_model_data    = param.turbulence_model_data;
-  if(param.turbulence_model_data.is_active)
-  {
-    rhs_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
-  }
-  rhs_kernel_data.diffusivity              = param.diffusivity;
-
   rhs_kernel_data.f = field_functions->right_hand_side;
 
   rhs_kernel = std::make_shared<Operators::RHSKernel<dim, Number, n_components>>();
-  rhs_kernel->reinit(*matrix_free, rhs_kernel_data, quad_index_convective);
+  rhs_kernel->reinit(rhs_kernel_data);
 
   rhs_operator.initialize(*matrix_free, rhs_operator_data, rhs_kernel);
+
   if(param.turbulence_model_data.is_active)
   {
-    rhs_kernel->turbulence_model_ptr = turbulence_model_ptr;
+    TurbulenceSourceOperatorData<dim> turbulence_source_operator_data;
+    turbulence_source_operator_data.dof_index  = get_dof_index();
+    turbulence_source_operator_data.quad_index = get_quad_index();
+
+    Operators::TurbulenceSourceKernelData<dim> turbulence_source_kernel_data;
+    turbulence_source_kernel_data.dof_index                = get_dof_index();
+    turbulence_source_kernel_data.dof_index_velocity       = get_dof_index_velocity();
+    turbulence_source_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
+    turbulence_source_kernel_data.turbulence_model_data    = param.turbulence_model_data;
+    turbulence_source_kernel_data.diffusivity              = param.diffusivity;
+    turbulence_source_kernel_data.k_log                    = param.turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable;
+    turbulence_source_kernel_data.omega_log                = param.turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable;
+    turbulence_source_kernel_data.production_implicit = param.treatment_of_production == TreatmentOfProduction::Implicit;
+    turbulence_source_kernel_data.dissipation_implicit = param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
+    turbulence_source_kernel_data.square_gradient_implicit = param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
+
+    turbulence_source_kernel = std::make_shared<Operators::TurbulenceSourceKernel<dim, Number, n_components>>();
+    turbulence_source_kernel->reinit(*matrix_free, turbulence_source_kernel_data, quad_index_convective);
+    turbulence_source_kernel->turbulence_model_ptr = turbulence_model_ptr;
+
+    turbulence_source_operator.initialize(*matrix_free,
+                                          affine_constraints,
+                                          turbulence_source_operator_data,
+                                          turbulence_source_kernel);
   }
 
   // merged operator
@@ -331,6 +364,9 @@ Operator<dim, n_components, Number>::setup_operators()
     combined_operator_data.solver_block_diagonal         = param.solver_block_diagonal;
     combined_operator_data.preconditioner_block_diagonal = param.preconditioner_block_diagonal;
     combined_operator_data.solver_data_block_diagonal    = param.solver_data_block_diagonal;
+    combined_operator_data.production_implicit    = param.treatment_of_production == TreatmentOfProduction::Implicit;
+    combined_operator_data.dissipation_implicit = param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
+    combined_operator_data.square_gradient_implicit = param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
 
     // linear system of equations has to be solved: the problem is either steady or
     // an unsteady problem is solved with BDF time integration (semi-implicit or fully implicit
@@ -380,6 +416,10 @@ Operator<dim, n_components, Number>::setup_operators()
                                  combined_operator_data,
                                  convective_kernel,
                                  diffusive_kernel);
+    if(param.treatment_of_dissipation == TreatmentOfDissipation::Implicit || param.treatment_of_production == TreatmentOfProduction::Implicit || param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit)
+    {
+      combined_operator.set_turbulence_source_kernel(turbulence_source_kernel);
+    }
   }
 
   modal_filter.initialize(*matrix_free,
@@ -725,13 +765,20 @@ Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &    
 
     if(param.right_hand_side == true)
     {
-      rhs_operator.set_velocity_ptr(*velocity);
-      rhs_operator.set_solution_ptr(src);
-      if(param.turbulence_model_data.is_active)
-      {
-        rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-      }
       rhs_operator.evaluate_add(dst, time);
+    }
+
+    if(param.turbulence_model_data.is_active)
+    {
+      AssertThrow(velocity != nullptr,
+                  dealii::ExcMessage("velocity pointer is not initialized."));
+      turbulence_model_ptr->set_velocity_ptr(*velocity);
+
+      turbulence_source_operator.set_velocity_ptr(*velocity);
+      turbulence_source_operator.set_solution_ptr(src);
+      turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+
+      turbulence_source_operator.evaluate_add_source(dst,time);
     }
   }
   else // param.use_combined_operator == true
@@ -758,13 +805,20 @@ Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &    
 
     if(param.right_hand_side == true)
     {
-      rhs_operator.set_velocity_ptr(*velocity);
-      rhs_operator.set_solution_ptr(src);
-      if(param.turbulence_model_data.is_active)
-      {
-        rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-      }
       rhs_operator.evaluate_add(dst, time);
+    }
+
+    if(param.turbulence_model_data.is_active)
+    {
+      AssertThrow(velocity != nullptr,
+                  dealii::ExcMessage("velocity pointer is not initialized."));
+      turbulence_model_ptr->set_velocity_ptr(*velocity);
+
+      turbulence_source_operator.set_velocity_ptr(*velocity);
+      turbulence_source_operator.set_solution_ptr(src);
+      turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+
+      turbulence_source_operator.evaluate_add_source(dst,time);
     }
   }
 
@@ -815,13 +869,20 @@ Operator<dim, n_components, Number>::rhs(VectorType & dst,
   // rhs operator f(t)
   if(param.right_hand_side == true)
   {
-    rhs_operator.set_velocity_ptr(*velocity);
-    rhs_operator.set_solution_ptr(src);
-    if(param.turbulence_model_data.is_active)
-    {
-      rhs_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-    }
     rhs_operator.evaluate_add(dst, time);
+  }
+
+  if(param.turbulence_model_data.is_active)
+  {
+    AssertThrow(velocity != nullptr,
+                dealii::ExcMessage("velocity pointer is not initialized."));
+    turbulence_model_ptr->set_velocity_ptr(*velocity);
+
+    turbulence_source_operator.set_velocity_ptr(*velocity);
+    turbulence_source_operator.set_solution_ptr(src);
+    turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
+
+    turbulence_source_operator.evaluate_add_source(dst,time);
   }
 }
 
@@ -890,6 +951,11 @@ Operator<dim, n_components, Number>::update_conv_diff_operator(double const     
       AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
 
       combined_operator.set_velocity_ptr(*velocity);
+
+      if(param.turbulence_model_data.is_active)
+      {
+        turbulence_model_ptr->set_velocity_ptr(*velocity);
+      }
     }
   }
 }
@@ -971,7 +1037,7 @@ Operator<dim, n_components, Number>::calculate_time_step_cfl_global(double const
     std::make_shared<dealii::Functions::ConstantFunction<dim>>(max_velocity, dim);
 
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
-                                                    get_dof_index(),
+                                                    get_dof_index_velocity(),
                                                     get_quad_index(),
                                                     velocity_field,
                                                     time,
@@ -1022,7 +1088,7 @@ double
 Operator<dim, n_components, Number>::calculate_time_step_cfl_analytical_velocity(double const time) const
 {
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
-                                                    get_dof_index(),
+                                                    get_dof_index_velocity(),
                                                     get_quad_index(),
                                                     field_functions->velocity,
                                                     time,
@@ -1108,6 +1174,13 @@ Operator<dim, n_components, Number>::get_quad_name_overintegration() const
 }
 
 template<int dim, int n_components, typename Number>
+std::string
+Operator<dim, n_components, Number>::get_quad_name_eddy_velocity() const
+{
+  return field + quad_index_eddy_velocity;
+}
+
+template<int dim, int n_components, typename Number>
 bool
 Operator<dim, n_components, Number>::needs_own_dof_handler_velocity() const
 {
@@ -1160,6 +1233,13 @@ Operator<dim, n_components, Number>::get_quad_index_overintegration() const
 }
 
 template<int dim, int n_components, typename Number>
+unsigned int
+Operator<dim, n_components, Number>::get_quad_index_eddy_velocity() const
+{
+  return matrix_free_data->get_quad_index(field + quad_index_eddy_velocity);
+}
+
+template<int dim, int n_components, typename Number>
 std::shared_ptr<dealii::Mapping<dim> const>
 Operator<dim, n_components, Number>::get_mapping() const
 {
@@ -1175,13 +1255,18 @@ Operator<dim, n_components, Number>::get_constraints() const
 
 template<int dim, int n_components, typename Number>
 void
-Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & src) const
+Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & src,
+                                                           VectorType const * velocity) const
 {
   AssertThrow(param.diffusive_problem(),
               dealii::ExcMessage("Updating viscosity reasonable for diffusive problem"));
 
   if(param.turbulence_model_data.is_active)
   {
+    if (velocity != nullptr) 
+    {
+      turbulence_model_ptr->set_velocity_ptr(*velocity);
+    }
     turbulence_model_ptr->set_viscosity(src);
 
     diffusive_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
@@ -1223,7 +1308,7 @@ Operator<dim, n_components, Number>::update_time_step_size(double const dt,
                                                            double const end_time,
                                                            double const time_step_number) const
 {
-  rhs_operator.set_time_step_size(dt, time, end_time, time_step_number);
+  turbulence_source_operator.set_time_step_size(dt, time, end_time, time_step_number);
 }
 
 template<int dim, int n_components, typename Number>
@@ -1231,6 +1316,16 @@ void
 Operator<dim, n_components, Number>::apply_modal_filter(VectorType & solution) const
 {
   modal_filter.apply_filter(solution);
+}
+
+template<int dim, int n_components, typename Number>
+void
+Operator<dim, n_components, Number>::enforce_positivity(VectorType & solution) const
+{
+  if(param.turbulence_model_data.is_active)
+  {
+    turbulence_model_ptr->enforce_positivity(solution);
+  }
 }
 
 template class Operator<2, 1, float>;

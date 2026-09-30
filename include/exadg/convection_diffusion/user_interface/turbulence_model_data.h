@@ -169,7 +169,7 @@ struct TurbulenceModelData
 
   TurbulenceEddyViscosityModel turbulence_model{TurbulenceEddyViscosityModel::Undefined};
   bool                         is_active{false};
-  PositivityPreservingLimiter positivity_preserving_limiter{PositivityPreservingLimiter::Undefined};
+  std::vector<PositivityPreservingLimiter> positivity_preserving_limiter;
   std::shared_ptr<TurbulenceDataBase> turbulence_data_base;
 
   void
@@ -186,6 +186,8 @@ struct TurbulenceModelData
   check()
   {
     AssertThrow(is_active, dealii::ExcMessage("Turbulence model is inactive."));
+    AssertThrow(positivity_preserving_limiter.size() > 0,
+                dealii::ExcMessage("Positivity Limiter flags are not specified."));
   }
 
   void
@@ -200,7 +202,11 @@ struct TurbulenceModelData
       AssertThrow(turbulence_data_base != nullptr,
                   dealii::ExcMessage("Turbulence data base not initialized."));
       print_parameter(pcout, "Turbulence model", turbulence_model);
-      print_parameter(pcout, "Positivity preserving limiter", positivity_preserving_limiter);
+      for(unsigned int c = 0; c < positivity_preserving_limiter.size(); ++c)
+      {
+        print_parameter(pcout, "Positivity preserving limiter (component " + std::to_string(c) + ")", 
+                        static_cast<int>(positivity_preserving_limiter[c]));
+      }
       turbulence_data_base->print_coefficients(pcout);
     }
   }

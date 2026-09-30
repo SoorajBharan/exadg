@@ -166,6 +166,14 @@ CombinedOperator<dim, n_components, Number>::reinit_cell_derived(IntegratorCell 
     convective_kernel->reinit_cell(cell);
   if(operator_data.diffusive_problem)
     diffusive_kernel->reinit_cell(cell);
+
+  if constexpr (n_components == 2)
+  {
+    if(operator_data.dissipation_implicit || operator_data.production_implicit || operator_data.square_gradient_implicit)
+    {
+      turbulence_source_kernel->reinit_cell(cell);
+    }
+  }
 }
 
 template<int dim, int n_components, typename Number>
@@ -256,6 +264,50 @@ CombinedOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & i
     {
       gradient_flux += diffusive_kernel->get_volume_flux(integrator, q);
     }
+    
+    if constexpr (n_components == 2)
+    {
+      if(operator_data.dissipation_implicit)
+      {
+        auto coefficients = turbulence_source_kernel->get_dissipation_implicit_coefficients(q);
+
+        simd_value_type dissipation_value;
+        dissipation_value[0] = coefficients.Dk_k_coefficient * value[0]
+                             + coefficients.Dk_w_coefficient * value[1];
+        dissipation_value[1] = coefficients.Dw_k_coefficient * value[0]
+                             + coefficients.Dw_w_coefficient * value[1];
+        value_flux += dissipation_value;
+      }
+
+      if(operator_data.production_implicit)
+      {
+        dealii::Tensor<2, n_components, scalar> implicit_coefficients =
+          turbulence_source_kernel->get_production_implicit_coefficient(q);
+
+        simd_value_type production_value;
+        production_value[0] = implicit_coefficients[0][0] * value[0] +
+          implicit_coefficients[0][1] * value[1];
+        production_value[1] = implicit_coefficients[1][0] * value[0] +
+          implicit_coefficients[1][1] * value[1];
+
+        value_flux -= production_value;
+      }
+
+      if(operator_data.square_gradient_implicit)
+      {
+        auto coefficients = turbulence_source_kernel->get_square_gradient_coefficients(q);
+
+        simd_value_type square_gradient_value;
+        square_gradient_value[0] = coefficients.Sk_k_coefficient * value[0]
+                                 + coefficients.Sk_w_coefficient * value[1]
+                                 + scalar_product(coefficients.grad_k_coefficient, gradient[0]);
+        square_gradient_value[1] = coefficients.Sw_k_coefficient * value[0]
+                                 + coefficients.Sw_w_coefficient * value[1]
+                                 + scalar_product(coefficients.grad_w_coefficient, gradient[1]);
+
+        value_flux -= square_gradient_value;
+      }
+    }
 
     if(this->integrator_flags.cell_integrate & dealii::EvaluationFlags::values)
       integrator.submit_value(value_flux, q);
@@ -309,8 +361,9 @@ CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & i
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
       integrator_m.submit_normal_derivative(gradient_flux, q);
+      gradient_flux = diffusive_kernel->calculate_gradient_flux_p(value_m, value_p, q);
       integrator_p.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -357,7 +410,7 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -414,7 +467,7 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral_cell_based(Int
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, false);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -463,7 +516,7 @@ CombinedOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_p, value_m, q, false);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_p(value_p, value_m, q);
       // opposite sign since n⁺ = -n⁻
       integrator_p.submit_normal_derivative(-gradient_flux, q);
     }
@@ -528,10 +581,18 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p, q, true);
+      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
+}
+
+template<int dim, int n_components, typename Number>
+void
+CombinedOperator<dim, n_components, Number>::set_turbulence_source_kernel(
+  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel_in)
+{
+  turbulence_source_kernel = turbulence_source_kernel_in;
 }
 
 template class CombinedOperator<2, 1, float>;

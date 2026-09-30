@@ -38,6 +38,7 @@
 #include <exadg/time_integration/enum_types.h>
 #include <exadg/time_integration/restart_data.h>
 #include <exadg/time_integration/solver_info_data.h>
+#include "enum_types.h"
 
 namespace ExaDG
 {
@@ -370,6 +371,9 @@ public:
   /**************************************************************************************/
 
   TreatmentOfVariableViscosity treatment_of_variable_viscosity;
+  TreatmentOfProduction        treatment_of_production;
+  TreatmentOfDissipation       treatment_of_dissipation;
+  TreatmentOfSquareGradient    treatment_of_square_gradient;
   TurbulenceModelData          turbulence_model_data;
 
   /**************************************************************************************/

@@ -34,8 +34,6 @@ FunctionEnrichment<dim, Number>::FunctionEnrichment(double kinematic_viscosity_i
   : dof_index_en(0)
   , quad_index(0)
   , kinematic_viscosity(kinematic_viscosity_in)
-  , kappa(0.41)
-  , beta(5.2)
   , matrix_free_en(nullptr)
   , dof_handler_en_vector()
 {}
@@ -150,7 +148,6 @@ FunctionEnrichment<dim, Number>::initialize(
         }
       }
     }
-    current_layer = next_layer;
 
     // Sync the newly discovered layer across all processors
     global_frontier = dealii::Utilities::MPI::compute_set_union(local_frontier, triangulation.get_communicator());
@@ -167,6 +164,7 @@ FunctionEnrichment<dim, Number>::initialize(
         all_near_wall_cells.insert(cell);
       }
     }
+    current_layer = next_layer;
   }
 
   // ====================================================================
@@ -184,11 +182,11 @@ FunctionEnrichment<dim, Number>::initialize(
     if(cell_en->is_locally_owned()) 
     {
       bool is_wall = (all_near_wall_cells.find(cell_en) != all_near_wall_cells.end());
-      is_cell_enriched[cell_en->global_active_cell_index()] = is_wall;
       bool is_ghost = (globally_enriched_set.count(static_cast<unsigned int>(cell_en->global_active_cell_index())) > 0);
-      is_cell_enriched[cell_en->global_active_cell_index()] = is_ghost;
+      bool is_enriched = is_wall || is_ghost;
+      is_cell_enriched[cell_en->global_active_cell_index()] = is_enriched;
 
-      if (is_wall || is_ghost)
+      if (is_enriched)
       {
         cell_en->set_active_fe_index(1); // Enriched Space (Allocates RAM)
         cell_shadow->set_active_fe_index(1);
@@ -430,6 +428,21 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
     }
   }
 
+  std::vector<dealii::Point<dim>> local_dg_wall_coordinates;
+  local_dg_wall_coordinates.reserve(local_dg_wall_points.size());
+  for(auto const & wall_point : local_dg_wall_points)
+  {
+    local_dg_wall_coordinates.push_back(wall_point.first);
+  }
+
+  std::vector<std::vector<dealii::Point<dim>>> gathered_dg_wall_coordinates = dealii::Utilities::MPI::all_gather(dof_handler_en_scalar.get_triangulation().get_communicator(), local_dg_wall_coordinates);
+
+  std::vector<dealii::Point<dim>> global_dg_wall_coordinates;
+  for(auto const & rank_points : gathered_dg_wall_coordinates)
+  {
+    global_dg_wall_coordinates.insert(global_dg_wall_coordinates.end(), rank_points.begin(), rank_points.end());
+  }
+
   for(auto const & cell : dof_handler_en_scalar.active_cell_iterators())
   {
     if(cell->is_locally_owned() && is_cell_enriched[cell->global_active_cell_index()])
@@ -443,10 +456,13 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
         auto dof_point  = dg_support_points[global_dof];
         Number min_dist = std::numeric_limits<Number>::max();
 
-        for(auto const & wall_point : local_dg_wall_points) 
+        for(auto const & wall_point : global_dg_wall_coordinates) 
         {
-          Number distance = dof_point.distance(wall_point.first);
-          if(distance < min_dist) min_dist = distance;
+          Number distance = dof_point.distance(wall_point);
+          if(distance < min_dist)
+          {
+            min_dist = distance;
+          }
         }
 
         if (min_dist < wall_distance[global_dof]) 
@@ -497,6 +513,17 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
     }
   }
 
+  std::vector<std::vector<std::pair<dealii::Point<dim>, dealii::types::global_dof_index>>> gathered_cg_wall_points = dealii::Utilities::MPI::all_gather(dof_handler_cg_scalar.get_triangulation().get_communicator(), local_cg_wall_points);
+
+  std::vector<std::pair<dealii::Point<dim>, dealii::types::global_dof_index>> global_cg_wall_points;
+
+  for(auto const & rank_points : gathered_cg_wall_points)
+  {
+    global_cg_wall_points.insert(global_cg_wall_points.end(), rank_points.begin(), rank_points.end());
+  }
+
+  node_to_wall_node.clear();
+
   for(auto const & cell : dof_handler_cg_scalar.active_cell_iterators())
   {
     if(cell->is_locally_owned() && is_cell_enriched[cell->global_active_cell_index()])
@@ -513,7 +540,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
         Number min_dist = std::numeric_limits<Number>::max();
         dealii::types::global_dof_index nearest_wall_dof = dealii::numbers::invalid_dof_index;
 
-        for(auto const & wall_point : local_cg_wall_points) 
+        for(auto const & wall_point : global_cg_wall_points) 
         {
           Number distance = dof_point.distance(wall_point.first);
           if(distance < min_dist) 
@@ -532,99 +559,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
 
 template<int dim, typename Number>
 void
-FunctionEnrichment<dim, Number>::setup_wall_distance_cg(
-  dealii::Mapping<dim> const &                           mapping,
-  unsigned int                                           layers)
-{
-  (void)layers;
-
-  wall_distance = 1e10; 
-
-  std::map<dealii::types::global_dof_index, dealii::Point<dim>> support_points;
-  // FOR:CG
-  dealii::DoFTools::map_dofs_to_support_points(mapping, dof_handler_cg_scalar, support_points);
-
-  std::vector<std::pair<dealii::Point<dim>, dealii::types::global_dof_index>> local_wall_points;
-  auto const & fe = *fe_cg_scalar;
-
-  for(auto const & cell : dof_handler_cg_scalar.active_cell_iterators()) 
-  {
-    if(cell->is_locally_owned() && cell->at_boundary()) 
-    {
-      for(auto face : cell->face_indices()) 
-      {
-        if(cell->face(face)->at_boundary()) 
-        {
-          auto bid = cell->face(face)->boundary_id();
-          if(boundary_descriptor->get_boundary_type(bid) == IncNS::BoundaryTypeU::WallEnrichment) 
-          {
-            std::vector<dealii::types::global_dof_index> local_dof_indices(fe.n_dofs_per_cell());
-            cell->get_dof_indices(local_dof_indices);
-            for(unsigned int i = 0; i < fe.n_dofs_per_cell(); ++i) 
-            {
-              // If the DoF actually touches the wall boundary face
-              if(fe.has_support_on_face(i, face)) 
-              {
-                auto global_dof = local_dof_indices[i];
-                if(wall_distance.locally_owned_elements().is_element(global_dof)) 
-                {
-                  local_wall_points.push_back({support_points[global_dof], global_dof});
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for(auto const & cell : dof_handler_cg_scalar.active_cell_iterators())
-  {
-    if(cell->is_locally_owned() && is_cell_enriched[cell->global_active_cell_index()])
-    {
-      std::vector<dealii::types::global_dof_index> local_dof_indices(fe.n_dofs_per_cell());
-      cell->get_dof_indices(local_dof_indices);
-
-      for(unsigned int i = 0; i < fe.n_dofs_per_cell(); ++i) 
-      {
-        auto global_dof = local_dof_indices[i];
-        
-        // Only calculate for locally owned DoFs
-        if (!wall_distance.locally_owned_elements().is_element(global_dof)) continue;
-
-        auto dof_point  = support_points[global_dof];
-        Number min_dist = std::numeric_limits<Number>::max();
-        dealii::types::global_dof_index nearest_wall_dof = dealii::numbers::invalid_dof_index;
-
-        // Find the absolute closest wall point
-        for(auto const & wall_point : local_wall_points) 
-        {
-          Number distance = dof_point.distance(wall_point.first);
-          if(distance < min_dist) 
-          {
-            min_dist = distance;
-            nearest_wall_dof = wall_point.second;
-          }
-        }
-
-        // Save the distance and the node pairing
-        if (min_dist < wall_distance[global_dof]) 
-        {
-          wall_distance[global_dof] = min_dist;
-          node_to_wall_node[global_dof] = nearest_wall_dof; 
-        }
-      }
-    }
-  }
-  // CRITICAL: Resolves partition boundaries cleanly across MPI without Allgather
-  wall_distance.compress(dealii::VectorOperation::min);
-
-  wall_distance.update_ghost_values();
-}
-
-template<int dim, typename Number>
-void
-FunctionEnrichment<dim, Number>::project_velocity_to_wall(VectorType const & src)
+FunctionEnrichment<dim, Number>::project_velocity_to_wall()
 {
   VectorType rhs, lumped_mass;
   matrix_free_en->initialize_dof_vector(rhs,         dof_index_cg_vector);
@@ -839,7 +774,7 @@ template<int dim, typename Number>
 void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType const & global_velocity)
 {
   // Project DG velocity onto the continuous P1 wall space (Spatial Coarsening)
-  project_velocity_to_wall(global_velocity);
+  project_velocity_to_wall();
 
   // Setup temporary vectors for the boundary traction integration
   std::array<VectorType, dim> traction_num;
@@ -889,6 +824,27 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
   constraint_wall.distribute(friction_velocity);
   friction_velocity.update_ghost_values();
 
+  std::vector<std::pair<dealii::types::global_dof_index, Number>> local_wall_tau_values;
+  for (auto const & global_node : friction_velocity.locally_owned_elements())
+  {
+    if (traction_den[global_node] > 1e-14)   // Check if the area computed is physically real
+    {
+      local_wall_tau_values.push_back({global_node, friction_velocity[global_node]});
+    }
+  }
+
+  std::vector<std::vector<std::pair<dealii::types::global_dof_index, Number>>> gathered_wall_tau_values =
+    dealii::Utilities::MPI::all_gather(dof_handler_cg_scalar.get_triangulation().get_communicator(), local_wall_tau_values);
+
+  std::map<dealii::types::global_dof_index, Number> replicated_wall_tau;
+  for (auto const & rank_values : gathered_wall_tau_values)
+  {
+    for (auto const & entry : rank_values)
+    {
+      replicated_wall_tau[entry.first] = entry.second;
+    }
+  }
+
   // Vertical Copying: Propagate u_tau to the off-wall fluid nodes
   for (auto const & global_fluid_node : friction_velocity.locally_owned_elements())
   {
@@ -897,8 +853,11 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
     {
       auto wall_node = node_to_wall_node[global_fluid_node];
 
-      // Direct copy from the paired wall node!
-      friction_velocity[global_fluid_node] = friction_velocity[wall_node];
+      auto it = replicated_wall_tau.find(wall_node);
+      if (it != replicated_wall_tau.end())
+      {
+        friction_velocity[global_fluid_node] = it->second;
+      }
     }
   }
 

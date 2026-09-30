@@ -91,43 +91,10 @@ RHSOperator<dim, Number, n_components>::cell_loop(
   {
     integrator.reinit(cell);
 
-    kernel->reinit_cell(cell);
-
     do_cell_integral(integrator);
 
     integrator.distribute_local_to_global(dst);
   }
-}
-
-template<int dim, typename Number, int n_components>
-void
-RHSOperator<dim, Number, n_components>::set_velocity_ptr(VectorType const & velocity_in) const
-{
-  kernel->set_velocity_ptr(velocity_in);
-}
-
-template<int dim, typename Number, int n_components>
-void
-RHSOperator<dim, Number, n_components>::set_eddy_viscosity_ptr(VectorType const & src) const
-{
-  kernel->set_eddy_viscosity_ptr(src);
-}
-
-template<int dim, typename Number, int n_components>
-void
-RHSOperator<dim, Number, n_components>::set_solution_ptr(VectorType const & src) const
-{
-  kernel->set_solution_ptr(src);
-}
-
-template<int dim, typename Number, int n_components>
-void
-RHSOperator<dim, Number, n_components>::set_time_step_size(double const dt,
-                                                           double const time,
-                                                           double const end_time,
-                                                           double const time_step_number) const
-{
-  kernel->set_time_step_size(dt, time, end_time, time_step_number);
 }
 
 template class RHSOperator<2, float, 1>;
