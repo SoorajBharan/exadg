@@ -48,14 +48,16 @@ public:
 
   FEFaceEnrichedEvaluation(dealii::MatrixFree<dim, Number> const & mf,
                            FunctionEnrichment<dim, Number> const & enrichment_in,
-                           bool inner_face)
-    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    phi_en(mf, inner_face, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    y_eval(mf, inner_face, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    utau_eval(mf, inner_face, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, enrichment_in.get_active_fe_index()),
-    enrichment(&enrichment_in),
-    n_q_points(phi_dg.n_q_points),
-    en_gradient_submitted(false) {}
+                           bool                                    inner_face,
+                           unsigned int                            active_fe_index)
+    : phi_dg(mf, inner_face, enrichment_in.get_dof_index_shadow_vector(), enrichment_in.get_quad_index(), 0, active_fe_index),
+      phi_en(mf, inner_face, enrichment_in.get_dof_index_en(), enrichment_in.get_quad_index(), 0, active_fe_index),
+      y_eval(mf, inner_face, enrichment_in.get_dof_index_en_scalar(), enrichment_in.get_quad_index(), 0, active_fe_index),
+      utau_eval(mf, inner_face, enrichment_in.get_dof_index_cg_scalar(), enrichment_in.get_quad_index(), 0, active_fe_index),
+      enrichment(&enrichment_in),
+      n_q_points(phi_dg.n_q_points),
+      en_gradient_submitted(false)
+  {}
 
   // Reinit for both spaces
   template<typename Iterator>
@@ -232,6 +234,34 @@ public:
     phi_en.submit_gradient(psi * val, q);
 
     phi_en.submit_value(val * nabla_psi, q); 
+
+    en_gradient_submitted = true;
+  }
+
+  // When submit_value and submit_graadient are called together the second call will overwrite the value slot submitted in the first call. This function submits both value and gradient to both test functions safely.
+  void submit_value_and_gradient(value_type const &    value_flux,
+                                 gradient_type const & gradient_flux,
+                                 unsigned int          q)
+  {
+    scalar y    = y_eval.get_value(q);
+    scalar utau = utau_eval.get_value(q);
+
+    vector grad_y  = y_eval.get_gradient(q);
+    scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
+    vector normal  = grad_y / std::max(grad_y.norm(), epsilon);
+
+    scalar psi       = enrichment->get_value(utau, y);
+    scalar grad_psi  = enrichment->get_gradient(utau, y);
+    vector nabla_psi = grad_psi * normal;
+
+    value_type value_flux_en = psi * value_flux;
+    value_flux_en += gradient_flux * nabla_psi;
+
+    phi_dg.submit_value(value_flux, q);
+    phi_dg.submit_gradient(gradient_flux, q);
+
+    phi_en.submit_value(value_flux_en, q);
+    phi_en.submit_gradient(psi * gradient_flux, q);
 
     en_gradient_submitted = true;
   }

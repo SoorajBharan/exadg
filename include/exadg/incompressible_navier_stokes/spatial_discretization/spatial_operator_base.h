@@ -30,7 +30,6 @@
 #include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/lac/la_parallel_vector.h>
 
-
 // ExaDG
 #include <exadg/grid/grid.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/calculators/streamfunction_calculator_rhs_operator.h>
@@ -245,6 +244,9 @@ public:
   initialize_vector_pressure(VectorType & src) const;
 
   void
+  initialize_vector_enrichment(VectorType & src) const;
+
+  void
   initialize_block_vector_velocity_pressure(BlockVectorType & src) const;
 
   /*
@@ -375,6 +377,12 @@ public:
   void
   apply_mass_operator_add(VectorType & dst, VectorType const & src) const;
 
+  void
+  apply_mass_operator(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  void
+  apply_mass_operator_add(BlockVectorType & dst, BlockVectorType const & src) const;
+
   // body force term
   void
   evaluate_add_body_force_term(VectorType & dst, double const time) const;
@@ -398,6 +406,9 @@ public:
   // inverse velocity mass operator
   unsigned int
   apply_inverse_mass_operator(VectorType & dst, VectorType const & src) const;
+
+  unsigned int
+  apply_inverse_mass_operator(BlockVectorType & dst, BlockVectorType const & src) const;
 
   /*
    * Update variable viscosity.
@@ -457,6 +468,9 @@ public:
 
   void
   precompute_schur_matrices() const;
+
+  void
+  set_constant_friction_velocity(Number const u_tau) const;
 
   VectorType const &
   get_friction_velocity() const;

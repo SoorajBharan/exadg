@@ -426,7 +426,7 @@ ConvectiveOperator<dim, Number>::cell_loop_nonlinear_operator_wall_enrichment(
   VectorType const &                      src,
   Range const &                           cell_range) const
 {
-  if (matrix_free.get_cell_range_category(cell_range) == 0)
+  if (matrix_free.get_cell_range_category(cell_range) != 1)
   {
     return;
   }
@@ -469,13 +469,16 @@ ConvectiveOperator<dim, Number>::face_loop_nonlinear_operator_wall_enrichment(
   {
     return;
   }
-
+  unsigned int const fe_m = matrix_free.get_face_active_fe_index(face_range, true);
+  unsigned int const fe_p = matrix_free.get_face_active_fe_index(face_range, false);
   FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
                                                                  *(this->function_enrichment),
-                                                                 true);
+                                                                 true,
+                                                                 fe_m);
   FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_p(matrix_free,
                                                                  *(this->function_enrichment),
-                                                                 false);
+                                                                 false,
+                                                                 fe_p);
 
   for(unsigned int face = face_range.first; face < face_range.second; face++)
   {
@@ -523,9 +526,11 @@ ConvectiveOperator<dim, Number>::boundary_face_loop_nonlinear_operator_wall_enri
     return;
   }
 
+  unsigned int const fe_m = matrix_free.get_face_active_fe_index(face_range, true);
   FEFaceEnrichedEvaluation<dim, Number, IntegratorFace> integrator_m(matrix_free,
                                                                  *(this->function_enrichment),
-                                                                 true);
+                                                                 true,
+                                                                 fe_m);
 
   for(unsigned int face = face_range.first; face < face_range.second; face++)
   {

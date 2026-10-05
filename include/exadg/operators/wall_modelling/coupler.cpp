@@ -11,6 +11,7 @@
  *  ______________________________________________________________________
  */
 
+#include "coupler.h"
 #include <exadg/operators/wall_modelling/coupler.h>
 #include <iostream>
 #include <fstream>
@@ -72,7 +73,7 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0)
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
     {
       continue;
     }
@@ -391,7 +392,7 @@ WallDGCoupler<dim, Number>::apply_schur_inverse_mass(
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0) continue;
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1) continue;
 
     phi_dg.reinit(cell); phi_en.reinit(cell);
 
@@ -521,7 +522,7 @@ WallDGCoupler<dim, Number>::compute_enrichment_velocity_from_residual(
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() == 0)
+    if (mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
     {
       continue;
     }

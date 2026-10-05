@@ -39,6 +39,7 @@ private:
   typedef TimeIntBDF<dim, Number> Base;
 
   typedef typename Base::VectorType VectorType;
+  typedef typename Base::BlockVectorType BlockVectorType;
 
   typedef OperatorPressureCorrection<dim, Number> Operator;
 
@@ -150,8 +151,10 @@ private:
 
   std::shared_ptr<Operator> pde_operator;
 
-  VectorType              velocity_np;
-  std::vector<VectorType> velocity;
+  // VectorType              velocity_np;
+  // std::vector<VectorType> velocity;
+  BlockVectorType velocity_np;
+  std::vector<BlockVectorType> velocity;
 
   VectorType              pressure_np;
   std::vector<VectorType> pressure;

@@ -24,6 +24,11 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/utilities/check_multigrid.h>
 
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/solver_gmres.h>
+
 namespace ExaDG
 {
 namespace IncNS
@@ -83,6 +88,12 @@ OperatorProjectionMethods<dim, Number>::setup_preconditioners_and_solvers()
 
   setup_momentum_preconditioner();
   setup_momentum_solver();
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    enriched_momentum_operator.initialize(this->momentum_operator,
+                                           this->get_function_enrichment());
+  }
 }
 
 template<int dim, typename Number>
@@ -487,6 +498,41 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
 }
 
 template<int dim, typename Number>
+unsigned int
+OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
+  BlockVectorType &       solution,
+  BlockVectorType const & rhs,
+  double const &          scaling_factor_mass)
+{
+  AssertThrow(this->param.wall_enrichment_enabled,
+              dealii::ExcMessage("Block momentum solve requires wall_enrichment_enabled."));
+
+  // EnrichedMomentumOperator reads the mass scaling from momentum_operator
+  this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
+
+  dealii::ReductionControl control(this->param.solver_data_momentum.max_iter,
+                                   this->param.solver_data_momentum.abs_tol,
+                                   this->param.solver_data_momentum.rel_tol);
+
+  // TODO: preconditioner (identity for now)
+  if(this->param.solver_momentum == SolverMomentum::CG)
+  {
+    dealii::SolverCG<BlockVectorType> solver(control);
+    solver.solve(enriched_momentum_operator, solution, rhs, dealii::PreconditionIdentity());
+  }
+  else
+  {
+    typename dealii::SolverGMRES<BlockVectorType>::AdditionalData data;
+    data.max_n_tmp_vectors = this->param.solver_data_momentum.max_krylov_size;
+
+    dealii::SolverGMRES<BlockVectorType> solver(control, data);
+    solver.solve(enriched_momentum_operator, solution, rhs, dealii::PreconditionIdentity());
+  }
+
+  return control.last_step();
+}
+
+template<int dim, typename Number>
 std::tuple<unsigned int, unsigned int>
 OperatorProjectionMethods<dim, Number>::solve_nonlinear_momentum_equation(
   VectorType &       dst,
@@ -552,6 +598,28 @@ OperatorProjectionMethods<dim, Number>::apply_projection_operator(VectorType &  
               dealii::ExcMessage("Projection operator is not initialized correctly."));
 
   this->projection_operator->vmult(dst, src);
+}
+
+template<int dim, typename Number>
+void
+OperatorProjectionMethods<dim, Number>::apply_enriched_momentum_operator_test(
+  BlockVectorType &       dst,
+  BlockVectorType const & src,
+  double const            scaling_factor_mass)
+{
+  this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
+  enriched_momentum_operator.vmult(dst, src);
+}
+
+template<int dim, typename Number>
+void
+OperatorProjectionMethods<dim, Number>::apply_momentum_operator_test(
+  VectorType &       dst,
+  VectorType const & src,
+  double const       scaling_factor_mass)
+{
+  this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
+  this->momentum_operator.apply(dst, src);
 }
 
 template class OperatorProjectionMethods<2, float>;

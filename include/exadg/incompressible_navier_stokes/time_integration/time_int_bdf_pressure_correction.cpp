@@ -128,9 +128,24 @@ TimeIntBDFPressureCorrection<dim, Number>::allocate_vectors()
   Base::allocate_vectors();
 
   // velocity
+  // for(unsigned int i = 0; i < velocity.size(); ++i)
+  //   pde_operator->initialize_vector_velocity(velocity[i]);
+  // pde_operator->initialize_vector_velocity(velocity_np);
+  auto const init_velocity = [&](BlockVectorType & v) {
+    v.reinit(2);
+    pde_operator->initialize_vector_velocity(v.block(0));
+
+    if(this->param.wall_enrichment_enabled)
+      pde_operator->initialize_vector_enrichment(v.block(1));
+    else
+      v.block(1).reinit(dealii::IndexSet(0), v.block(0).get_mpi_communicator());
+
+    v.collect_sizes();
+  };
+
   for(unsigned int i = 0; i < velocity.size(); ++i)
-    pde_operator->initialize_vector_velocity(velocity[i]);
-  pde_operator->initialize_vector_velocity(velocity_np);
+    init_velocity(velocity[i]);
+  init_velocity(velocity_np);
 
   // pressure
   for(unsigned int i = 0; i < pressure.size(); ++i)
@@ -149,7 +164,10 @@ TimeIntBDFPressureCorrection<dim, Number>::initialize_current_solution()
   if(this->param.ale_formulation)
     this->helpers_ale->move_grid(this->get_time());
 
-  pde_operator->prescribe_initial_conditions(velocity[0], pressure[0], this->get_time());
+  pde_operator->prescribe_initial_conditions(velocity[0].block(0), pressure[0], this->get_time());
+
+  if(this->param.wall_enrichment_enabled)
+    velocity[0].block(1) = 0.0;
 }
 
 template<int dim, typename Number>
@@ -162,9 +180,11 @@ TimeIntBDFPressureCorrection<dim, Number>::initialize_former_multistep_dof_vecto
     if(this->param.ale_formulation)
       this->helpers_ale->move_grid(this->get_previous_time(i));
 
-    pde_operator->prescribe_initial_conditions(velocity[i],
+    pde_operator->prescribe_initial_conditions(velocity[i].block(0),
                                                pressure[i],
                                                this->get_previous_time(i));
+    if(this->param.wall_enrichment_enabled)
+      velocity[0].block(1) = 0.0;
   }
 }
 
@@ -196,14 +216,14 @@ template<int dim, typename Number>
 typename TimeIntBDFPressureCorrection<dim, Number>::VectorType const &
 TimeIntBDFPressureCorrection<dim, Number>::get_velocity() const
 {
-  return velocity[0];
+  return velocity[0].block(0);
 }
 
 template<int dim, typename Number>
 typename TimeIntBDFPressureCorrection<dim, Number>::VectorType const &
 TimeIntBDFPressureCorrection<dim, Number>::get_velocity_np() const
 {
-  return velocity_np;
+  return velocity_np.block(0);
 }
 
 template<int dim, typename Number>
@@ -224,7 +244,7 @@ template<int dim, typename Number>
 typename TimeIntBDFPressureCorrection<dim, Number>::VectorType const &
 TimeIntBDFPressureCorrection<dim, Number>::get_velocity(unsigned int i) const
 {
-  return velocity[i];
+  return velocity[i].block(0);
 }
 
 template<int dim, typename Number>
@@ -239,7 +259,7 @@ void
 TimeIntBDFPressureCorrection<dim, Number>::set_velocity(VectorType const & velocity_in,
                                                         unsigned int const i)
 {
-  velocity[i] = velocity_in;
+  velocity[i].block(0) = velocity_in;
 }
 
 template<int dim, typename Number>
@@ -269,7 +289,7 @@ TimeIntBDFPressureCorrection<dim, Number>::postprocessing_stability_analysis()
 
   std::cout << std::endl << "Analysis of eigenvalue spectrum:" << std::endl;
 
-  unsigned int const size = velocity[0].locally_owned_size();
+  unsigned int const size = velocity[0].block(0).locally_owned_size();
 
   dealii::LAPACKFullMatrix<Number> propagation_matrix(size, size);
 
@@ -277,7 +297,7 @@ TimeIntBDFPressureCorrection<dim, Number>::postprocessing_stability_analysis()
   for(unsigned int j = 0; j < size; ++j)
   {
     // set j-th element to 1
-    velocity[0].local_element(j) = 1.0;
+    velocity[0].block(0).local_element(j) = 1.0;
 
     // solve time step
     this->do_timestep_solve();
@@ -285,11 +305,11 @@ TimeIntBDFPressureCorrection<dim, Number>::postprocessing_stability_analysis()
     // dst-vector velocity_np is j-th column of propagation matrix
     for(unsigned int i = 0; i < size; ++i)
     {
-      propagation_matrix(i, j) = velocity_np.local_element(i);
+      propagation_matrix(i, j) = velocity_np.block(0).local_element(i);
     }
 
     // reset j-th element to 0
-    velocity[0].local_element(j) = 0.0;
+    velocity[0].block(0).local_element(j) = 0.0;
   }
 
   // compute eigenvalues
@@ -358,7 +378,7 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
     }
     else
     {
-      velocity_np = velocity_momentum_last_iter;
+      velocity_np.block(0) = velocity_momentum_last_iter;
     }
 
     /*
@@ -370,7 +390,7 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
       dealii::Timer timer_viscosity_update;
       timer_viscosity_update.restart();
 
-      pde_operator->update_viscosity(velocity_np);
+      pde_operator->update_viscosity(velocity_np.block(0));
 
       if(this->print_solver_info() and not(this->is_test))
       {
@@ -391,12 +411,12 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
        *  (where constant means that the vector does not change from one Newton iteration
        *  to the next, i.e., it does not depend on the current solution of the nonlinear solver)
        */
-      VectorType rhs(velocity_np);
+      VectorType rhs(velocity_np.block(0));
       rhs_momentum(rhs);
 
       // solve non-linear system of equations
       auto const iter = pde_operator->solve_nonlinear_momentum_equation(
-        velocity_np,
+        velocity_np.block(0),
         rhs,
         this->get_next_time(),
         update_preconditioner,
@@ -404,7 +424,7 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
 
       if(this->param.wall_enrichment_enabled)
       {
-        pde_operator->update_wall_enrichment_vectors(velocity_np);
+        pde_operator->update_wall_enrichment_vectors(velocity_np.block(0));
         
         pde_operator->precompute_schur_matrices();
 
@@ -413,7 +433,7 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
         pde_operator->reinit_enrichment_residual();
 
         pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
-          velocity_np, // This is \bar{U}^* that GMRES just found!
+          velocity_np.block(0), // This is \bar{U}^* that GMRES just found!
           scaling
         );
       }
@@ -438,19 +458,19 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
       /*
        *  Calculate the right-hand side of the linear system of equations.
        */
-      VectorType rhs(velocity_np);
+      VectorType rhs(velocity_np.block(0));
       rhs_momentum(rhs);
 
       // solve linear system of equations
       unsigned int n_iter = pde_operator->solve_linear_momentum_equation(
-        velocity_np, rhs, update_preconditioner, this->get_scaling_factor_time_derivative_term());
+        velocity_np.block(0), rhs, update_preconditioner, this->get_scaling_factor_time_derivative_term());
 
       if(this->param.wall_enrichment_enabled)
       {
         double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
         
         pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
-            velocity_np, // This is \bar{U}^* that GMRES just found!
+            velocity_np.block(0), // This is \bar{U}^* that GMRES just found!
             scaling
         );
       }
@@ -466,7 +486,7 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
     }
 
     if(this->store_solution)
-      velocity_momentum_last_iter = velocity_np;
+      velocity_momentum_last_iter = velocity_np.block(0);
   }
   else // no viscous term and no implicit convective term, i.e. we only need to invert the mass
        // matrix
@@ -474,10 +494,10 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
     /*
      *  Calculate the right-hand side vector.
      */
-    VectorType rhs(velocity_np);
+    VectorType rhs(velocity_np.block(0));
     rhs_momentum(rhs);
 
-    pde_operator->apply_inverse_mass_operator(velocity_np, rhs);
+    pde_operator->apply_inverse_mass_operator(velocity_np.block(0), rhs);
     velocity_np *= this->get_time_step_size() / this->bdf.get_gamma0();
 
     if(this->print_solver_info() and not(this->is_test))
@@ -503,7 +523,7 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_momentum(VectorType & rhs)
   {
     for(unsigned int i = 0; i < extra_pressure_gradient.get_order(); ++i)
     {
-      VectorType temp(velocity[0]);
+      VectorType temp(velocity[0].block(0));
       temp = 0.0;
 
       pde_operator->evaluate_pressure_gradient_term_dirichlet_bc_from_dof_vector(temp,
@@ -535,7 +555,7 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_momentum(VectorType & rhs)
       {
         // in a general setting, we only know the boundary conditions at time t_{n+1}
         pde_operator->evaluate_convective_term(this->vec_convective_term[i],
-                                               velocity[i],
+                                               velocity[i].block(0),
                                                this->get_next_time());
       }
     }
@@ -548,13 +568,13 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_momentum(VectorType & rhs)
    *  calculate sum (alpha_i/dt * u_i): This term is relevant for both the explicit
    *  and the implicit formulation of the convective term
    */
-  VectorType sum_alphai_ui(velocity[0]);
+  VectorType sum_alphai_ui(velocity[0].block(0));
 
   // calculate sum (alpha_i/dt * u_i)
-  sum_alphai_ui.equ(this->bdf.get_alpha(0) / this->get_time_step_size(), velocity[0]);
+  sum_alphai_ui.equ(this->bdf.get_alpha(0) / this->get_time_step_size(), velocity[0].block(0));
   for(unsigned int i = 1; i < velocity.size(); ++i)
   {
-    sum_alphai_ui.add(this->bdf.get_alpha(i) / this->get_time_step_size(), velocity[i]);
+    sum_alphai_ui.add(this->bdf.get_alpha(i) / this->get_time_step_size(), velocity[i].block(0));
   }
 
   pde_operator->apply_mass_operator_add(rhs, sum_alphai_ui);
@@ -677,7 +697,7 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_pressure(VectorType & rhs) const
    *  I. calculate divergence term
    */
   VectorType temp(pressure_np);
-  pde_operator->evaluate_velocity_divergence_term(temp, velocity_np, this->get_next_time());
+  pde_operator->evaluate_velocity_divergence_term(temp, velocity_np.block(0), this->get_next_time());
 
   rhs.equ(-this->bdf.get_gamma0() / this->get_time_step_size(), temp);
 
@@ -726,7 +746,7 @@ TimeIntBDFPressureCorrection<dim, Number>::pressure_update(VectorType const & pr
   {
     // Automatically sets pressure_np to zero before operator evaluation.
     pde_operator->evaluate_velocity_divergence_term(pressure_np,
-                                                    velocity_np,
+                                                    velocity_np.block(0),
                                                     this->get_next_time());
 
     pde_operator->apply_inverse_pressure_mass_operator(pressure_np, pressure_np);
@@ -761,7 +781,7 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_projection(
   /*
    *  I. apply mass operator
    */
-  pde_operator->apply_mass_operator(rhs, velocity_np);
+  pde_operator->apply_mass_operator(rhs, velocity_np.block(0));
 
   /*
    *  II. calculate pressure gradient term including boundary condition g_p(t_{n+1})
@@ -798,12 +818,12 @@ TimeIntBDFPressureCorrection<dim, Number>::projection_step(VectorType const & pr
   timer.restart();
 
   // compute right-hand-side vector
-  VectorType rhs(velocity_np);
+  VectorType rhs(velocity_np.block(0));
   rhs_projection(rhs, pressure_increment);
 
   // apply inverse mass operator: this is the solution if no penalty terms are applied
   // and serves as a good initial guess for the case with penalty terms
-  pde_operator->apply_inverse_mass_operator(velocity_np, rhs);
+  pde_operator->apply_inverse_mass_operator(velocity_np.block(0), rhs);
 
   if(this->param.use_divergence_penalty == true or this->param.use_continuity_penalty == true)
   {
@@ -812,9 +832,9 @@ TimeIntBDFPressureCorrection<dim, Number>::projection_step(VectorType const & pr
     VectorType velocity_extrapolated;
     if(this->use_extrapolation)
     {
-      velocity_extrapolated.reinit(velocity[0]);
+      velocity_extrapolated.reinit(velocity[0].block(0));
       for(unsigned int i = 0; i < velocity.size(); ++i)
-        velocity_extrapolated.add(this->extra.get_beta(i), velocity[i]);
+        velocity_extrapolated.add(this->extra.get_beta(i), velocity[i].block(0));
     }
     else
     {
@@ -837,16 +857,16 @@ TimeIntBDFPressureCorrection<dim, Number>::projection_step(VectorType const & pr
        0);
 
     if(this->use_extrapolation == false)
-      velocity_np = velocity_projection_last_iter;
+      velocity_np.block(0) = velocity_projection_last_iter;
 
     unsigned int const n_iter =
-      pde_operator->solve_projection(velocity_np, rhs, update_preconditioner);
+      pde_operator->solve_projection(velocity_np.block(0), rhs, update_preconditioner);
 
     iterations_projection.first += 1;
     iterations_projection.second += n_iter;
 
     if(this->store_solution)
-      velocity_projection_last_iter = velocity_np;
+      velocity_projection_last_iter = velocity_np.block(0);
 
     if(this->print_solver_info() and not(this->is_test))
     {
@@ -880,7 +900,7 @@ TimeIntBDFPressureCorrection<dim, Number>::evaluate_convective_term()
     if(this->param.ale_formulation == false) // Eulerian case
     {
       pde_operator->evaluate_convective_term(this->convective_term_np,
-                                             velocity_np,
+                                             velocity_np.block(0),
                                              this->get_next_time());
     }
   }
@@ -911,7 +931,7 @@ TimeIntBDFPressureCorrection<dim, Number>::prepare_vectors_for_next_timestep()
 
   if(this->param.wall_enrichment_enabled)
   {
-    this->pde_operator->update_wall_enrichment_vectors(velocity_np);
+    this->pde_operator->update_wall_enrichment_vectors(velocity_np.block(0));
   }
 }
 
@@ -934,7 +954,7 @@ TimeIntBDFPressureCorrection<dim, Number>::solve_steady_problem()
           this->get_time_step_number() <= this->param.max_number_of_time_steps)
     {
       // save solution from previous time step
-      velocity_tmp = velocity[0];
+      velocity_tmp = velocity[0].block(0);
       pressure_tmp = pressure[0];
 
       // calculate norm of solution
@@ -950,7 +970,7 @@ TimeIntBDFPressureCorrection<dim, Number>::solve_steady_problem()
       //           = solution[0] - solution_tmp
       velocity_tmp *= -1.0;
       pressure_tmp *= -1.0;
-      velocity_tmp.add(1.0, velocity[0]);
+      velocity_tmp.add(1.0, velocity[0].block(0));
       pressure_tmp.add(1.0, pressure[0]);
 
       double const incr_u   = velocity_tmp.l2_norm();
@@ -1020,7 +1040,7 @@ double
 TimeIntBDFPressureCorrection<dim, Number>::evaluate_residual()
 {
   pde_operator->evaluate_nonlinear_residual_steady(
-    velocity_np, pressure_np, velocity[0], pressure[0], this->get_time());
+    velocity_np.block(0), pressure_np, velocity[0].block(0), pressure[0], this->get_time());
 
   double const norm_u = velocity_np.l2_norm();
   double const norm_p = pressure_np.l2_norm();

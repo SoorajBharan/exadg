@@ -991,6 +991,19 @@ SpatialOperatorBase<dim, Number>::initialize_vector_pressure(VectorType & src) c
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::initialize_vector_enrichment(VectorType & src) const
+{
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("initialize_vector_enrichment requires wall_enrichment_enabled."));
+  AssertThrow(function_enrichment != nullptr,
+              dealii::ExcMessage("function_enrichment not set up yet. The operator's setup() "
+                                 "must run before the time integrator allocates vectors."));
+
+  function_enrichment->get_matrix_free()->initialize_dof_vector(src, function_enrichment->get_dof_index_en());
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::initialize_block_vector_velocity_pressure(
   BlockVectorType & src) const
 {
@@ -1189,6 +1202,75 @@ SpatialOperatorBase<dim, Number>::apply_mass_operator_add(VectorType &       dst
                                                           VectorType const & src) const
 {
   mass_operator.apply_add(dst, src);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_mass_operator(BlockVectorType &       dst,
+                                                      BlockVectorType const & src) const
+{
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
+
+  mass_operator.apply(dst.block(0), src.block(0));
+
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  function_enrichment->copy_global_dg_to_wall_layout(src.block(0),
+                                                     function_enrichment->shadow_velocity);
+  function_enrichment->shadow_velocity.update_ghost_values();
+  src.block(1).update_ghost_values();
+
+  VectorType dst_bar_shadow;
+  mf_en.initialize_dof_vector(dst_bar_shadow, function_enrichment->get_dof_index_shadow_vector());
+  dst_bar_shadow = 0.0;
+
+  dst.block(1) = 0.0;
+
+  using CellIntegratorU = dealii::FEEvaluation<dim, -1, 0, dim, Number>;
+  FEEnrichedEvaluation<dim, Number, CellIntegratorU> phi(mf_en, *function_enrichment);
+
+  for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+  {
+    if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+      continue; // non-enriched batch: nothing to do here
+
+    phi.reinit(cell);
+    phi.gather_evaluate(function_enrichment->shadow_velocity,
+                        src.block(1),
+                        dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < phi.n_q_points; ++q)
+    {
+      // u_h = U_bar + psi * U_tilde, tested against both v_bar and psi * v_tilde
+      phi.submit_value(phi.get_value(q), q);
+    }
+
+    phi.integrate(dealii::EvaluationFlags::values);
+
+    phi.phi_dg.distribute_local_to_global(dst_bar_shadow); // M_bb*Ub + M_bt*Ut
+    phi.phi_en.distribute_local_to_global(dst.block(1));   // M_tb*Ub + M_tt*Ut
+  }
+
+  dst_bar_shadow.compress(dealii::VectorOperation::add);
+  dst.block(1).compress(dealii::VectorOperation::add);
+
+  // (4) Overwrite enriched cells in block(0) with the complete row.
+  //     Valid because the DG mass matrix is cell-local (no face terms).
+  function_enrichment->copy_wall_layout_to_global_dg(dst_bar_shadow, dst.block(0));
+
+  function_enrichment->shadow_velocity.zero_out_ghost_values();
+  src.block(1).zero_out_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_mass_operator_add(BlockVectorType &       dst,
+                                                          BlockVectorType const & src) const
+{
+  BlockVectorType tmp(dst);
+  apply_mass_operator(tmp, src);
+  dst.add(1.0, tmp);
 }
 
 template<int dim, typename Number>
@@ -1442,15 +1524,43 @@ SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(VectorType &      
     AssertThrow(false, dealii::ExcMessage("Not implemented."));
   }
 
-  if(param.wall_enrichment_enabled)
-  {
-    // dst = \bar{U}
-    // src = \bar{R}
-    wall_dg_coupler->apply_schur_complement(dst,
-                                            src,
-                                            function_enrichment->enrichment_velocity,
-                                            function_enrichment->enrichment_residual);
-  }
+  return 0;
+}
+
+template<int dim, typename Number>
+unsigned int
+SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(BlockVectorType &       dst,
+                                                              BlockVectorType const & src) const
+{
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("Block inverse mass operator requires wall_enrichment_enabled."));
+  AssertThrow(param.spatial_discretization == SpatialDiscretization::L2,
+              dealii::ExcMessage("Wall enrichment is only implemented for L2 (DG) velocity."));
+
+  // (1) Copy the enriched parts of src FIRST. dst and src may be the same vector
+  //     (e.g. the convective step calls M^{-1} in place), so src must not be read
+  //     after dst has been written.
+  function_enrichment->copy_global_dg_to_wall_layout(src.block(0),
+                                                     function_enrichment->shadow_velocity_residual);
+  VectorType src_tilde(src.block(1));
+
+  // (2) Whole domain, U_bar only: plain inverse mass.
+  //     Correct on non-enriched cells; overwritten on enriched cells in step (4).
+  inverse_mass_velocity.apply(dst.block(0), src.block(0));
+
+  // (3) Enriched cells: exact 2x2 inverse via Schur complement (Eq. 6.16-6.17).
+  function_enrichment->shadow_velocity = 0.0;
+  dst.block(1)                         = 0.0;
+
+  wall_dg_coupler->apply_schur_inverse_mass(function_enrichment->shadow_velocity,          // U_bar  (out)
+                                            function_enrichment->shadow_velocity_residual, // R_bar  (in)
+                                            dst.block(1),                                  // U_tilde(out)
+                                            src_tilde);                                    // R_tilde(in)
+
+  // (4) Overwrite enriched cells of block(0) with the coupled result.
+  function_enrichment->copy_wall_layout_to_global_dg(function_enrichment->shadow_velocity,
+                                                     dst.block(0));
+
   return 0;
 }
 
@@ -1996,6 +2106,19 @@ SpatialOperatorBase<dim, Number>::precompute_schur_matrices() const
   {
     wall_dg_coupler->precompute_schur_matrices();
   }
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::set_constant_friction_velocity(Number const u_tau) const
+{
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("set_constant_friction_velocity requires wall_enrichment_enabled."));
+
+  function_enrichment->friction_velocity = u_tau;
+  function_enrichment->friction_velocity.update_ghost_values();
+
+  wall_dg_coupler->precompute_schur_matrices();
 }
 
 template<int dim, typename Number>

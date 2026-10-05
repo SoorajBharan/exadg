@@ -24,6 +24,7 @@
 
 // deal.II
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/time_integration/lambda_functions_ale.h>

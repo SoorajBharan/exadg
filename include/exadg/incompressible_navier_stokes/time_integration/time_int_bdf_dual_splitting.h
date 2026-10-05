@@ -39,6 +39,7 @@ private:
   typedef TimeIntBDF<dim, Number> Base;
 
   typedef typename Base::VectorType VectorType;
+  typedef typename Base::BlockVectorType BlockVectorType;
 
   typedef OperatorDualSplitting<dim, Number> Operator;
 
@@ -128,6 +129,9 @@ private:
   viscous_step();
 
   void
+  viscous_step_enriched();
+
+  void
   rhs_viscous(VectorType & rhs, VectorType const & velocity_rhs) const;
 
   void
@@ -150,9 +154,11 @@ private:
 
   std::shared_ptr<Operator> pde_operator;
 
-  std::vector<VectorType> velocity;
+  // std::vector<VectorType> velocity;
+  std::vector<BlockVectorType> velocity;
 
-  VectorType velocity_np;
+  // VectorType velocity_np;
+  BlockVectorType velocity_np;
 
   std::vector<VectorType> pressure;
 
@@ -181,6 +187,8 @@ private:
 
   // time integrator constants: extrapolation scheme
   ExtrapolationConstants extra_pressure_nbc;
+
+  bool const enrichment_coupling = true;
 };
 
 } // namespace IncNS

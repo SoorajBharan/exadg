@@ -20,6 +20,8 @@
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/evaluation_flags.h>
 #include <utility>
+#include <algorithm> 
+#include <vector> 
 
 #include <exadg/operators/wall_modelling/function_enrichment.h>
 
@@ -232,6 +234,34 @@ public:
     phi_en.submit_gradient(psi * val, q);
 
     phi_en.submit_value(val * nabla_psi, q); 
+
+    en_gradient_submitted = true;
+  }
+
+  // When submit_value and submit_graadient are called together the second call will overwrite the value slot submitted in the first call. This function submits both value and gradient to both test functions safely.
+  void submit_value_and_gradient(value_type const &    value_flux,
+                                 gradient_type const & gradient_flux,
+                                 unsigned int          q)
+  {
+    scalar y    = y_eval.get_value(q);
+    scalar utau = utau_eval.get_value(q);
+
+    vector grad_y  = y_eval.get_gradient(q);
+    scalar epsilon = dealii::make_vectorized_array<Number>(1e-14);
+    vector normal  = grad_y / std::max(grad_y.norm(), epsilon);
+
+    scalar psi       = enrichment->get_value(utau, y);
+    scalar grad_psi  = enrichment->get_gradient(utau, y);
+    vector nabla_psi = grad_psi * normal;
+
+    value_type value_flux_en = psi * value_flux;
+    value_flux_en += gradient_flux * nabla_psi;
+
+    phi_dg.submit_value(value_flux, q);
+    phi_dg.submit_gradient(gradient_flux, q);
+
+    phi_en.submit_value(value_flux_en, q);
+    phi_en.submit_gradient(psi * gradient_flux, q);
 
     en_gradient_submitted = true;
   }

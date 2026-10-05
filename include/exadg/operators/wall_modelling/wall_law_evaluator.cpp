@@ -11,7 +11,6 @@
  *  ______________________________________________________________________
  */
 
-#include "wall_law_evaluator.h"
 #include <exadg/operators/wall_modelling/wall_law_evaluator.h>
 
 namespace ExaDG

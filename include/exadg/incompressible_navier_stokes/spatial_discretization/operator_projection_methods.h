@@ -28,6 +28,7 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/block_jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/inverse_mass_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
+#include <exadg/incompressible_navier_stokes/spatial_discretization/operators/enriched_momentum_operator.h>
 
 namespace ExaDG
 {
@@ -94,6 +95,7 @@ protected:
   typedef SpatialOperatorBase<dim, Number> Base;
 
   typedef typename Base::VectorType       VectorType;
+  typedef typename Base::BlockVectorType  BlockVectorType;
   typedef typename Base::MultigridPoisson MultigridPoisson;
 
 public:
@@ -169,6 +171,22 @@ public:
                                  VectorType const & rhs,
                                  bool const &       update_preconditioner,
                                  double const &     scaling_factor_mass);
+  unsigned int
+  solve_linear_momentum_equation(BlockVectorType &       solution,
+                                 BlockVectorType const & rhs,
+                                 double const &          scaling_factor_mass);
+
+  /**********************************DEBUG*************************************/
+  void
+  apply_enriched_momentum_operator_test(BlockVectorType &       dst,
+                                        BlockVectorType const & src,
+                                        double const            scaling_factor_mass);
+
+  void
+  apply_momentum_operator_test(VectorType &       dst,
+                               VectorType const & src,
+                               double const       scaling_factor_mass);
+  /*******************************************************************************/
 
   /*
    * This function evaluates the rhs-contribution of the viscous term and adds the result to the
@@ -221,6 +239,7 @@ protected:
   // linear solver (momentum_operator serves as linear operator)
   std::shared_ptr<PreconditionerBase<Number>>     momentum_preconditioner;
   std::shared_ptr<Krylov::SolverBase<VectorType>> momentum_linear_solver;
+  EnrichedMomentumOperator<dim, Number> enriched_momentum_operator;
 
   void
   setup_momentum_preconditioner();

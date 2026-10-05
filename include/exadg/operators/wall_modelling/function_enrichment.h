@@ -89,6 +89,9 @@ void
   void 
   copy_wall_layout_to_global_dg(VectorType const & wall_vec, VectorType & global_vec) const;
 
+  void
+  add_wall_layout_to_global_dg(VectorType const & wall_vec,VectorType & global_vec) const;
+
   // ── Accessors ──────────────────────────────────────────────────────────
   dealii::DoFHandler<dim> const &
   get_dof_handler_en_vector() const;
@@ -215,7 +218,6 @@ private:
   double kinematic_viscosity; 
 
   std::shared_ptr<dealii::MatrixFree<dim, Number>> matrix_free_en;
-  dealii::AffineConstraints<Number>                constraint_wall;
 
   // DG Enrichment velocity
   std::shared_ptr<dealii::FiniteElement<dim>> fe_en_vector;
@@ -246,6 +248,10 @@ private:
   WallLawEvaluator<dim, Number> wall_law_eval;
 
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor;
+
+  dealii::AffineConstraints<Number> constraint_cg_scalar; // periodicity, dof_handler_cg_scalar
+  dealii::AffineConstraints<Number> constraint_cg_vector; // periodicity, dof_handler_cg_vector
+  dealii::AffineConstraints<Number> constraint_dg;   
 };
 
 } // namespace ExaDG
