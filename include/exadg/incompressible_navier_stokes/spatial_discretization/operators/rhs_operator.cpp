@@ -108,6 +108,55 @@ RHSOperator<dim, Number>::cell_loop(dealii::MatrixFree<dim, Number> const & matr
   }
 }
 
+template<int dim, typename Number>
+void
+RHSOperator<dim, Number>::evaluate_add_enriched(
+  VectorType &                            dst_bar_enriched,
+  VectorType &                            dst_tilde,
+  FunctionEnrichment<dim, Number> const & function_enrichment,
+  Number const                            evaluation_time) const
+{
+  AssertThrow(not data.kernel_data.boussinesq_term,
+              dealii::ExcMessage("RHSOperator: Boussinesq term is not implemented for wall "
+                                 "enrichment (temperature is not available on matrix_free_en)."));
+
+  time = evaluation_time;
+
+  typedef FEEnrichedEvaluation<dim, Number, Integrator> EnrichedIntegrator;
+
+  auto const &       mf              = *function_enrichment.get_matrix_free();
+  unsigned int const active_fe_index = function_enrichment.get_active_fe_index();
+
+  EnrichedIntegrator integrator(mf, function_enrichment);
+
+  // required by the kernel interface; never evaluated since there is no Boussinesq term
+  IntegratorScalar integrator_temperature(mf,
+                                          function_enrichment.get_dof_index_en_scalar(),
+                                          function_enrichment.get_quad_index(),
+                                          0,
+                                          active_fe_index);
+
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+  {
+    if(mf.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+      continue;
+
+    integrator.reinit(cell);
+    integrator.evaluate_enrichment_function(); // y, u_tau -> psi
+
+    // (v_bar, f) and (psi v_tilde, f)
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(
+        kernel.get_volume_flux(integrator.phi_dg, integrator_temperature, q, time), q);
+
+    integrator.integrate(dealii::EvaluationFlags::values);
+    integrator.distribute_local_to_global(dst_bar_enriched, dst_tilde);
+  }
+
+  dst_bar_enriched.compress(dealii::VectorOperation::add);
+  dst_tilde.compress(dealii::VectorOperation::add);
+}
+
 template class RHSOperator<2, float>;
 template class RHSOperator<2, double>;
 

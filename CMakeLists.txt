@@ -139,6 +139,7 @@ SET(TARGET_SRC
      include/exadg/incompressible_navier_stokes/spatial_discretization/operators/continuity_penalty_operator.cpp
      include/exadg/incompressible_navier_stokes/spatial_discretization/operators/momentum_operator.cpp
      include/exadg/incompressible_navier_stokes/spatial_discretization/operators/enriched_momentum_operator.cpp
+     include/exadg/incompressible_navier_stokes/spatial_discretization/operators/enriched_projection_operator.cpp
      include/exadg/incompressible_navier_stokes/spatial_discretization/operators/projection_operator.cpp
      include/exadg/incompressible_navier_stokes/spatial_discretization/viscosity_model_base.cpp
      include/exadg/incompressible_navier_stokes/spatial_discretization/turbulence_model.cpp

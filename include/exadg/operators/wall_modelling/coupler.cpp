@@ -11,18 +11,25 @@
  *  ______________________________________________________________________
  */
 
-#include "coupler.h"
+#include <deal.II/base/conditional_ostream.h>
+#include <deal.II/base/mpi.h>
 #include <exadg/operators/wall_modelling/coupler.h>
+#include <deal.II/lac/full_matrix.h>
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 
 namespace ExaDG
 {
 template<int dim, typename Number>
 WallDGCoupler<dim, Number>::WallDGCoupler()
-  : matrix_free_global(nullptr)
-  , dof_index_global_u(0)
+  : matrix_free_global(nullptr),
+    dof_index_global_u(0),
+    active_fe_index(1),
+    current_scaling_factor(1.0),
+    rank_tolerance(1.e-8),
+    n_modes_dropped_last(dealii::numbers::invalid_unsigned_int)
 {}
 
 template <int dim, typename Number>
@@ -39,6 +46,15 @@ WallDGCoupler<dim, Number>::initialize(
   active_fe_index = function_enrichment->get_active_fe_index();
 }
 
+template<int dim, typename Number>
+void
+WallDGCoupler<dim, Number>::set_rank_tolerance(double const tolerance)
+{
+  AssertThrow(tolerance >= 0.0 and tolerance < 1.0,
+              dealii::ExcMessage("The rank tolerance must be in [0, 1)."));
+  rank_tolerance = tolerance;
+}
+
 /*
  * Precompute Schur Complement Matrices
  */
@@ -47,8 +63,6 @@ void
 WallDGCoupler<dim, Number>::precompute_schur_matrices()
 {
   cell_schur_data.clear();
-  function_enrichment->wall_distance.update_ghost_values();
-  function_enrichment->friction_velocity.update_ghost_values();
 
   auto const & mf_en = *(function_enrichment->get_matrix_free());
   const unsigned int n_batches = mf_en.n_cell_batches();
@@ -56,20 +70,21 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
 
   unsigned int idx_shadow = function_enrichment->get_dof_index_shadow_vector();
   unsigned int idx_en     = function_enrichment->get_dof_index_en();
-  unsigned int idx_cg     = function_enrichment->get_dof_index_cg_scalar();
-  unsigned int idx_en_scalar = function_enrichment->get_dof_index_en_scalar();
+
   unsigned int quad_idx   = function_enrichment->get_quad_index();
 
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_dg(mf_en, idx_shadow, quad_idx, 0, active_fe_index);
   dealii::FEEvaluation<dim, -1, 0, dim, Number> phi_en(mf_en, idx_en, quad_idx, 0, active_fe_index);
-  dealii::FEEvaluation<dim, -1, 0, 1, Number>   y_eval(mf_en, idx_en_scalar, quad_idx, 0, active_fe_index);
-  dealii::FEEvaluation<dim, -1, 0, 1, Number>   utau_eval(mf_en, idx_cg, quad_idx, 0, active_fe_index);
 
   const unsigned int n_dg = phi_dg.dofs_per_component;
   const unsigned int n_en = phi_en.dofs_per_component;
 
   // The shape functions are vectors!
   using TensorType = dealii::Tensor<1, dim, scalar>;
+
+  unsigned int n_modes_total = 0;
+  unsigned int n_modes_dropped = 0;
+  double lambda_min_kept = std::numeric_limits<double>::max();
 
   for (unsigned int cell = 0; cell < n_batches; ++cell)
   {
@@ -78,13 +93,8 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
       continue;
     }
 
-    phi_dg.reinit(cell); phi_en.reinit(cell);
-    y_eval.reinit(cell); utau_eval.reinit(cell);
-
-    y_eval.read_dof_values_plain(function_enrichment->wall_distance);
-    utau_eval.read_dof_values_plain(function_enrichment->friction_velocity);
-    y_eval.evaluate(dealii::EvaluationFlags::values);
-    utau_eval.evaluate(dealii::EvaluationFlags::values);
+    phi_dg.reinit(cell);
+    phi_en.reinit(cell);
 
     // The shape functions are vectors!
     using TensorType = dealii::Tensor<1, dim, scalar>;
@@ -139,7 +149,7 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
     // Fill Mass Matrices with Tensor Dot Products
     for (unsigned int q = 0; q < phi_dg.n_q_points; ++q) 
     {
-      auto psi = function_enrichment->get_value(utau_eval.get_value(q), y_eval.get_value(q)); 
+      auto psi = function_enrichment->get_psi_cell(cell, q);
       auto JxW = phi_dg.JxW(q); 
 
       for (unsigned int i = 0; i < n_en; ++i)
@@ -188,123 +198,213 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
       }
     }
 
-    /*
-     * Tikhonov Regularization (SIMD Safe - Absolute Floor)
-     */
-    // 1. Find the maximum diagonal entry across all DOFs for this cell batch
-    auto M_safe = data.M_tilde_tilde; 
-    dealii::VectorizedArray<Number> max_diag = dealii::make_vectorized_array<Number>(0.0);
-    for(unsigned int i = 0; i < n_en; ++i) 
-    {
-      for (unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v) 
-      {
-        max_diag[v] = std::max(max_diag[v], std::abs(data.M_tilde_tilde[i][i][v]));
-      }
-    }
-
-    // 2. Add a threshold scaled by the MAXIMUM diagonal entry, not the local one
-    dealii::VectorizedArray<Number> epsilon = dealii::make_vectorized_array<Number>(1e-10);
-    for(unsigned int i = 0; i < n_en; ++i) 
-    {
-      M_safe[i][i] += epsilon * max_diag; 
-    }
-
-    data.M_tilde_tilde_inverse_safe = invert_matrix_simd(M_safe, n_en);
-
-    auto S_safe = S;
-    dealii::VectorizedArray<Number> max_diag_S = dealii::make_vectorized_array<Number>(0.0);
-    for(unsigned int i = 0; i < n_en; ++i)
-    {
-      for (unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
-      {
-        max_diag_S[v] = std::max(max_diag_S[v], std::abs(S[i][i][v]));
-      }
-    }
-    for(unsigned int i = 0; i < n_en; ++i)
-    {
-      S_safe[i][i] += epsilon * max_diag_S;
-    }
-
-    data.schur_inverse = invert_matrix_simd(S_safe, n_en);
+    // exact inverse of the Schur complement on the well-posed enrichment modes;
+    // (numerically) linearly dependent modes are removed
+    data.schur_inverse = compute_schur_pseudo_inverse(S,
+                                                      data.M_tilde_tilde,
+                                                      data.projector,
+                                                      mf_en.n_active_entries_per_cell_batch(cell),
+                                                      n_modes_total,
+                                                      n_modes_dropped,
+                                                      lambda_min_kept);
     cell_schur_data[cell] = data; 
+  }
 
+  /****************************************DEBUG******************************************/
+    MPI_Comm const comm = function_enrichment->get_dof_handler_shadow_vector().get_triangulation().get_communicator();
 
-    // ==========================================
-    // DEBUG: Print matrices for the very first valid wall cell
-    // ==========================================
-    // static bool matrices_printed = false; // Remembers across loop iterations
-    //
-    // if (!matrices_printed) 
-    // {
-    //   matrices_printed = true; // Ensure it only prints exactly once
-    //   const unsigned int lane = 0; // Extract the 1st cell in this SIMD batch
-    //
-    //   std::ofstream out_file("enrichment_matrices_debug.txt");
-    //   out_file << std::scientific << std::setprecision(6);
-    //
-    //   out_file << "=== M_tilde_tilde (Mass Matrix) ===\n";
-    //   for (unsigned int i = 0; i < n_en; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_tilde_tilde[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file << "\n=== M_bar_tilde (Coupling Matrix) ===\n";
-    //   for (unsigned int i = 0; i < n_dg; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_bar_tilde[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file << "\n=== M_tilde_tilde_inverse ===\n";
-    //   for (unsigned int i = 0; i < n_en; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_tilde_tilde_inverse[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file << "\n=== M_tilde_tilde_inverse safe===\n";
-    //   for (unsigned int i = 0; i < n_en; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_tilde_tilde_inverse_safe[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file << "\n=== M_bar_bar ===\n";
-    //   for (unsigned int i = 0; i < n_dg; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_bar_bar[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file << "\n=== M_bar_bar_inverse ===\n";
-    //   for (unsigned int i = 0; i < n_dg; ++i) 
-    //   {
-    //     for (unsigned int j = 0; j < n_en; ++j) 
-    //     {
-    //       out_file << std::setw(15) << data.M_bar_bar_inverse[i][j][lane] << " ";
-    //     }
-    //     out_file << "\n";
-    //   }
-    //
-    //   out_file.close();
-    //   std::cout << "\n>>> SUCCESS: Debug matrices written to enrichment_matrices_debug.txt <<<\n\n";
-    // }
+    n_modes_total   = dealii::Utilities::MPI::sum(n_modes_total, comm);
+    n_modes_dropped = dealii::Utilities::MPI::sum(n_modes_dropped, comm);
+    lambda_min_kept = dealii::Utilities::MPI::min(lambda_min_kept, comm);
+
+    if(n_modes_dropped != n_modes_dropped_last)
+    {
+      dealii::ConditionalOStream pcout(std::cout,
+                                       dealii::Utilities::MPI::this_mpi_process(comm) == 0);
+      pcout << std::scientific << std::setprecision(3) << "  [enrichment] removed "
+            << n_modes_dropped << " of " << n_modes_total
+            << " enrichment modes, smallest kept eigenvalue of D^{-1/2} S D^{-1/2} = "
+            << lambda_min_kept << std::endl;
+
+      n_modes_dropped_last = n_modes_dropped;
+    }
+  /***************************************************************************************/
+}
+
+/*
+ * Inverse of the Schur complement of the block mass matrix of an enriched cell, and the projector
+ * onto the well-posed enrichment space.
+ *
+ * Mass matrix per velocity component, with N_i \in P_k(K), \tilde N_j \in P_l(K):
+ *
+ *   M = [ M_bb  M_bt ],  (M_bb)_{ij} = (N_i, N_j)_K,
+ *       [ M_tb  M_tt ]   (M_bt)_{ij} = (N_i, \psi \tilde N_j)_K,
+ *                        (M_tt)_{ij} = (\psi \tilde N_i, \psi \tilde N_j)_K.
+ *
+ * Block elimination = exact LU factorization of M (Krank, thesis Eqs. (6.16), (6.17)):
+ *
+ *   S \tilde U = \tilde R - M_tb M_bb^{-1} \bar R,   \bar U = M_bb^{-1} (\bar R - M_bt \tilde U),
+ *   S = M_tt - M_tb M_bb^{-1} M_bt,   \tilde U^T S \tilde U = \| (I - \Pi_k)(\psi \tilde u_h) \|_K^2 .
+ *
+ * With D = diag(M_tt), the eigenvalues \lambda_m of \hat S = D^{-1/2} S D^{-1/2} are the fraction
+ * of an enrichment mode that P_k(K) cannot represent. Modes with \lambda_m <= \epsilon are
+ * (numerically) linearly dependent and removed from the enrichment space:
+ *
+ *   W   = D^{-1/2} [ v_m ]_{\lambda_m > \epsilon}                (kept coefficient directions)
+ *   S^+ = W \Lambda^{-1} W^T = W (W^T S W)^{-1} W^T            (Galerkin inverse on range(W))
+ *   P   = W (W^T W)^{-1} W^T                                     (Euclidean projector onto range(W))
+ *
+ * All block systems are solved on \tilde U \in range(P) (EnrichmentConstrainedOperator,
+ * EnrichedBlockJacobiPreconditioner), consistent with S^+. Nothing removed: S^+ = S^{-1}, P = I.
+ *
+ * \epsilon = max(rank_tolerance, 10^3 \epsilon_{machine}(Number)).
+ * Unfilled SIMD lanes (v >= n_active_lanes): S^+ = 0, P = 0, not counted.
+ */
+template<int dim, typename Number>
+std::vector<std::vector<dealii::VectorizedArray<Number>>>
+WallDGCoupler<dim, Number>::compute_schur_pseudo_inverse(
+  std::vector<std::vector<scalar>> const & S,
+  std::vector<std::vector<scalar>> const & M_tilde_tilde,
+  std::vector<std::vector<scalar>>       & projector,
+  unsigned int const                       n_active_lanes,
+  unsigned int &                           n_modes_total,
+  unsigned int &                           n_modes_dropped,
+  double &                                 lambda_min_kept) const
+{
+  unsigned int const n = S.size();
+
+  double const epsilon =
+    std::max(rank_tolerance, 1.e3 * double(std::numeric_limits<Number>::epsilon()));
+
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+  std::vector<std::vector<scalar>> S_inverse(n, std::vector<scalar>(n, zero));
+  projector.assign(n, std::vector<scalar>(n, zero));
+
+  for(unsigned int v = 0; v < n_active_lanes; ++v)
+  {
+    // d_i = (M_tt)_{ii}^{-1/2}
+    std::vector<double> d(n);
+    for(unsigned int i = 0; i < n; ++i)
+    {
+      double const m_ii = M_tilde_tilde[i][i][v];
+      AssertThrow(m_ii > 0.0,
+                  dealii::ExcMessage("Enrichment mass matrix with non-positive diagonal entry."));
+      d[i] = 1.0 / std::sqrt(m_ii);
+    }
+
+    // \hat S = D^{-1/2} S D^{-1/2}
+    dealii::LAPACKFullMatrix<double> S_hat(n, n);
+    for(unsigned int i = 0; i < n; ++i)
+      for(unsigned int j = 0; j < n; ++j)
+        S_hat(i, j) = d[i] * double(S[i][j][v]) * d[j];
+
+    // \hat S = U \Sigma V^T  ->  \hat S^+ = \sum_m \sigma_m^{-1} v_m u_m^T over the kept modes
+    S_hat.compute_svd();
+    dealii::LAPACKFullMatrix<double> const & U  = S_hat.get_svd_u();
+    dealii::LAPACKFullMatrix<double> const & VT = S_hat.get_svd_vt();
+
+    // kept directions w_m = D^{-1/2} v_m (columns of W)
+    std::vector<std::vector<double>> W;
+    for(unsigned int m = 0; m < n; ++m)
+    {
+      double const lambda = S_hat.singular_value(m);
+      ++n_modes_total;
+
+      if(lambda <= epsilon)
+      {
+        ++n_modes_dropped;
+        continue;
+      }
+      lambda_min_kept = std::min(lambda_min_kept, lambda);
+
+      std::vector<double> w(n);
+      for(unsigned int i = 0; i < n; ++i)
+        w[i] = d[i] * VT(m, i);
+      W.push_back(w);
+
+      // (S^+)_{ij} += d_i (v_m)_i \lambda_m^{-1} (u_m)_j d_j
+      for(unsigned int i = 0; i < n; ++i)
+        for(unsigned int j = 0; j < n; ++j)
+          S_inverse[i][j][v] += Number(d[i] * VT(m, i) * U(j, m) / lambda * d[j]);
+    }
+    // P = W (W^T W)^{-1} W^T; exactly I if nothing is removed, 0 if everything is removed
+    unsigned int const r = W.size();
+    if(r == n)
+    {
+      for(unsigned int i = 0; i < n; ++i)
+        projector[i][i][v] = 1.0;
+    }
+    else if(r > 0)
+    {
+      dealii::FullMatrix<double> G(r, r);
+      for(unsigned int a = 0; a < r; ++a)
+        for(unsigned int b = 0; b < r; ++b)
+          for(unsigned int i = 0; i < n; ++i)
+            G(a, b) += W[a][i] * W[b][i];
+      G.gauss_jordan(); // (W^T W)^{-1}, SPD
+
+      for(unsigned int i = 0; i < n; ++i)
+        for(unsigned int j = 0; j < n; ++j)
+        {
+          double p_ij = 0.0;
+          for(unsigned int a = 0; a < r; ++a)
+            for(unsigned int b = 0; b < r; ++b)
+              p_ij += W[a][i] * G(a, b) * W[b][j];
+          projector[i][j][v] = Number(p_ij);
+        }
+    }
+  }
+
+  return S_inverse;
+}
+
+/*
+ * Projection onto the well-posed enrichment space (see compute_schur_pseudo_inverse):
+ *   complement = false:  \tilde U <- P \tilde U
+ *   complement = true:   \tilde U <- (I - P) \tilde U
+ * P acts on the coefficients of each velocity component (same P for all components).
+ */
+template<int dim, typename Number>
+void
+WallDGCoupler<dim, Number>::apply_enrichment_projector(VectorType &       dst,
+                                                       VectorType const & src,
+                                                       bool const         complement) const
+{
+  auto const & mf_en = *(function_enrichment->get_matrix_free());
+
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi(mf_en,
+                                                    function_enrichment->get_dof_index_en(),
+                                                    function_enrichment->get_quad_index(),
+                                                    0,
+                                                    active_fe_index);
+  unsigned int const n_en = phi.dofs_per_component;
+
+  using TensorType = dealii::Tensor<1, dim, scalar>;
+  TensorType zero_tensor;
+  for(unsigned int d = 0; d < dim; ++d)
+    zero_tensor[d] = dealii::make_vectorized_array<Number>(0.0);
+
+  std::vector<TensorType> u(n_en);
+
+  for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+  {
+    if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+      continue;
+
+    phi.reinit(cell);
+    phi.read_dof_values_plain(src);
+    for(unsigned int i = 0; i < n_en; ++i)
+      u[i] = phi.get_dof_value(i);
+
+    auto const & P = cell_schur_data[cell].projector;
+    for(unsigned int i = 0; i < n_en; ++i)
+    {
+      TensorType Pu = zero_tensor;
+      for(unsigned int j = 0; j < n_en; ++j)
+        Pu += P[i][j] * u[j];
+      phi.submit_dof_value(complement ? u[i] - Pu : Pu, i);
+    }
+    phi.set_dof_values_plain(dst); // cell-local: dst may alias src
   }
 }
 
@@ -674,7 +774,7 @@ WallDGCoupler<dim, Number>::local_compute_enrichment_velocity(
     }
 
     // Precomputed local Schur Complement Data
-    auto const & M_tilde_tilde_inverse = cell_schur_data[cell].M_tilde_tilde_inverse_safe;
+    auto const & M_tilde_tilde_inverse = cell_schur_data[cell].M_tilde_tilde_inverse;
     auto const & M_bar_tilde           = cell_schur_data[cell].M_bar_tilde; 
 
     AssertThrow(M_bar_tilde.size() == n_dg, 

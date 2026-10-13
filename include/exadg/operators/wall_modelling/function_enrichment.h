@@ -38,6 +38,7 @@
 
 #include <map>
 #include <vector>
+#include <array>
 
 namespace ExaDG
 {
@@ -83,14 +84,63 @@ void
   void
   evaluate_friction_velocity(VectorType const & global_velocity);
 
+  void
+  evaluate_friction_velocity_from_residual(VectorType const & u_bar,
+                                           VectorType const & u_tilde,
+                                           VectorType const & u_bar_hat,
+                                           VectorType const & u_tilde_hat,
+                                           double const       mass_factor);
+  
+  // shared tail of both u_tau evaluations: tau_w = num/den at wall nodes -> u_tau, copy off-wall
+  void
+  finish_friction_velocity(std::array<VectorType, dim> & traction_num, VectorType & traction_den);
+
+  // residual-based wall force, tested with the CG P1 scalar wall shape functions (per component)
+  void
+  integrate_wall_residual(std::array<VectorType, dim> & traction_num,
+                          VectorType const &            u_tilde,
+                          VectorType const &            u_tilde_hat,
+                          double const                  mass_factor) const;
+
   void 
   copy_global_dg_to_wall_layout(VectorType const & global_vec, VectorType & wall_vec) const;
+
+  // right-hand side of the projection of u_h^old = U_bar + psi_old * U_tilde onto the space
+  // with psi_new (thesis Eq. 6.14), on enriched cells, in shadow / enrichment layout:
+  //   dst_bar_shadow = int v_bar . u_h^old,   dst_tilde = int psi_new v_tilde . u_h^old
+  void
+  apply_mass_old_to_new(VectorType &       dst_bar_shadow,
+                        VectorType &       dst_tilde,
+                        VectorType const & u_bar_shadow,
+                        VectorType const & u_tilde) const;
 
   void 
   copy_wall_layout_to_global_dg(VectorType const & wall_vec, VectorType & global_vec) const;
 
   void
   add_wall_layout_to_global_dg(VectorType const & wall_vec,VectorType & global_vec) const;
+
+  void
+  set_global_pressure_dof_handler(dealii::DoFHandler<dim> const & dof_handler_p_in);
+
+  // global pressure -> shadow layout (enriched + halo cells), overwrites wall_p
+  void
+  copy_global_pressure_to_wall_layout(VectorType const & global_p, VectorType & wall_p) const;
+
+  // shadow layout -> global pressure, ADDS on enriched + halo cells
+  void
+  add_wall_layout_to_global_pressure(VectorType const & wall_p, VectorType & global_p) const;
+
+  // Largest y+ in the enriched layer: max(y) * max(u_tau) / nu.
+  // Small values: psi is (nearly) linear, the enrichment is redundant -> do not use it.
+  double
+  get_max_y_plus() const;
+
+  dealii::DoFHandler<dim> const &
+  get_dof_handler_shadow_pressure() const;
+
+  unsigned int
+  get_dof_index_shadow_pressure() const;
 
   // ── Accessors ──────────────────────────────────────────────────────────
   dealii::DoFHandler<dim> const &
@@ -131,6 +181,28 @@ void
   get_gradient(scalar const u_tau,
                scalar const y) const;
 
+  // psi and grad psi at the quadrature points of enriched cells and of the enriched sides of
+  // faces, Krank et al. (2018) Eq. (12) with y+ = y_h sqrt(tau_w,h) / nu. Recomputed whenever
+  // tau_w changes (finish_friction_velocity, setup_wall_distance).
+  void
+  update_enrichment_function();
+
+  // cell: cell batch index of matrix_free_en; face: face batch index, interior / exterior side
+  scalar const &
+  get_psi_cell(unsigned int const cell, unsigned int const q) const;
+
+  vector const &
+  get_grad_psi_cell(unsigned int const cell, unsigned int const q) const;
+
+  scalar const &
+  get_psi_cell_old(unsigned int const cell, unsigned int const q) const;
+
+  scalar const &
+  get_psi_face(unsigned int const face, bool const interior, unsigned int const q) const;
+
+  vector const &
+  get_grad_psi_face(unsigned int const face, bool const interior, unsigned int const q) const;
+
   std::shared_ptr<dealii::MatrixFree<dim, Number>> 
   get_matrix_free() const;
 
@@ -140,11 +212,27 @@ void
   unsigned int
   get_active_fe_index() const;
 
+  void
+  set_minimum_wall_shear_stress_fraction(double const fraction);
+
+  void
+  compute_enrichment_component(VectorType &                           dst,
+                               VectorType const &                     u_tilde,
+                               dealii::DoFHandler<dim> const &        dof_handler_out,
+                               dealii::Mapping<dim> const &           mapping) const;
+
   // Add this pointer to store the global fluid layout
   dealii::DoFHandler<dim> const * global_dof_handler;
 
   VectorType wall_distance;
   VectorType friction_velocity;
+  VectorType wall_shear_stress;
+
+  // interior-penalty parameter used by the viscous operator, per cell batch of matrix_free_en
+  // (incl. ghost batches); set by EnrichedMomentumOperator. Used for the wall flux tau_w.
+  dealii::AlignedVector<dealii::VectorizedArray<Number>> wall_penalty;
+  
+  VectorType friction_velocity_old;
 
   VectorType wall_velocity;
 
@@ -153,6 +241,8 @@ void
 
   VectorType shadow_velocity;
   VectorType shadow_velocity_residual;
+
+  VectorType shadow_pressure;
 
   VectorType src;
   VectorType dst;
@@ -206,16 +296,43 @@ private:
     VectorType const &                      src,
     std::pair<unsigned int, unsigned int> const & range) const;
 
+  void
+  setup_corner_nodes();
+
+  // periodicity constraints for the hp CG DoFHandlers (parallel-safe, see .cpp)
+  void
+  make_periodicity_constraints_hp(
+    dealii::DoFHandler<dim> const & dof_handler,
+    std::vector<dealii::GridTools::PeriodicFacePair<
+    typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
+    dealii::AffineConstraints<Number> &                            constraints) const;
+
+  void
+  make_periodicity_constraints_hp(typename dealii::DoFHandler<dim>::face_iterator const & face_1,
+                                  typename dealii::DoFHandler<dim>::face_iterator const & face_2,
+                                  unsigned char const                                     orientation,
+                                  dealii::AffineConstraints<Number> & constraints) const;
+
+  // psi, grad psi from y_h, grad y_h, tau_w,h, grad tau_w,h at one quadrature point
+  std::pair<scalar, vector>
+  evaluate_enrichment_function(scalar const & y,
+                               vector const & grad_y,
+                               scalar const & tau_w,
+                               vector const & grad_tau_w) const;
+
   unsigned int dof_index_en; 
   unsigned int dof_index_en_scalar; 
   unsigned int dof_index_cg_scalar;
   unsigned int dof_index_cg_vector;
   unsigned int dof_index_shadow_vector;
+  unsigned int dof_index_shadow_pressure;
   unsigned int quad_index;
 
   const unsigned int active_fe_index = 1;
 
   double kinematic_viscosity; 
+
+  double minimum_wall_shear_stress_fraction = 0.02;
 
   std::shared_ptr<dealii::MatrixFree<dim, Number>> matrix_free_en;
 
@@ -233,6 +350,10 @@ private:
   dealii::DoFHandler<dim>                     dof_handler_shadow_vector;
   dealii::hp::FECollection<dim>               fe_shadow_collection;
 
+  dealii::DoFHandler<dim> const * global_dof_handler_pressure = nullptr;
+  dealii::DoFHandler<dim>         dof_handler_shadow_pressure;
+  dealii::hp::FECollection<dim>   fe_shadow_pressure_collection;
+
   // CG Wall variables
   std::shared_ptr<dealii::FiniteElement<dim>> fe_cg_scalar;
   dealii::DoFHandler<dim>                     dof_handler_cg_scalar;
@@ -245,13 +366,31 @@ private:
   // Node to nearest wall node mapping (for quick lookup during distance computation)
   std::map<dealii::types::global_dof_index, dealii::types::global_dof_index> node_to_wall_node;
 
+  // wall nodes that also lie on a non-wall boundary (inflow/outflow corners) -> neighbouring wall
+  // node on the same wall face. The residual-based tau_w is not a wall force there.
+  std::map<dealii::types::global_dof_index, dealii::types::global_dof_index> corner_to_wall_node;
+
   WallLawEvaluator<dim, Number> wall_law_eval;
 
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor;
 
   dealii::AffineConstraints<Number> constraint_cg_scalar; // periodicity, dof_handler_cg_scalar
   dealii::AffineConstraints<Number> constraint_cg_vector; // periodicity, dof_handler_cg_vector
-  dealii::AffineConstraints<Number> constraint_dg;   
+  dealii::AffineConstraints<Number> constraint_dg;
+
+  // tau_w,h = 0 before the first wall shear stress evaluation: keeps y+ defined
+  // (same as the former u_tau >= 1e-5); afterwards the 2% minimum of Step 2 applies
+  static constexpr double tau_w_absolute_minimum = 1.e-10;
+
+  unsigned int n_q_points_cell = 0;
+  unsigned int n_q_points_face = 0;
+
+  dealii::AlignedVector<scalar> psi_cell;      // [cell batch * n_q_points_cell + q]
+  dealii::AlignedVector<vector> grad_psi_cell; // same layout
+  dealii::AlignedVector<scalar> psi_cell_old;
+
+  std::array<dealii::AlignedVector<scalar>, 2> psi_face;      // [0] interior, [1] exterior side
+  std::array<dealii::AlignedVector<vector>, 2> grad_psi_face; // [face batch * n_q_points_face + q]
 };
 
 } // namespace ExaDG

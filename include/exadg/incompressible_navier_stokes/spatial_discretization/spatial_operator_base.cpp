@@ -400,7 +400,10 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   if(param.wall_enrichment_enabled)
   {
     function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
+    function_enrichment->set_minimum_wall_shear_stress_fraction(param.wall_shear_stress_min_fraction);
     wall_dg_coupler     = std::make_shared<WallDGCoupler<dim, Number>>();
+    wall_dg_coupler->set_rank_tolerance(param.wall_enrichment_rank_tolerance);
+    function_enrichment->set_global_pressure_dof_handler(get_dof_handler_p());
 
     function_enrichment->initialize(*grid->triangulation,
                                     get_mapping(),
@@ -1532,6 +1535,8 @@ unsigned int
 SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(BlockVectorType &       dst,
                                                               BlockVectorType const & src) const
 {
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
   AssertThrow(param.wall_enrichment_enabled,
               dealii::ExcMessage("Block inverse mass operator requires wall_enrichment_enabled."));
   AssertThrow(param.spatial_discretization == SpatialDiscretization::L2,
@@ -1579,6 +1584,46 @@ SpatialOperatorBase<dim, Number>::evaluate_convective_term(VectorType &       ds
                                                            Number const       time) const
 {
   convective_operator.evaluate_nonlinear_operator(dst, src, time);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::evaluate_convective_term_enriched(BlockVectorType &       dst,
+                                                                    BlockVectorType const & src,
+                                                                    double const evaluation_time) const
+{
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
+
+  // (1) standard operator on U_bar, whole domain
+  evaluate_convective_term(dst.block(0), src.block(0), evaluation_time);
+
+  // (2) enriched rows (complete), halo corrections and U_tilde rows on matrix_free_en
+  VectorType u_bar_shadow, bar_enriched_shadow, bar_halo_shadow;
+  mf_en.initialize_dof_vector(u_bar_shadow, function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(bar_enriched_shadow, function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(bar_halo_shadow, function_enrichment->get_dof_index_shadow_vector());
+
+  function_enrichment->copy_global_dg_to_wall_layout(src.block(0), u_bar_shadow);
+  u_bar_shadow.update_ghost_values();
+  src.block(1).update_ghost_values();
+
+  convective_operator.evaluate_nonlinear_operator_enriched(bar_enriched_shadow,
+                                                           bar_halo_shadow,
+                                                           dst.block(1),
+                                                           u_bar_shadow,
+                                                           src.block(1),
+                                                           *function_enrichment,
+                                                           evaluation_time);
+
+  src.block(1).zero_out_ghost_values();
+
+  // enriched cells: OVERWRITE with the complete rows (same quadrature as the U_tilde rows)
+  function_enrichment->copy_wall_layout_to_global_dg(bar_enriched_shadow, dst.block(0));
+  // halo cells: ADD the correction of their faces to enriched cells
+  function_enrichment->add_wall_layout_to_global_dg(bar_halo_shadow, dst.block(0));
 }
 
 template<int dim, typename Number>
@@ -2118,6 +2163,11 @@ SpatialOperatorBase<dim, Number>::set_constant_friction_velocity(Number const u_
   function_enrichment->friction_velocity = u_tau;
   function_enrichment->friction_velocity.update_ghost_values();
 
+  function_enrichment->wall_shear_stress = u_tau * u_tau;
+  function_enrichment->wall_shear_stress.update_ghost_values();
+
+  function_enrichment->update_enrichment_function();
+
   wall_dg_coupler->precompute_schur_matrices();
 }
 
@@ -2171,6 +2221,21 @@ SpatialOperatorBase<dim, Number>::get_enrichment_velocity() const
 }
 
 template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::get_enrichment_component(
+  VectorType & dst,
+  dealii::DoFHandler<dim> const & dof_handler_out) const
+{
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("compute_enrichment_component requires wall_enrichment_enabled."));
+
+  function_enrichment->compute_enrichment_component(dst,
+                                                    get_enrichment_velocity(),
+                                                    dof_handler_out,
+                                                    *get_mapping());
+}
+
+template<int dim, typename Number>
 std::shared_ptr<FunctionEnrichment<dim, Number>> const &
 SpatialOperatorBase<dim, Number>::get_function_enrichment() const
 {
@@ -2217,6 +2282,87 @@ void
 SpatialOperatorBase<dim, Number>::update_schur_matrices() const
 {
   wall_dg_coupler->precompute_schur_matrices();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::compute_total_velocity(VectorType &            dst,
+                                                         BlockVectorType const & src) const
+{
+  // block(0) of the block mass = M_bb U_bar + M_bt U_tilde  (= int v_bar . u_h)
+  BlockVectorType mass_u(src);
+  apply_mass_operator(mass_u, src);
+
+  // plain DG inverse mass -> best polynomial approximation of u_h
+  apply_inverse_mass_operator(dst, mass_u.block(0));
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::update_friction_velocity_from_residual(BlockVectorType const & u,
+                                                                         BlockVectorType const & u_hat,
+                                                                         double const mass_factor) const
+{
+  function_enrichment->evaluate_friction_velocity_from_residual(
+    u.block(0), u.block(1), u_hat.block(0), u_hat.block(1), mass_factor);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::project_enrichment_history(BlockVectorType & u) const
+{
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  // right-hand side, block(0) = int v_bar . u_h^old, block(1) = int psi_new v_tilde . u_h^old
+  BlockVectorType rhs(u);
+  rhs.block(0).zero_out_ghost_values();
+  rhs.block(1).zero_out_ghost_values();
+
+  // (1) non-enriched cells: standard mass, u_h^old = U_bar there
+  mass_operator.apply(rhs.block(0), u.block(0));
+
+  // (2) enriched cells: trial function with psi_old, test function with psi_new
+  VectorType u_bar_shadow, rhs_bar_shadow;
+  mf_en.initialize_dof_vector(u_bar_shadow, function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(rhs_bar_shadow, function_enrichment->get_dof_index_shadow_vector());
+
+  function_enrichment->copy_global_dg_to_wall_layout(u.block(0), u_bar_shadow);
+  u_bar_shadow.update_ghost_values();
+  u.block(1).update_ghost_values();
+
+  function_enrichment->apply_mass_old_to_new(rhs_bar_shadow, rhs.block(1), u_bar_shadow, u.block(1));
+
+  u.block(1).zero_out_ghost_values();
+
+  // overwrite the enriched cells of block(0) (mass is cell-local)
+  function_enrichment->copy_wall_layout_to_global_dg(rhs_bar_shadow, rhs.block(0));
+
+  // (3) inverse block mass with psi_new
+  apply_inverse_mass_operator(u, rhs);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::evaluate_add_body_force_term_enriched(BlockVectorType & dst,
+                                                                        double const      time) const
+{
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  VectorType f_bar;
+  initialize_vector_velocity(f_bar);
+  rhs_operator.evaluate(f_bar, time);
+
+  VectorType f_bar_enriched_shadow, f_tilde;
+  mf_en.initialize_dof_vector(f_bar_enriched_shadow,
+                              function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(f_tilde, function_enrichment->get_dof_index_en());
+
+  rhs_operator.evaluate_add_enriched(f_bar_enriched_shadow, f_tilde, *function_enrichment, time);
+
+  function_enrichment->copy_wall_layout_to_global_dg(f_bar_enriched_shadow, f_bar);
+
+  dst.block(0) += f_bar;
+  dst.block(1) += f_tilde;
 }
 
 template class SpatialOperatorBase<2, float>;

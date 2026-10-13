@@ -25,6 +25,7 @@
 #include <exadg/functions_and_boundary_conditions/evaluate_functions.h>
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/mapping_flags.h>
+#include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
 
 namespace ExaDG
 {
@@ -160,6 +161,12 @@ public:
 
   void
   evaluate_add(VectorType & dst, Number const evaluation_time) const;
+
+  void
+  evaluate_add_enriched(VectorType &                            dst_bar_enriched,
+                        VectorType &                            dst_tilde,
+                        FunctionEnrichment<dim, Number> const & function_enrichment,
+                        Number const                            evaluation_time) const;
 
   void
   set_temperature(VectorType const & T);

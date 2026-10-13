@@ -25,6 +25,7 @@
 // ExaDG
 #include <exadg/incompressible_navier_stokes/user_interface/parameters.h>
 #include <exadg/utilities/print_functions.h>
+#include "enum_types.h"
 
 namespace ExaDG
 {
@@ -222,7 +223,13 @@ Parameters::Parameters()
     // Wall Function
     wall_enrichment_enabled(false),
     fe_degree_enrichment(1),
-    wall_enrichment_layers(1)
+    wall_enrichment_layers(1),
+    wall_shear_stress_computation(WallShearStressComputation::VelocityGradient),
+    wall_shear_stress_min_fraction(0.02),
+    wall_enrichment_rank_tolerance(1.e-8),
+    use_enrichment_aware_penalty(false),
+    wall_bc_viscous(WallBoundaryConditionViscous::Weak),
+    wall_penalty_factor_viscous(1.0)
 {
 }
 
@@ -559,6 +566,21 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
   {
     AssertThrow(temporal_discretization == TemporalDiscretization::BDFCoupledSolution,
                 dealii::ExcMessage("Only BDFCoupledSolution is supported for simplex elements."));
+  }
+
+  if(wall_enrichment_enabled)
+  {
+
+    AssertThrow(wall_shear_stress_min_fraction >= 0.0 and wall_shear_stress_min_fraction < 1.0,
+                dealii::ExcMessage("wall_shear_stress_min_fraction must be in [0, 1)."));
+    AssertThrow(wall_enrichment_rank_tolerance > 0.0 and wall_enrichment_rank_tolerance < 1.0,
+                dealii::ExcMessage("wall_enrichment_rank_tolerance must in [0, 1)."));
+    AssertThrow(wall_penalty_factor_viscous > 0.0,
+                dealii::ExcMessage("wall_penalty_factor_viscous must be positive."));
+    // Strong: the wall traction is a reaction force on the fixed DoFs, not the penalty flux
+    AssertThrow(not(wall_bc_viscous == WallBoundaryConditionViscous::Strong and
+                    wall_shear_stress_computation == WallShearStressComputation::MomentumResidual),
+                dealii::ExcMessage("Strong wall BC requires WallShearStressComputation::VelocityGradient."));
   }
 }
 
@@ -1320,6 +1342,14 @@ Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout
   print_parameter(pcout, "Polynomial order of enrichment space: ", fe_degree_enrichment);
 
   print_parameter(pcout, "Number of layer of near wall cells selected for enrichment: ", wall_enrichment_layers);
+
+  print_parameter(pcout, "Wall shear stress computation", wall_shear_stress_computation);
+  print_parameter(pcout, "Minimum wall shear stress (fraction of mean)", wall_shear_stress_min_fraction);
+  print_parameter(pcout, "Rank tolerance of enrichment space", wall_enrichment_rank_tolerance);
+  print_parameter(pcout, "Enrichment-aware interior penalty", use_enrichment_aware_penalty);
+  print_parameter(pcout, "Wall boundary condition viscous step", wall_bc_viscous);
+  if(wall_bc_viscous == WallBoundaryConditionViscous::Weak)
+    print_parameter(pcout, "Wall penalty factor viscous step", wall_penalty_factor_viscous);
 }
 
 bool

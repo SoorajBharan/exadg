@@ -27,7 +27,10 @@ namespace IncNS
 {
 template<int dim, typename Number>
 EnrichedMomentumOperator<dim, Number>::EnrichedMomentumOperator()
-  : momentum_operator(nullptr), penalty_factor(0.0)
+  : momentum_operator(nullptr),
+  penalty_factor(0.0),
+  enrichment_aware_penalty(false),
+  wall_penalty_factor(1.0)
 {
 }
 
@@ -92,6 +95,229 @@ EnrichedMomentumOperator<dim, Number>::update_penalty_parameter()
 
 template<int dim, typename Number>
 void
+EnrichedMomentumOperator<dim, Number>::update_enriched_penalty_parameter() const
+{
+  auto const & mf = *function_enrichment->get_matrix_free();
+
+  /*
+   * Krank et al. (2018), Eq. (35)-(36) / thesis Eq. (3.14)-(3.15): the viscous step uses the
+   * polynomial interior penalty parameter also on enriched cells,
+   *   tau_IP,e = (k+1)^2 (A(dOmega_e^Gamma)/2 + A(dOmega_e^D)) / V(Omega_e),
+   * which is admissible since the NIPG (s = -1) is stable for any tau_IP > 0.
+   * The enrichment tau below is only computed if enrichment_aware_penalty is set.
+   */
+  if(not enrichment_aware_penalty)
+  {
+    unsigned int const n_batches_poly = mf.n_cell_batches() + mf.n_ghost_cell_batches();
+
+    penalty_enrichment.resize(n_batches_poly);
+    function_enrichment->wall_penalty.resize(n_batches_poly);
+    for(unsigned int b = 0; b < n_batches_poly; ++b)
+    {
+      penalty_enrichment[b]               = dealii::make_vectorized_array<Number>(0.0);
+      function_enrichment->wall_penalty[b] = wall_penalty_factor * penalty_factor * penalty_parameter[b];
+    }
+    return;
+  }
+
+
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number>     CellIntegratorScalar;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> FaceIntegratorScalar;
+
+  unsigned int const lanes     = scalar::size();
+  unsigned int const n_batches = mf.n_cell_batches() + mf.n_ghost_cell_batches();
+
+  // any scalar DoF index of matrix_free_en: the evaluators below only provide JxW
+  unsigned int const dof_y = function_enrichment->get_dof_index_en_scalar();
+  unsigned int const quad  = function_enrichment->get_quad_index();
+
+  // per cell (batch * lanes + lane): sum_F w_F int_F |grad psi|^2  and  int_K |grad psi|^2,
+  // with the cached grad psi (incl. the grad tau_w contribution)
+  std::vector<double> numerator(n_batches * lanes, 0.0), denominator(n_batches * lanes, 0.0);
+  // ---- volume: int_K |grad psi|^2 ------------------------------------------------
+  {
+    CellIntegratorScalar JxW_eval(mf, dof_y, quad, 0, 1);
+
+    for(unsigned int cell = 0; cell < n_batches; ++cell)
+    {
+      if(mf.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+        continue;
+
+      JxW_eval.reinit(cell);
+
+      scalar integral = dealii::make_vectorized_array<Number>(0.0);
+      for(unsigned int q = 0; q < JxW_eval.n_q_points; ++q)
+      {
+        integral += function_enrichment->get_grad_psi_cell(cell, q).norm_square() * JxW_eval.JxW(q);
+      }
+
+      for(unsigned int l = 0; l < lanes; ++l)
+        denominator[cell * lanes + l] = integral[l];
+    }
+  }
+
+  // ---- faces: w_F int_F |grad psi|^2 on the enriched side(s) ------------------------
+  auto const add_face_side = [&](unsigned int const face, bool const interior, double const weight) {
+    FaceIntegratorScalar JxW_eval(mf, interior, dof_y, quad, 0, 1);
+    JxW_eval.reinit(face);
+
+    // \int_F |\nabla\psi|^2 on this side of the face
+    scalar integral = dealii::make_vectorized_array<Number>(0.0);
+    for(unsigned int q = 0; q < JxW_eval.n_q_points; ++q)
+    {
+      integral +=
+        function_enrichment->get_grad_psi_face(face, interior, q).norm_square() * JxW_eval.JxW(q);
+    }
+    auto const & info  = mf.get_face_info(face);
+    auto const & cells = interior ? info.cells_interior : info.cells_exterior;
+    for(unsigned int l = 0; l < lanes; ++l)
+    {
+
+      if(cells[l] != dealii::numbers::invalid_unsigned_int)
+        numerator[cells[l]] += weight * integral[l];
+    }
+  };
+
+  for(unsigned int face = 0; face < mf.n_inner_face_batches(); ++face)
+  {
+    auto const range = std::make_pair(face, face + 1);
+    if(mf.get_face_active_fe_index(range, true) == 1)
+      add_face_side(face, true, 0.5);
+    if(mf.get_face_active_fe_index(range, false) == 1)
+      add_face_side(face, false, 0.5);
+  }
+
+  unsigned int const b_begin = mf.n_inner_face_batches();
+  unsigned int const b_end   = b_begin + mf.n_boundary_face_batches();
+  for(unsigned int face = b_begin; face < b_end; ++face)
+    if(mf.get_face_active_fe_index(std::make_pair(face, face + 1), true) == 1)
+      add_face_side(face, true, 1.0);
+
+  // ---- tau^en = IP (l+1)^2 numerator / denominator ----------------------------------
+  unsigned int const degree_en =
+    function_enrichment->get_dof_handler_en_vector().get_fe(1).degree;
+  double const factor = momentum_operator->get_viscous_kernel_data().IP_factor *
+                        (degree_en + 1.0) * (degree_en + 1.0);
+
+  penalty_enrichment.resize(n_batches);
+  for(unsigned int b = 0; b < n_batches; ++b)
+    for(unsigned int l = 0; l < lanes; ++l)
+    {
+      double const den       = denominator[b * lanes + l];
+      penalty_enrichment[b][l] = (den > 0.0) ? factor * numerator[b * lanes + l] / den : 0.0;
+    }
+
+
+  // the total tau of each cell, for the consistent wall flux in FunctionEnrichment
+  function_enrichment->wall_penalty.resize(n_batches);
+  for(unsigned int b = 0; b < n_batches; ++b)
+    function_enrichment->wall_penalty[b] =
+      wall_penalty_factor * std::max(penalty_factor * penalty_parameter[b], penalty_enrichment[b]);
+}
+
+template<int dim, typename Number>
+typename EnrichedMomentumOperator<dim, Number>::scalar
+EnrichedMomentumOperator<dim, Number>::read_penalty_polynomial(FaceIntegratorU & phi) const
+{
+  return phi.read_cell_data(penalty_parameter) * penalty_factor;
+}
+
+template<int dim, typename Number>
+typename EnrichedMomentumOperator<dim, Number>::scalar
+EnrichedMomentumOperator<dim, Number>::read_penalty_polynomial(EnrichedFaceIntegrator & phi) const
+{
+  return phi.phi_dg.read_cell_data(penalty_parameter) * penalty_factor;
+}
+
+template<int dim, typename Number>
+typename EnrichedMomentumOperator<dim, Number>::scalar
+EnrichedMomentumOperator<dim, Number>::read_penalty_total(FaceIntegratorU & phi) const
+{
+  if(not enrichment_aware_penalty)
+    return read_penalty_polynomial(phi); // Krank et al. (2018), Eq. (35)-(36)
+
+  return std::max(read_penalty_polynomial(phi), phi.read_cell_data(penalty_enrichment));
+}
+
+template<int dim, typename Number>
+typename EnrichedMomentumOperator<dim, Number>::scalar
+EnrichedMomentumOperator<dim, Number>::read_penalty_total(EnrichedFaceIntegrator & phi) const
+{
+  if(not enrichment_aware_penalty)
+    return read_penalty_polynomial(phi); // Krank et al. (2018), Eq. (35)-(36)
+
+  return std::max(read_penalty_polynomial(phi), phi.phi_dg.read_cell_data(penalty_enrichment));
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::penalty_correction_loop(VectorType const & u_bar_shadow,
+                                                               VectorType &       dst_bar_shadow) const
+{
+  auto const & mf = *function_enrichment->get_matrix_free();
+  auto const & bc = momentum_operator->get_data().bc;
+
+  unsigned int const dof_shadow = function_enrichment->get_dof_index_shadow_vector();
+  unsigned int const quad       = function_enrichment->get_quad_index();
+  scalar const       nu = dealii::make_vectorized_array<Number>(momentum_operator->get_viscous_kernel_data().viscosity);
+
+  // interior faces with at least one enriched side
+  for(unsigned int face = 0; enrichment_aware_penalty and face < mf.n_inner_face_batches(); ++face)
+  {
+    auto const         range = std::make_pair(face, face + 1);
+    unsigned int const fe_m  = mf.get_face_active_fe_index(range, true);
+    unsigned int const fe_p  = mf.get_face_active_fe_index(range, false);
+    if(fe_m != 1 and fe_p != 1)
+      continue;
+
+    FaceIntegratorU phi_m(mf, true, dof_shadow, quad, 0, fe_m);
+    FaceIntegratorU phi_p(mf, false, dof_shadow, quad, 0, fe_p);
+    phi_m.reinit(face);
+    phi_p.reinit(face);
+    phi_m.gather_evaluate(u_bar_shadow, dealii::EvaluationFlags::values);
+    phi_p.gather_evaluate(u_bar_shadow, dealii::EvaluationFlags::values);
+
+    scalar const tau_total = std::max(read_penalty_total(phi_m), read_penalty_total(phi_p));
+    scalar const tau_poly  = std::max(read_penalty_polynomial(phi_m), read_penalty_polynomial(phi_p));
+    scalar const delta_tau = tau_total - tau_poly;
+
+    for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
+    {
+      vector const flux = nu * delta_tau * (phi_m.get_value(q) - phi_p.get_value(q));
+      phi_m.submit_value(flux, q);
+      phi_p.submit_value(-flux, q);
+    }
+    phi_m.integrate_scatter(dealii::EvaluationFlags::values, dst_bar_shadow);
+    phi_p.integrate_scatter(dealii::EvaluationFlags::values, dst_bar_shadow);
+  }
+
+  // boundary faces of enriched cells (Dirichlet / wall: jump = 2 u_m, Neumann: 0)
+  unsigned int const b_begin = mf.n_inner_face_batches();
+  unsigned int const b_end   = b_begin + mf.n_boundary_face_batches();
+  for(unsigned int face = b_begin; face < b_end; ++face)
+  {
+    if(mf.get_face_active_fe_index(std::make_pair(face, face + 1), true) != 1)
+      continue;
+
+    BoundaryTypeU const type = bc->get_boundary_type(mf.get_boundary_id(face));
+    if(type != BoundaryTypeU::Dirichlet and type != BoundaryTypeU::WallEnrichment)
+      continue;
+
+    FaceIntegratorU phi_m(mf, true, dof_shadow, quad, 0, 1);
+    phi_m.reinit(face);
+    phi_m.gather_evaluate(u_bar_shadow, dealii::EvaluationFlags::values);
+
+    Number const factor    = (type == BoundaryTypeU::WallEnrichment) ? wall_penalty_factor : 1.0;
+    scalar const delta_tau = factor * read_penalty_total(phi_m) - read_penalty_polynomial(phi_m);
+
+    for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
+      phi_m.submit_value(nu * delta_tau * 2.0 * phi_m.get_value(q), q);
+    phi_m.integrate_scatter(dealii::EvaluationFlags::values, dst_bar_shadow);
+  }
+}
+
+template<int dim, typename Number>
+void
 EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src) const
 {
   dst.block(0).zero_out_ghost_values();
@@ -141,6 +367,11 @@ EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorT
     boundary_face_loop(u_bar, zero_tilde, nullptr, dst.block(1));
   }
 
+  // (4b) Pass C, U_bar only: U_bar rows of the faces of enriched cells with the
+  //      enrichment-aware tau (MomentumOperator used the polynomial tau there)
+  if(viscous and (enrichment_aware_penalty or wall_penalty_factor != 1.0))
+    penalty_correction_loop(u_bar, correction_bar);
+
   correction_bar.compress(dealii::VectorOperation::add);
   dst.block(1).compress(dealii::VectorOperation::add);
 
@@ -149,6 +380,104 @@ EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorT
 
   u_bar.zero_out_ghost_values();
   src.block(1).zero_out_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::rhs_add_boundary_data(VectorType & dst_bar,
+                                                             VectorType & dst_tilde,
+                                                             double const time) const
+{
+  if(not momentum_operator->get_data().viscous_problem)
+    return;
+
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+  auto const & bc    = momentum_operator->get_data().bc;
+
+  auto const   vk_data = momentum_operator->get_viscous_kernel_data();
+  scalar const nu      = dealii::make_vectorized_array<Number>(vk_data.viscosity);
+  Number const sign    = (vk_data.IP_formulation == InteriorPenaltyFormulation::SIPG) ? -0.5 : 0.5;
+
+  // zero vectors: only needed so that the evaluator computes y, u_tau (and psi)
+  VectorType zero_bar, zero_tilde;
+  mf_en.initialize_dof_vector(zero_bar, function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(zero_tilde, function_enrichment->get_dof_index_en());
+
+  // U_bar-row correction of the inflow penalty term (shadow layout)
+  VectorType correction_bar;
+  mf_en.initialize_dof_vector(correction_bar, function_enrichment->get_dof_index_shadow_vector());
+
+  unsigned int const begin = mf_en.n_inner_face_batches();
+  unsigned int const end   = begin + mf_en.n_boundary_face_batches();
+
+  for(unsigned int face = begin; face < end; ++face)
+  {
+    if(mf_en.get_face_active_fe_index(std::make_pair(face, face + 1), true) != 1)
+      continue;
+
+    auto const          boundary_id = mf_en.get_boundary_id(face);
+    BoundaryTypeU const type        = bc->get_boundary_type(boundary_id);
+
+    // only true Dirichlet faces carry data (WallEnrichment: g = 0)
+    if(type != BoundaryTypeU::Dirichlet)
+      continue;
+
+    auto const & g_function = bc->dirichlet_bc.find(boundary_id)->second;
+    g_function->set_time(time);
+
+    EnrichedFaceIntegrator phi_m(mf_en, *function_enrichment, true, 1);
+    phi_m.reinit(face);
+    phi_m.gather_evaluate(zero_bar, zero_tilde, dealii::EvaluationFlags::values);
+
+    scalar const tau       = read_penalty_total(phi_m);
+    scalar const delta_tau = tau - read_penalty_polynomial(phi_m);
+
+    std::vector<vector> g_values(phi_m.n_q_points);
+
+    for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
+    {
+      vector const n  = phi_m.get_normal_vector(q);
+      auto const   xq = phi_m.phi_dg.quadrature_point(q);
+
+      // g at the quadrature point, lane by lane
+      vector g;
+      for(unsigned int l = 0; l < dealii::VectorizedArray<Number>::size(); ++l)
+      {
+        dealii::Point<dim> p;
+        for(unsigned int d = 0; d < dim; ++d)
+          p[d] = xq[d][l];
+        for(unsigned int d = 0; d < dim; ++d)
+          g[d][l] = g_function->value(p, d);
+      }
+      g_values[q] = g;
+
+      // rhs = - (flux with u_m = 0, u_p = 2 g)
+      vector const value_flux    = 2.0 * nu * tau * g;
+      tensor const gradient_flux = 2.0 * sign * nu * dealii::outer_product(g, n);
+
+      phi_m.submit_value_and_gradient(value_flux, gradient_flux, q);
+    }
+
+    phi_m.integrate(dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+    phi_m.phi_en.distribute_local_to_global(dst_tilde); // U_tilde row only
+
+    // U_bar row: the polynomial penalty part is in rhs_add_viscous_term; add the difference
+    FaceIntegratorU phi_bar(mf_en,
+                            true,
+                            function_enrichment->get_dof_index_shadow_vector(),
+                            function_enrichment->get_quad_index(),
+                            0,
+                            1);
+    phi_bar.reinit(face);
+    for(unsigned int q = 0; q < phi_bar.n_q_points; ++q)
+      phi_bar.submit_value(2.0 * nu * delta_tau * g_values[q], q);
+    phi_bar.integrate_scatter(dealii::EvaluationFlags::values, correction_bar);
+  }
+
+  dst_tilde.compress(dealii::VectorOperation::add);
+
+  correction_bar.compress(dealii::VectorOperation::add);
+  function_enrichment->add_wall_layout_to_global_dg(correction_bar, dst_bar);
 }
 
 template<int dim, typename Number>
@@ -220,7 +549,7 @@ EnrichedMomentumOperator<dim, Number>::inner_face_loop(VectorType const & src_ba
     gather(phi_m, src_bar, src_tilde);
     gather(phi_p, src_bar, src_tilde);
 
-    scalar const tau = std::max(read_penalty(phi_m), read_penalty(phi_p)) * penalty_factor;
+    scalar const tau = std::max(read_penalty_total(phi_m), read_penalty_total(phi_p));
 
     inner_face_flux(phi_m, phi_p, tau);
 
@@ -290,7 +619,10 @@ EnrichedMomentumOperator<dim, Number>::boundary_face_loop(VectorType const & src
     phi_m.reinit(face);
     gather(phi_m, src_bar, src_tilde);
 
-    scalar const tau = read_penalty(phi_m) * penalty_factor;
+    // weak no-slip on enrichment walls: tau_IP times wall_penalty_factor (Krank thesis, Ch. 10)
+    scalar tau = read_penalty_total(phi_m);
+    if(type == BoundaryTypeU::WallEnrichment)
+      tau = tau * wall_penalty_factor;
 
     for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
     {
@@ -443,6 +775,21 @@ EnrichedMomentumOperator<dim, Number>::submit(EnrichedFaceIntegrator & phi,
 {
   // enriched side: value flux and gradient flux in one call
   phi.submit_value_and_gradient(value_flux, gradient_flux, q);
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::set_enrichment_aware_penalty(bool const flag)
+{
+  enrichment_aware_penalty = flag;
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::set_wall_penalty_factor(double const factor)
+{
+  AssertThrow(factor > 0.0, dealii::ExcMessage("Wall penalty factor must be positive."));
+  wall_penalty_factor = factor;
 }
 
 template class EnrichedMomentumOperator<2, float>;

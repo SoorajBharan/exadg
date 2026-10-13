@@ -29,7 +29,7 @@ WallLawEvaluator<dim, Number>::get_value(
   {
     SpaldingLaw spalding_law;
     scalar const initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
-    return solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
+    return solve_newton_raphson(y_plus, initial_guess, spalding_law);
   }
   else
 {
@@ -49,7 +49,7 @@ WallLawEvaluator<dim, Number>::get_gradient(
     SpaldingLaw spalding_law;
 
     scalar initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
-    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
+    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law);
 
     scalar dy_du_plus = spalding_law(u_plus).second;
 
@@ -75,7 +75,7 @@ WallLawEvaluator<dim, Number>::get_value_and_gradient(
     SpaldingLaw spalding_law;
 
     scalar initial_guess = initial_guess_u_plus(y_plus, spalding_law.kappa, spalding_law.beta);
-    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law, 10);
+    scalar u_plus = solve_newton_raphson(y_plus, initial_guess, spalding_law);
 
     scalar dy_du_plus = spalding_law(u_plus).second;
 

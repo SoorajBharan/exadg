@@ -120,10 +120,16 @@ private:
   projection_step();
 
   void
+  projection_step_enriched();
+
+  void
   rhs_projection(VectorType & rhs) const;
 
   void
   penalty_step();
+
+  void
+  penalty_step_enriched();
 
   void
   viscous_step();
@@ -152,10 +158,28 @@ private:
   void
   set_pressure(VectorType const & pressure, unsigned int const i /* t_{n-i} */) final;
 
+  void
+  debug_norms(std::string const & label) const;
+
+  // w = M^{-1} c(u), enriched (both rows, block inverse mass) or standard (U_bar only)
+  void
+  compute_convective_history_entry(BlockVectorType &       w,
+                                   BlockVectorType const & u,
+                                   double const            evaluation_time,
+                                   bool const              enriched) const;
+
   std::shared_ptr<Operator> pde_operator;
 
   // std::vector<VectorType> velocity;
   std::vector<BlockVectorType> velocity;
+
+  VectorType velocity_total;
+
+  // wall enrichment: velocity after the projection step and gamma0/dt of the last
+  // enriched viscous step (needed for the residual-based u_tau)
+  BlockVectorType velocity_projected;
+  double          mass_factor_viscous = 0.0;
+  bool            residual_available  = false;
 
   // VectorType velocity_np;
   BlockVectorType velocity_np;
@@ -166,6 +190,11 @@ private:
 
   std::vector<VectorType> velocity_dbc;
   VectorType              velocity_dbc_np;
+
+  // wall enrichment: convective term history in VELOCITY space, w_i = M^{-1} (C_bar, C_tilde)_i
+  // (can be projected onto a new enrichment space like the velocity history)
+  std::vector<BlockVectorType> convective_history;
+  BlockVectorType              convective_history_np;
 
   // required for strongly-coupled partitioned FSI
   VectorType pressure_last_iter;
@@ -188,7 +217,7 @@ private:
   // time integrator constants: extrapolation scheme
   ExtrapolationConstants extra_pressure_nbc;
 
-  bool const enrichment_coupling = true;
+  bool enrichment_coupling = true;
 };
 
 } // namespace IncNS

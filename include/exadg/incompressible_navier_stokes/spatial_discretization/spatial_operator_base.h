@@ -387,6 +387,9 @@ public:
   void
   evaluate_add_body_force_term(VectorType & dst, double const time) const;
 
+  void
+  evaluate_add_body_force_term_enriched(BlockVectorType & dst, double const time) const;
+
   // convective term
   void
   evaluate_convective_term(VectorType & dst, VectorType const & src, Number const time) const;
@@ -409,6 +412,27 @@ public:
 
   unsigned int
   apply_inverse_mass_operator(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  void
+  compute_total_velocity(VectorType & dst, BlockVectorType const & src) const;
+
+  // wall enrichment: rewrite u = (U_bar, U_tilde), computed with the previous u_tau, in the
+  // enrichment space of the current u_tau, so that it describes the same velocity (thesis Eq. 6.14).
+  // Requires precompute_schur_matrices() for the current u_tau.
+  void
+  project_enrichment_history(BlockVectorType & u) const;
+
+  // wall enrichment: convective term c(u_h) tested with v_bar (block 0) and psi v_tilde (block 1)
+  void
+  evaluate_convective_term_enriched(BlockVectorType &       dst,
+                                    BlockVectorType const & src,
+                                    double const            evaluation_time) const;
+
+  // u_tau from the residual of the enriched viscous step
+  void
+  update_friction_velocity_from_residual(BlockVectorType const & u,
+                                         BlockVectorType const & u_hat,
+                                         double const            mass_factor) const;
 
   /*
    * Update variable viscosity.
@@ -480,6 +504,9 @@ public:
 
   VectorType const &
   get_enrichment_velocity() const;
+
+  void
+  get_enrichment_component(VectorType & dst, dealii::DoFHandler<dim> const & dof_handler_out) const;
 
   VectorType const &
   get_shadow_velocity() const;

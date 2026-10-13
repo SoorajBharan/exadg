@@ -37,6 +37,7 @@
 #include <exadg/time_integration/enum_types.h>
 #include <exadg/time_integration/restart_data.h>
 #include <exadg/time_integration/solver_info_data.h>
+#include "enum_types.h"
 
 namespace ExaDG
 {
@@ -425,6 +426,20 @@ public:
   unsigned int fe_degree_enrichment;
 
   unsigned int wall_enrichment_layers;
+
+  WallShearStressComputation wall_shear_stress_computation;
+
+  double wall_shear_stress_min_fraction;
+
+  double wall_enrichment_rank_tolerance;
+  // viscous interior penalty on enriched cells:
+  //   false: polynomial tau_IP = (k+1)^2 A/V (Krank et al. 2018, Eq. (35)-(36)) -- default
+  //   true:  max(polynomial tau, enrichment tau ~ (l+1)^2 int_F |grad psi|^2 / int_K |grad psi|^2)
+  bool use_enrichment_aware_penalty;
+
+  WallBoundaryConditionViscous wall_bc_viscous;
+
+  double wall_penalty_factor_viscous;
 
   /**************************************************************************************/
   /*                                                                                    */

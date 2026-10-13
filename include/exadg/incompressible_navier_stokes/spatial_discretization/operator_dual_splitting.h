@@ -25,6 +25,8 @@
 // base class
 #include <exadg/incompressible_navier_stokes/spatial_discretization/curl_compute.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/operator_projection_methods.h>
+#include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
+#include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 
 namespace ExaDG
 {
@@ -39,6 +41,7 @@ private:
   typedef OperatorDualSplitting<dim, Number>     This;
 
   typedef typename Base::VectorType VectorType;
+  typedef typename Base::BlockVectorType BlockVectorType;
 
   typedef typename Base::scalar scalar;
   typedef typename Base::vector vector;
@@ -74,6 +77,16 @@ public:
   // rhs pressure: velocity divergence
   void
   apply_velocity_divergence_term(VectorType & dst, VectorType const & src) const;
+
+  void
+  apply_velocity_divergence_term(VectorType & dst, BlockVectorType const & src) const;
+
+  // wall enrichment: pressure gradient tested with v_bar (block 0, standard operator incl.
+  // boundary data) and with psi*v_tilde (block 1)
+  void
+  evaluate_pressure_gradient_term_enriched(BlockVectorType &  dst,
+                                           VectorType const & src,
+                                           double const       time) const;
 
   void
   rhs_velocity_divergence_term_dirichlet_bc_from_dof_vector(VectorType &       dst,

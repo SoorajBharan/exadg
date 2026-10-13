@@ -20,6 +20,10 @@
  */
 
 #include <exadg/incompressible_navier_stokes/postprocessor/postprocessor.h>
+#include <deal.II/base/quadrature_lib.h>
+#include <deal.II/dofs/dof_tools.h>
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_system.h>
 
 namespace ExaDG
 {
@@ -199,6 +203,16 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
     {
       shadow_velocity.evaluate(velocity);
       additional_fields_vtu.push_back(&shadow_velocity);
+    }
+    if(pp_data.output_data.write_total_velocity)
+    {
+      total_velocity.evaluate(velocity);
+      additional_fields_vtu.push_back(&total_velocity);
+    }
+    if(pp_data.output_data.write_enrichment_component)
+    {
+      enrichment_component.evaluate(velocity);
+      additional_fields_vtu.push_back(&enrichment_component);
     }
 
     output_generator.evaluate(velocity,
@@ -516,6 +530,65 @@ PostProcessor<dim, Number>::initialize_derived_fields()
     enrichment_velocity.reinit();
   }
 
+  if(pp_data.output_data.write_total_velocity)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write total velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    total_velocity.type        = SolutionFieldType::vector;
+    total_velocity.name        = "total_velocity";
+    total_velocity.dof_handler = &navier_stokes_operator->get_dof_handler_u();
+
+    total_velocity.initialize_vector = [&](VectorType & dst) {
+      navier_stokes_operator->initialize_vector_velocity(dst);
+    };
+
+    // src = U_bar (the velocity passed to do_postprocessing)
+    total_velocity.recompute_solution_field = [&](VectorType & dst, VectorType const & src) {
+      dealii::LinearAlgebra::distributed::BlockVector<Number> u_block(2);
+      u_block.block(0).reinit(src);
+      u_block.block(0) = src;
+      u_block.block(1).reinit(navier_stokes_operator->get_enrichment_velocity());
+      u_block.block(1) = navier_stokes_operator->get_enrichment_velocity();
+      u_block.collect_sizes();
+
+      navier_stokes_operator->compute_total_velocity(dst, u_block);
+    };
+
+    total_velocity.reinit();
+  }
+
+  if(pp_data.output_data.write_enrichment_component)
+  {
+    bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
+    AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write wall enrichment velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));
+
+    // DG Lagrange space of the output degree on equidistant nodes: DataOut evaluates at the
+    // points i/degree (n_subdivisions = degree), so the written values of \psi \tilde u_h are exact
+    unsigned int const degree = std::max(1u, pp_data.output_data.degree);
+    fe_enrichment_component   = std::make_shared<dealii::FESystem<dim>>(
+      dealii::FE_DGQArbitraryNodes<dim>(dealii::QIterated<1>(dealii::QTrapezoid<1>(), degree)), dim);
+
+    dof_handler_enrichment_component.reinit(
+      navier_stokes_operator->get_dof_handler_u().get_triangulation());
+    dof_handler_enrichment_component.distribute_dofs(*fe_enrichment_component);
+
+    enrichment_component.type              = SolutionFieldType::vector;
+    enrichment_component.name              = "enrichment_component";
+    enrichment_component.dof_handler       = &dof_handler_enrichment_component;
+
+    enrichment_component.initialize_vector = [&](VectorType & dst) {
+      dst.reinit(dof_handler_enrichment_component.locally_owned_dofs(),
+                 dealii::DoFTools::extract_locally_relevant_dofs(dof_handler_enrichment_component),
+                 mpi_comm);
+    };
+
+    enrichment_component.recompute_solution_field = [&](VectorType & dst, VectorType const & /*src*/) {
+      navier_stokes_operator->get_enrichment_component(dst, dof_handler_enrichment_component);
+    };
+
+    enrichment_component.reinit();
+  }
 }
 
 template<int dim, typename Number>
@@ -535,7 +608,9 @@ PostProcessor<dim, Number>::invalidate_derived_fields()
   friction_velocity.invalidate();
   wall_distance.invalidate();
   enrichment_velocity.invalidate();
+  enrichment_component.invalidate();
   shadow_velocity.invalidate();
+  total_velocity.invalidate();
 }
 
 template class PostProcessor<2, float>;

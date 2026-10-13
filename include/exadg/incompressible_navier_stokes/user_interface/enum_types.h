@@ -505,6 +505,18 @@ enum class SchurComplementPreconditioner
   PressureConvectionDiffusion
 };
 
+enum class WallShearStressComputation
+{
+  VelocityGradient,
+  MomentumResidual
+};
+
+enum class WallBoundaryConditionViscous
+{
+  Weak,
+  Strong
+};
+
 } // namespace IncNS
 } // namespace ExaDG
 

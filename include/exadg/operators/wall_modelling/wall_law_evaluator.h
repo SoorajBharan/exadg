@@ -16,7 +16,9 @@
 
 #include <deal.II/base/vectorization.h>
 #include <deal.II/base/tensor.h>
+#include <deal.II/base/exceptions.h>
 #include <cmath>
+#include <limits>
 
 namespace ExaDG
 {
@@ -34,7 +36,7 @@ template<typename Number>
 dealii::VectorizedArray<Number>
 initial_guess_u_plus(dealii::VectorizedArray<Number> const y_plus,
                      double kappa = 0.41,
-                     double beta = 5.2)
+                     double beta = 5.17)
 {
   using scalar = dealii::VectorizedArray<Number>;
 
@@ -57,29 +59,34 @@ solve_newton_raphson(
   unsigned int const max_iterations = 100)
 {
   using scalar = dealii::VectorizedArray<Number>;
+  Number const tol = 100 * std::numeric_limits<Number>::epsilon();
+
   scalar u_plus = initial_guess;
 
   for (unsigned int iter = 0; iter < max_iterations; ++iter)
   {
     std::pair<scalar, scalar> values = function(u_plus);
 
-    scalar sign = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than>(
-      values.second,
-      dealii::make_vectorized_array<Number>(0.0),
-      dealii::make_vectorized_array<Number>(-1.0),
-      dealii::make_vectorized_array<Number>(1.0));
+    scalar const residual = values.first - y_plus;
 
-    scalar safe_derivative = sign * std::max(std::abs(values.second), dealii::make_vectorized_array<Number>(1e-12));
+    u_plus -= residual / values.second;
 
-    u_plus -= (values.first - y_plus) / safe_derivative;
+    bool converged = true;
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      if(std::abs(residual[v]) > tol * std::max(Number(1), y_plus[v]))
+        converged = false;
+    if(converged)
+      return u_plus;
   }
+
+  AssertThrow(false, dealii::ExcMessage("Spalding's law: Newton iteration did not converge."));
   return u_plus;
 }
 
 struct SpaldingLaw
 {
   double kappa = 0.41;
-  double beta  = 5.2;
+  double beta  = 5.17;
   double expKB = std::exp(-1.0 * beta * kappa);
 
   template<typename Number>

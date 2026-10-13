@@ -79,7 +79,22 @@ public:
   update_penalty_parameter();
 
   void
+  update_enriched_penalty_parameter() const;
+
+  // false (default): polynomial tau_IP on all faces, Krank et al. (2018) Eq. (35)-(36)
+  void
+  set_enrichment_aware_penalty(bool const flag);
+
+  void
+  set_wall_penalty_factor(double const factor);
+
+  void
   vmult(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  // inhomogeneous Dirichlet data (inflow): U_tilde row, and the penalty correction of the
+  // U_bar row (enrichment-aware tau). dst_bar in GLOBAL layout.
+  void
+  rhs_add_boundary_data(VectorType & dst_bar, VectorType & dst_tilde, double const time) const;
 
 private:
   // dst_bar == nullptr: U_bar rows are not written (used in the U_bar-only pass,
@@ -119,6 +134,23 @@ private:
 
   scalar
   read_penalty(FaceIntegratorU & phi) const;
+
+  // tau of one side: max(polynomial tau, enrichment tau)
+  scalar
+  read_penalty_total(FaceIntegratorU & phi) const;
+  scalar
+  read_penalty_total(EnrichedFaceIntegrator & phi) const;
+
+  // polynomial tau of one side (as in ExaDG's viscous kernel)
+  scalar
+  read_penalty_polynomial(FaceIntegratorU & phi) const;
+  scalar
+  read_penalty_polynomial(EnrichedFaceIntegrator & phi) const;
+
+  // Pass C: nu (tau_F - tau_F^poly) [u_bar].[v_bar] on all faces of enriched cells
+  void
+  penalty_correction_loop(VectorType const & u_bar_shadow, VectorType & dst_bar_shadow) const;
+
   scalar
   read_penalty(EnrichedFaceIntegrator & phi) const;
 
@@ -139,7 +171,12 @@ private:
 
   // surface/volume per cell batch of matrix_free_en (incl. ghost batches)
   dealii::AlignedVector<scalar> penalty_parameter;
+  // enrichment tau per cell batch of matrix_free_en (incl. ghost batches); 0 on non-enriched cells
+  mutable dealii::AlignedVector<scalar> penalty_enrichment;
+  Number                        wall_penalty_factor;
   Number                        penalty_factor;
+
+  bool enrichment_aware_penalty;
 };
 
 } // namespace IncNS

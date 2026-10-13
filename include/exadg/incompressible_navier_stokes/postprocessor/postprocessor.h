@@ -35,6 +35,9 @@
 #include <exadg/postprocessor/lift_and_drag_calculation.h>
 #include <exadg/postprocessor/pressure_difference_calculation.h>
 
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/fe/fe.h>
+
 namespace ExaDG
 {
 namespace IncNS
@@ -111,7 +114,9 @@ private:
   SolutionField<dim, Number> friction_velocity;
   SolutionField<dim, Number> wall_distance;
   SolutionField<dim, Number> enrichment_velocity;
+  SolutionField<dim, Number> enrichment_component;
   SolutionField<dim, Number> shadow_velocity;
+  SolutionField<dim, Number> total_velocity;
 
   TimeControl                time_control_mean_velocity;
   SolutionField<dim, Number> mean_velocity; // velocity field averaged over time
@@ -145,6 +150,9 @@ private:
 
   // evaluate quantities along lines through the domain
   LinePlotCalculator<dim, Number> line_plot_calculator;
+
+  std::shared_ptr<dealii::FiniteElement<dim>> fe_enrichment_component;
+  dealii::DoFHandler<dim>                     dof_handler_enrichment_component;
 };
 
 

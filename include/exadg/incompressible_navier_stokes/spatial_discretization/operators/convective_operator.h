@@ -922,6 +922,23 @@ public:
   void
   evaluate_nonlinear_operator(VectorType & dst, VectorType const & src, Number const time) const;
 
+  /*
+   * Wall enrichment, convective formulation, Eulerian, u_h = U_bar + psi U_tilde.
+   *   dst_bar_enriched (shadow layout): COMPLETE rows (v_bar, c(u_h)) of enriched cells
+   *                                     (cell + all faces incl. boundary) -> overwrite
+   *   dst_bar_halo     (shadow layout): correction (v_bar, c(u_h)) - (v_bar, c(U_bar)) of halo cells
+   *                                     (faces to enriched cells)          -> add
+   *   dst_tilde        (enrichment layout): (psi v_tilde, c(u_h))
+   */
+  void
+  evaluate_nonlinear_operator_enriched(VectorType &                            dst_bar_enriched,
+                                       VectorType &                            dst_bar_halo,
+                                       VectorType &                            dst_tilde,
+                                       VectorType const &                      u_bar_shadow,
+                                       VectorType const &                      u_tilde,
+                                       FunctionEnrichment<dim, Number> const & function_enrichment,
+                                       Number const                            evaluation_time) const;
+
   void
   evaluate_nonlinear_operator_add(VectorType &       dst,
                                   VectorType const & src,

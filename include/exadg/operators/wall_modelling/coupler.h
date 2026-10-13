@@ -16,6 +16,7 @@
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/lapack_full_matrix.h>
 #include <exadg/operators/wall_modelling/function_enrichment.h>
 
 namespace ExaDG
@@ -77,6 +78,16 @@ public:
   dealii::LinearAlgebra::distributed::Vector<Number> const &
   get_enrichment_velocity() const;
 
+  void
+  set_rank_tolerance(double const tolerance);
+
+  // dst = P src (complement = false) or dst = (I - P) src (complement = true) on the enrichment
+  // DoFs of all enriched cells (dof_index_en layout); dst and src may be the same vector
+  void
+  apply_enrichment_projector(VectorType &       dst,
+                             VectorType const & src,
+                             bool const         complement) const;
+
   struct SchurData {
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde; 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> schur_inverse;
@@ -85,9 +96,9 @@ public:
 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde;
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_inverse;
-
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_safe;
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_inverse_safe;
+    // Euclidean orthogonal projector onto the well-posed enrichment coefficients,
+    // P = W (W^T W)^{-1} W^T, W = D^{-1/2} [v_m]_{lambda_m > epsilon}  (n_en x n_en, per lane)
+    std::vector<std::vector<dealii::VectorizedArray<Number>>> projector;
   };
 
   std::vector<SchurData> cell_schur_data;
@@ -95,12 +106,26 @@ public:
   std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment;
 
 private:
+  // S^+ = D^{-1/2} \sum_{\lambda_m > \epsilon} \lambda_m^{-1} v_m v_m^T D^{-1/2} per SIMD lane
+  std::vector<std::vector<scalar>>
+  compute_schur_pseudo_inverse(std::vector<std::vector<scalar>> const & S,
+                               std::vector<std::vector<scalar>> const & M_tilde_tilde,
+                               std::vector<std::vector<scalar>>       & projector,
+                               unsigned int const                       n_active_lanes,
+                               unsigned int &                           n_modes_total,
+                               unsigned int &                           n_modes_dropped,
+                               double &                                 lambda_min_kept) const;
+
   dealii::MatrixFree<dim, Number> const * matrix_free_global;
   unsigned int dof_index_global_u;
 
   unsigned int active_fe_index;
 
   Number current_scaling_factor;
+
+  double rank_tolerance;
+
+  unsigned int n_modes_dropped_last;
 };
 
 } // namespace ExaDG
