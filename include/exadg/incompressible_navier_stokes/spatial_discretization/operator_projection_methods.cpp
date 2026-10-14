@@ -93,27 +93,10 @@ OperatorProjectionMethods<dim, Number>::setup_preconditioners_and_solvers()
   setup_momentum_preconditioner();
   setup_momentum_solver();
 
+  // wall enrichment: momentum_operator contains no convective term for projection methods with
+  // wall enrichment (explicit convective term), see TimeIntBDFPressureCorrection::setup_derived()
   if(this->param.wall_enrichment_enabled)
-  {
-    enriched_momentum_operator.initialize(this->momentum_operator,
-                                          this->get_function_enrichment());
-    enriched_momentum_operator.set_enrichment_aware_penalty(this->param.use_enrichment_aware_penalty);
-    enriched_momentum_operator.set_wall_penalty_factor(this->param.wall_bc_viscous == WallBoundaryConditionViscous::Weak ? this->param.wall_penalty_factor_viscous : 1.0);
-
-    if(this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
-      setup_strong_wall_dofs();
-
-    enriched_momentum_preconditioner.initialize(*this);
-    enriched_block_jacobi_preconditioner.initialize(*this);
-    if(this->param.use_divergence_penalty or this->param.use_continuity_penalty)
-      enriched_projection_operator.initialize(*this->projection_operator,
-                                              this->get_function_enrichment(),
-                                              this->param.degree_u,
-                                              this->param.use_divergence_penalty,
-                                              this->param.use_continuity_penalty,
-                                              this->param.divergence_penalty_factor,
-                                              this->param.continuity_penalty_factor);
-  }
+    this->setup_wall_enrichment_solvers(this->momentum_operator);
 }
 
 template<int dim, typename Number>
@@ -532,11 +515,11 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
 
   // Step 7c: strong no-slip -> U_bar DoFs on enrichment walls fixed to zero (E_bar)
   VectorType const * free_bar =
-    (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &free_dofs_bar : nullptr;
+    (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &this->free_dofs_bar : nullptr;
 
-  enriched_momentum_preconditioner.set_scaling_factor_mass(scaling_factor_mass);
+  this->enriched_momentum_preconditioner.set_scaling_factor_mass(scaling_factor_mass);
   // local operator on enriched cells: s M + nu (grad, grad)
-  enriched_block_jacobi_preconditioner.update(scaling_factor_mass,
+  this->enriched_block_jacobi_preconditioner.update(scaling_factor_mass,
                                               this->param.viscosity,
                                               nullptr,
                                               free_bar);
@@ -550,7 +533,7 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
   WallDGCoupler<dim, Number> const & coupler = *this->get_wall_dg_coupler();
 
   EnrichmentConstrainedOperator<dim, Number, EnrichedMomentumOperator<dim, Number>> const
-  constrained_operator(enriched_momentum_operator, coupler, free_bar);
+  constrained_operator(this->enriched_momentum_operator, coupler, free_bar);
 
   BlockVectorType rhs_constrained(rhs);
   constrained_operator.constrain(rhs_constrained); // E B (homogeneous no-slip: fixed entries 0)
@@ -574,7 +557,7 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, enriched_block_jacobi_preconditioner);
+      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_block_jacobi_preconditioner);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
@@ -598,7 +581,7 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, enriched_block_jacobi_preconditioner);
+      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_block_jacobi_preconditioner);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
@@ -614,76 +597,6 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
   }
 
   return control.last_step();
-}
-
-/*
- * Strong no-slip on enrichment walls in the viscous step (Krank et al. 2018, App. C; thesis
- * Sec. 5.3.1).
- *
- * u_h = \bar u_h + \psi \tilde u_h with \psi = \kappa u^+(0) = 0 at the wall, so
- * u_h|_wall = \bar u_h|_wall. FE_DGQ uses Lagrange polynomials \ell_i on Gauss-Lobatto nodes,
- * \ell_i(x_d = side) = 0 for every node i not on the face x_d = side, so the trace of \bar u_h
- * depends only on the nodal values on that face. Fixing
- *   \bar U_i = 0   for all nodes i on enrichment-wall faces (all components)
- * gives u_h = 0 on the wall exactly. The remaining test functions vanish on the wall as well,
- * so all NIPG wall face terms drop out: u_h^+ = u_h^- = 0, \nabla u_h^+ = \nabla u_h^- on the
- * face terms, mass term unchanged.
- *
- * FEEvaluation stores the DoFs of FE_DGQ lexicographically per component:
- *   local index = c (k+1)^dim + \sum_d i_d (k+1)^d,
- * and face f of a hypercube has normal direction d = f / 2 and nodes i_d = (f % 2) k.
- */
-template<int dim, typename Number>
-void
-OperatorProjectionMethods<dim, Number>::setup_strong_wall_dofs()
-{
-  AssertThrow(typeid(this->get_fe_u().base_element(0)) == typeid(dealii::FE_DGQ<dim>),
-              dealii::ExcMessage("Strong wall boundary condition requires FE_DGQ (Gauss-Lobatto nodes)."));
-  AssertThrow(this->param.degree_u >= 1,
-              dealii::ExcMessage("Strong wall boundary condition requires degree_u >= 1."));
-
-  this->initialize_vector_velocity(free_dofs_bar);
-  free_dofs_bar = 1.0;
-
-  auto const & mf = this->get_matrix_free();
-  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi(mf,
-                                                    this->get_dof_index_velocity(),
-                                                    this->get_quad_index_velocity_standard());
-
-  unsigned int const n_1d     = this->param.degree_u + 1;
-  unsigned int const n_scalar = dealii::Utilities::pow(n_1d, dim);
-  auto const &       wall_ids = this->boundary_descriptor->velocity->wall_enrichment_bc;
-
-  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
-  {
-    phi.reinit(cell);
-    phi.read_dof_values_plain(free_dofs_bar);
-    for(unsigned int v = 0; v < mf.n_active_entries_per_cell_batch(cell); ++v)
-    {
-      auto const cell_it = mf.get_cell_iterator(cell, v);
-      for(auto const f : cell_it->face_indices())
-      {
-        if(not cell_it->at_boundary(f) or cell_it->has_periodic_neighbor(f))
-          continue;
-        if(wall_ids.find(cell_it->face(f)->boundary_id()) == wall_ids.end())
-          continue;
-
-        unsigned int const d       = f / 2;
-        unsigned int const index_d = (f % 2) * (n_1d - 1);
-        unsigned int const stride  = dealii::Utilities::pow(n_1d, d);
-
-        for(unsigned int i = 0; i < n_scalar; ++i)
-          if((i / stride) % n_1d == index_d)
-            for(unsigned int c = 0; c < dim; ++c)
-              phi.begin_dof_values()[c * n_scalar + i][v] = 0.0;
-      }
-    }
-    phi.set_dof_values_plain(free_dofs_bar);
-  }
-
-  double const n_fixed = double(free_dofs_bar.size()) - free_dofs_bar.l1_norm();
-  this->pcout << "  [strong wall BC] fixed U_bar DoFs: " << n_fixed << " of "
-              << free_dofs_bar.size() << std::endl;
 }
 
 template<int dim, typename Number>
@@ -762,7 +675,7 @@ OperatorProjectionMethods<dim, Number>::apply_enriched_momentum_operator_test(
   double const            scaling_factor_mass)
 {
   this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
-  enriched_momentum_operator.vmult(dst, src);
+  this->enriched_momentum_operator.vmult(dst, src);
 }
 
 template<int dim, typename Number>
@@ -774,101 +687,6 @@ OperatorProjectionMethods<dim, Number>::apply_momentum_operator_test(
 {
   this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
   this->momentum_operator.apply(dst, src);
-}
-
-template<int dim, typename Number>
-void
-OperatorProjectionMethods<dim, Number>::rhs_add_enriched_viscous_boundary_data(VectorType & dst_bar,
-                                                                              VectorType & dst_tilde,
-                                                                              double const time) const
-{
-  enriched_momentum_operator.update_enriched_penalty_parameter();
-  enriched_momentum_operator.rhs_add_boundary_data(dst_bar, dst_tilde, time);
-}
-
-template<int dim, typename Number>
-void
-OperatorProjectionMethods<dim, Number>::update_projection_operator_enriched(
-  VectorType const & velocity_total,
-  double const       time_step_size)
-{
-  // block(0): ExaDG's projection operator, tau from the full velocity
-  this->update_projection_operator(velocity_total, time_step_size);
-  // coupling terms: same tau formulas on matrix_free_en
-  enriched_projection_operator.update(velocity_total, time_step_size);
-}
-
-template<int dim, typename Number>
-unsigned int
-OperatorProjectionMethods<dim, Number>::solve_projection_enriched(BlockVectorType &       dst,
-                                                                  BlockVectorType const & rhs)
-{
-  // operator = M + dt (D + C) ~ M  ->  block inverse mass is a good preconditioner
-  enriched_momentum_preconditioner.set_scaling_factor_mass(1.0);
-
-  // local operator on enriched cells: M + dt tau_D (div, div)
-  dealii::AlignedVector<dealii::VectorizedArray<Number>> const tau_divergence_times_dt =
-    enriched_projection_operator.get_tau_divergence_times_dt();
-  enriched_block_jacobi_preconditioner.update(
-    1.0,
-    0.0,
-    enriched_projection_operator.divergence_penalty_used() ? &tau_divergence_times_dt : nullptr);
-
-  // The enriched block system is far worse conditioned than ExaDG's projection operator
-  // (small Schur complement), so a relative tolerance of 1e-12 is not reachable in double
-  // precision. Use at most the tolerance of the momentum step.
-  double const rel_tol = std::max(this->param.solver_data_projection.rel_tol,
-                                  this->param.solver_data_momentum.rel_tol);
-
-  dealii::ReductionControl control(this->param.solver_data_projection.max_iter,
-                                   this->param.solver_data_projection.abs_tol,
-                                   rel_tol);
-
-  // Galerkin problem on the well-posed enrichment space (Step 5b):
-  //   K_c X = E B,  X_0 <- E X_0,  K_c = E K E + diag(0, I - P),  E = diag(I, P)
-  WallDGCoupler<dim, Number> const & coupler = *this->get_wall_dg_coupler();
-
-  BlockVectorType rhs_constrained(rhs);
-  coupler.apply_enrichment_projector(rhs_constrained.block(1), rhs.block(1), false); // E B
-  coupler.apply_enrichment_projector(dst.block(1), dst.block(1), false);             // E X_0
-
-  EnrichmentConstrainedOperator<dim, Number, EnrichedProjectionOperator<dim, Number>> const
-    constrained_operator(enriched_projection_operator, coupler);                     // K_c
-
-  /************************************DEBUG************************************/
-  // ---- DEBUG 1: symmetry  x.(A y) == y.(A x) -------------------------------------
-  {
-    BlockVectorType x(rhs), y(rhs), Ax(rhs), Ay(rhs);
-    for(unsigned int b = 0; b < 2; ++b)
-      for(unsigned int i = 0; i < x.block(b).locally_owned_size(); ++i)
-      {
-        x.block(b).local_element(i) = std::sin(1.0 + 3.0 * i + b);
-        y.block(b).local_element(i) = std::cos(2.0 + 7.0 * i + b);
-      }
-    constrained_operator.vmult(Ax, x);
-    constrained_operator.vmult(Ay, y);
-    double const xAy = x * Ay, yAx = y * Ax;
-    this->pcout << "  [penalty debug] x.Ay = " << xAy << "  y.Ax = " << yAx
-                << "  rel. asymmetry = " << std::abs(xAy - yAx) / std::abs(xAy) << std::endl;
-  }
-
-  // ---- DEBUG 2: convergence, without aborting the run ------------------------------
-  dealii::SolverCG<BlockVectorType> solver(control);
-  try
-  {
-    solver.solve(constrained_operator, dst, rhs_constrained, enriched_block_jacobi_preconditioner);
-  }
-  catch(dealii::SolverControl::NoConvergence const &)
-  {
-    this->pcout << "  [penalty debug] NOT converged" << std::endl;
-  }
-  this->pcout << "  [penalty debug] initial residual = " << control.initial_value()
-              << "   final residual = " << control.last_value()
-              << "   reduction = " << control.last_value() / control.initial_value()
-              << "   iterations = " << control.last_step() << std::endl;
-  /*****************************************************************************/
-
-  return control.last_step();
 }
 
 template class OperatorProjectionMethods<2, float>;

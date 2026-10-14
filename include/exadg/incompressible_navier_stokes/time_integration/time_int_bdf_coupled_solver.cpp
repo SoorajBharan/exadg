@@ -44,7 +44,8 @@ TimeIntBDFCoupled<dim, Number>::TimeIntBDFCoupled(
     iterations({0, {0, 0}}),
     iterations_penalty({0, 0}),
     scaling_factor_continuity(1.0),
-    characteristic_element_length(1.0)
+    characteristic_element_length(1.0),
+    velocity_enrichment(this->order)
 {
 }
 
@@ -58,6 +59,45 @@ TimeIntBDFCoupled<dim, Number>::allocate_vectors()
   for(unsigned int i = 0; i < solution.size(); ++i)
     pde_operator->initialize_block_vector_velocity_pressure(solution[i]);
   pde_operator->initialize_block_vector_velocity_pressure(solution_np);
+
+  // wall enrichment
+  if(this->param.wall_enrichment_enabled)
+  {
+    for(unsigned int i = 0; i < velocity_enrichment.size(); ++i)
+      pde_operator->initialize_vector_enrichment(velocity_enrichment[i]);
+    pde_operator->initialize_vector_enrichment(velocity_enrichment_np);
+
+    initialize_velocity_enriched(velocity_momentum);
+    initialize_velocity_enriched(velocity_momentum_hat);
+
+    if(this->param.convective_problem() and
+       this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+    {
+      convective_history.resize(this->vec_convective_term.size());
+      for(unsigned int i = 0; i < convective_history.size(); ++i)
+        initialize_velocity_enriched(convective_history[i]);
+      initialize_velocity_enriched(convective_history_np);
+    }
+  }
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFCoupled<dim, Number>::initialize_velocity_enriched(BlockVectorType & velocity) const
+{
+  velocity.reinit(2);
+  pde_operator->initialize_vector_velocity(velocity.block(0));
+  pde_operator->initialize_vector_enrichment(velocity.block(1));
+  velocity.collect_sizes();
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFCoupled<dim, Number>::get_velocity_enriched(BlockVectorType &  velocity,
+                                                      unsigned int const i) const
+{
+  velocity.block(0) = solution[i].block(0);
+  velocity.block(1) = velocity_enrichment[i];
 }
 
 template<int dim, typename Number>
@@ -70,6 +110,10 @@ TimeIntBDFCoupled<dim, Number>::initialize_current_solution()
   pde_operator->prescribe_initial_conditions(solution[0].block(0),
                                              solution[0].block(1),
                                              this->get_time());
+
+  // wall enrichment: the initial condition is a polynomial velocity
+  if(this->param.wall_enrichment_enabled)
+    velocity_enrichment[0] = 0.0;
 }
 
 template<int dim, typename Number>
@@ -85,6 +129,9 @@ TimeIntBDFCoupled<dim, Number>::initialize_former_multistep_dof_vectors()
     pde_operator->prescribe_initial_conditions(solution[i].block(0),
                                                solution[i].block(1),
                                                this->get_previous_time(i));
+
+    if(this->param.wall_enrichment_enabled)
+      velocity_enrichment[i] = 0.0;
   }
 }
 
@@ -97,6 +144,27 @@ TimeIntBDFCoupled<dim, Number>::setup_derived()
   // scaling factor continuity equation:
   // Calculate characteristic element length h
   characteristic_element_length = pde_operator->get_characteristic_element_length();
+
+  // wall enrichment: initial convective history (U_tilde = 0 at the start -> standard form)
+  if(this->param.wall_enrichment_enabled and this->param.convective_problem() and
+     this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  {
+    BlockVectorType velocity;
+    initialize_velocity_enriched(velocity);
+
+    get_velocity_enriched(velocity, 0);
+    compute_convective_history_entry(convective_history[0], velocity, this->get_time(), false);
+
+    if(this->param.start_with_low_order == false)
+      for(unsigned int i = 1; i < convective_history.size(); ++i)
+      {
+        get_velocity_enriched(velocity, i);
+        compute_convective_history_entry(convective_history[i],
+                                         velocity,
+                                         this->get_previous_time(i),
+                                         false);
+      }
+  }
 }
 
 template<int dim, typename Number>
@@ -162,6 +230,31 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
   dealii::Timer timer;
   timer.restart();
 
+  // wall enrichment: the coupled (U_bar, U_tilde, p) system is solved from time step 2 on, when
+  // u_tau has been computed from a velocity field; before, U_tilde = 0 and the polynomial
+  // solver is used
+  enrichment_coupling = this->param.wall_enrichment_enabled and this->get_time_step_number() > 1;
+
+  if(enrichment_coupling)
+  {
+    pde_operator->precompute_schur_matrices();
+
+    // rewrite the history, computed with the previous u_tau, in the current enrichment space
+    // (thesis Eq. 6.14)
+    BlockVectorType velocity;
+    initialize_velocity_enriched(velocity);
+    for(unsigned int i = 0; i < solution.size(); ++i)
+    {
+      get_velocity_enriched(velocity, i);
+      pde_operator->project_enrichment_history(velocity);
+      solution[i].block(0)   = velocity.block(0);
+      velocity_enrichment[i] = velocity.block(1);
+    }
+
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      pde_operator->project_enrichment_history(convective_history[i]);
+  }
+
   // extrapolate old solutions to obtain a good initial guess for the solver, or
   // to update the viscosity model or the penalty parameters based on this
   // extrapolated solution
@@ -170,9 +263,20 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
     solution_np.equ(this->extra.get_beta(0), solution[0]);
     for(unsigned int i = 1; i < solution.size(); ++i)
       solution_np.add(this->extra.get_beta(i), solution[i]);
+
+    if(this->param.wall_enrichment_enabled)
+    {
+      velocity_enrichment_np.equ(this->extra.get_beta(0), velocity_enrichment[0]);
+      for(unsigned int i = 1; i < velocity_enrichment.size(); ++i)
+        velocity_enrichment_np.add(this->extra.get_beta(i), velocity_enrichment[i]);
+    }
   }
   else if(this->param.apply_penalty_terms_in_postprocessing_step == true)
   {
+    AssertThrow(not this->param.wall_enrichment_enabled,
+                dealii::ExcMessage("Wall enrichment: the coupled solver requires extrapolation "
+                                   "of the initial guess."));
+
     solution_np = solution_last_iter;
   }
 
@@ -221,116 +325,119 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
   // calculate auxiliary variable p^{*} = 1/scaling_factor * p
   solution_np.block(1) *= 1.0 / scaling_factor_continuity;
 
-  if(this->param.wall_enrichment_enabled)
-  {
-    pde_operator->precompute_schur_matrices();
-  }
-
   bool const update_preconditioner =
     this->param.update_preconditioner_coupled and
     ((this->time_step_number - 1) % this->param.update_preconditioner_coupled_every_time_steps ==
      0);
 
-  // calculate Sum_i (alpha_i/dt * u_i) and store
-  VectorType sum_alphai_ui(solution[0].block(0));
-  sum_alphai_ui.equ(this->bdf.get_alpha(0) / this->get_time_step_size(), solution[0].block(0));
-  for(unsigned int i = 1; i < solution.size(); ++i)
+  if(enrichment_coupling)
   {
-    sum_alphai_ui.add(this->bdf.get_alpha(i) / this->get_time_step_size(), solution[i].block(0));
+    // (U_bar, U_tilde, p^*) coupled system, u_h = \bar{u}_h + \psi \tilde{u}_h
+    solve_coupled_system_enriched();
   }
-
-  // Update the convective term when using an ALE formulation
-  if(this->param.convective_problem() and
-     this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  else
   {
-    if(this->param.ale_formulation)
+    // calculate Sum_i (alpha_i/dt * u_i) and store
+    VectorType sum_alphai_ui(solution[0].block(0));
+    sum_alphai_ui.equ(this->bdf.get_alpha(0) / this->get_time_step_size(), solution[0].block(0));
+    for(unsigned int i = 1; i < solution.size(); ++i)
     {
-      // evaluate convective term for all previous times since the mesh has been updated
-      for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
+      sum_alphai_ui.add(this->bdf.get_alpha(i) / this->get_time_step_size(), solution[i].block(0));
+    }
+
+    // Update the convective term when using an ALE formulation
+    if(this->param.convective_problem() and
+       this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+    {
+      if(this->param.ale_formulation)
       {
-        // in a general setting, we only know the boundary conditions at time t_{n+1}
-        pde_operator->evaluate_convective_term(this->vec_convective_term[i],
-                                               solution[i].block(0),
-                                               this->get_next_time());
+        // evaluate convective term for all previous times since the mesh has been updated
+        for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
+        {
+          // in a general setting, we only know the boundary conditions at time t_{n+1}
+          pde_operator->evaluate_convective_term(this->vec_convective_term[i],
+                                                 solution[i].block(0),
+                                                 this->get_next_time());
+        }
       }
     }
-  }
 
-  if(this->param.nonlinear_problem_has_to_be_solved())
-  {
-    VectorType rhs(sum_alphai_ui);
-    pde_operator->apply_mass_operator(rhs, sum_alphai_ui);
-    if(this->param.right_hand_side)
-      pde_operator->evaluate_add_body_force_term(rhs, this->get_next_time());
-
-    // Add the convective term to the right-hand side of the equations
-    // if the convective term is treated explicitly (additive decomposition):
-    // add extrapolation of convective term to the rhs (-> minus sign!)
-    if(this->param.convective_problem() and
-       this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+    if(this->param.nonlinear_problem_has_to_be_solved())
     {
-      for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
-        rhs.add(-this->extra.get_beta(i), this->vec_convective_term[i]);
+      VectorType rhs(sum_alphai_ui);
+      pde_operator->apply_mass_operator(rhs, sum_alphai_ui);
+      if(this->param.right_hand_side)
+        pde_operator->evaluate_add_body_force_term(rhs, this->get_next_time());
+
+      // Add the convective term to the right-hand side of the equations
+      // if the convective term is treated explicitly (additive decomposition):
+      // add extrapolation of convective term to the rhs (-> minus sign!)
+      if(this->param.convective_problem() and
+         this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+      {
+        for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
+          rhs.add(-this->extra.get_beta(i), this->vec_convective_term[i]);
+      }
+
+      // Newton solver
+      auto const iter =
+        pde_operator->solve_nonlinear_problem(solution_np,
+                                              rhs,
+                                              update_preconditioner,
+                                              this->get_next_time(),
+                                              this->get_scaling_factor_time_derivative_term());
+
+      iterations.first += 1;
+      std::get<0>(iterations.second) += std::get<0>(iter);
+      std::get<1>(iterations.second) += std::get<1>(iter);
+
+      // write output
+      if(this->print_solver_info() and not(this->is_test))
+      {
+        this->pcout << std::endl << "Solve nonlinear problem:";
+        print_solver_info_nonlinear(this->pcout,
+                                    std::get<0>(iter),
+                                    std::get<1>(iter),
+                                    timer.wall_time());
+      }
     }
-
-    // Newton solver
-    auto const iter =
-      pde_operator->solve_nonlinear_problem(solution_np,
-                                            rhs,
-                                            update_preconditioner,
-                                            this->get_next_time(),
-                                            this->get_scaling_factor_time_derivative_term());
-
-    iterations.first += 1;
-    std::get<0>(iterations.second) += std::get<0>(iter);
-    std::get<1>(iterations.second) += std::get<1>(iter);
-
-    // write output
-    if(this->print_solver_info() and not(this->is_test))
+    else // linear problem
     {
-      this->pcout << std::endl << "Solve nonlinear problem:";
-      print_solver_info_nonlinear(this->pcout,
-                                  std::get<0>(iter),
-                                  std::get<1>(iter),
-                                  timer.wall_time());
-    }
-  }
-  else // linear problem
-  {
-    BlockVectorType rhs_vector;
-    pde_operator->initialize_block_vector_velocity_pressure(rhs_vector);
+      BlockVectorType rhs_vector;
+      pde_operator->initialize_block_vector_velocity_pressure(rhs_vector);
 
-    // calculate rhs vector for the Stokes problem, i.e., the convective term is neglected in this
-    // step
-    pde_operator->rhs_stokes_problem(rhs_vector, this->get_next_time());
+      // calculate rhs vector for the Stokes problem, i.e., the convective term is neglected in this
+      // step
+      pde_operator->rhs_stokes_problem(rhs_vector, this->get_next_time());
 
-    // Add the convective term to the right-hand side of the equations
-    // if the convective term is treated explicitly (additive decomposition):
-    // add extrapolation of convective term to the rhs (-> minus sign!)
-    if(this->param.convective_problem() and
-       this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
-    {
-      for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
-        rhs_vector.block(0).add(-this->extra.get_beta(i), this->vec_convective_term[i]);
-    }
+      // Add the convective term to the right-hand side of the equations
+      // if the convective term is treated explicitly (additive decomposition):
+      // add extrapolation of convective term to the rhs (-> minus sign!)
+      if(this->param.convective_problem() and
+         this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+      {
+        for(unsigned int i = 0; i < this->vec_convective_term.size(); ++i)
+          rhs_vector.block(0).add(-this->extra.get_beta(i), this->vec_convective_term[i]);
+      }
 
-    // apply mass operator to sum_alphai_ui and add to rhs vector
-    pde_operator->apply_mass_operator_add(rhs_vector.block(0), sum_alphai_ui);
+      // apply mass operator to sum_alphai_ui and add to rhs vector
+      pde_operator->apply_mass_operator_add(rhs_vector.block(0), sum_alphai_ui);
 
-    unsigned int const n_iter =
-      pde_operator->solve_linear_stokes_problem(solution_np,
-                                                rhs_vector,
-                                                update_preconditioner,
-                                                this->get_scaling_factor_time_derivative_term());
+      unsigned int const n_iter =
+        pde_operator->solve_linear_stokes_problem(solution_np,
+                                                  rhs_vector,
+                                                  update_preconditioner,
+                                                  this->get_scaling_factor_time_derivative_term());
 
-    iterations.first += 1;
-    std::get<1>(iterations.second) += n_iter;
+      iterations.first += 1;
+      std::get<1>(iterations.second) += n_iter;
 
-    // write output
-    if(this->print_solver_info() and not(this->is_test))
-    {
-      this->pcout << std::endl << "Solve linear problem:";
-      print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+      // write output
+      if(this->print_solver_info() and not(this->is_test))
+      {
+        this->pcout << std::endl << "Solve linear problem:";
+        print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+      }
     }
   }
 
@@ -356,10 +463,23 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
     {
       timer.restart();
 
-      penalty_step();
+      if(enrichment_coupling)
+        penalty_step_enriched();
+      else
+        penalty_step();
 
       this->timer_tree->insert({"Timeloop", "Penalty step"}, timer.wall_time());
     }
+  }
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    BlockVectorType velocity;
+    initialize_velocity_enriched(velocity);
+    velocity.block(0) = solution_np.block(0);
+    velocity.block(1) = velocity_enrichment_np;
+
+    pde_operator->compute_total_velocity(this->velocity_total, velocity);
   }
 
   timer.restart();
@@ -370,13 +490,244 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
   {
     if(this->param.ale_formulation == false) // Eulerian case
     {
-      pde_operator->evaluate_convective_term(this->convective_term_np,
-                                             solution_np.block(0),
-                                             this->get_next_time());
+      if(this->param.wall_enrichment_enabled)
+      {
+        // w_np = M^{-1} C(u_h); enriched form once the coupling is active in this step
+        BlockVectorType velocity;
+        initialize_velocity_enriched(velocity);
+        velocity.block(0) = solution_np.block(0);
+        velocity.block(1) = velocity_enrichment_np;
+
+        compute_convective_history_entry(convective_history_np,
+                                         velocity,
+                                         this->get_next_time(),
+                                         enrichment_coupling);
+      }
+      else
+      {
+        pde_operator->evaluate_convective_term(this->convective_term_np,
+                                               solution_np.block(0),
+                                               this->get_next_time());
+      }
     }
   }
 
   this->timer_tree->insert({"Timeloop", "Coupled system"}, timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFCoupled<dim, Number>::solve_coupled_system_enriched()
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  /*
+   * BDF time step for X = (U_bar, U_tilde, p^*), u_h = \bar{u}_h + \psi \tilde{u}_h: for all
+   * v_h = \bar{v}_h + \psi \tilde{v}_h and q_h
+   *
+   *   \gamma_0/\Delta t (v_h, u_h) + a_\nu(v_h, u_h) [+ c(v_h; u_h)] + s_c G(v_h; p^*)
+   *     = (v_h, \sum_i \alpha_i/\Delta t u_h^{n-i} [- \sum_i \beta_i w^{n-i}]) + (v_h, f)
+   *   - s_c D(q_h; u_h) = 0,
+   *
+   * with the convective term implicit (Newton) or explicit (w = M^{-1} C(u_h), velocity space),
+   * all terms tested with \bar{v}_h and \psi \tilde{v}_h. Initial guess: extrapolation.
+   */
+  double const scaling_factor_mass = this->get_scaling_factor_time_derivative_term();
+
+  BlockVectorType solution_enriched;
+  pde_operator->initialize_block_vector_velocity_pressure_enriched(solution_enriched);
+  solution_enriched.block(0) = solution_np.block(0);
+  solution_enriched.block(1) = velocity_enrichment_np;
+  solution_enriched.block(2) = solution_np.block(1); // p^*
+
+  // velocity-space part: \sum_i \alpha_i/\Delta t u_h^{n-i} - \sum_i \beta_i w^{n-i}
+  BlockVectorType velocity_rhs, velocity_i;
+  initialize_velocity_enriched(velocity_rhs);
+  initialize_velocity_enriched(velocity_i);
+  velocity_rhs = 0.0;
+  for(unsigned int i = 0; i < solution.size(); ++i)
+  {
+    get_velocity_enriched(velocity_i, i);
+    velocity_rhs.add(this->bdf.get_alpha(i) / this->get_time_step_size(), velocity_i);
+  }
+
+  if(this->param.convective_problem() and
+     this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      velocity_rhs.add(-this->extra.get_beta(i), convective_history[i]);
+  }
+
+  // M (velocity-space part), block mass matrix with the current psi
+  BlockVectorType rhs_velocity;
+  initialize_velocity_enriched(rhs_velocity);
+  pde_operator->apply_mass_operator(rhs_velocity, velocity_rhs);
+
+  if(this->param.nonlinear_problem_has_to_be_solved())
+  {
+    // body force, tested with \bar{v}_h and \psi \tilde{v}_h
+    if(this->param.right_hand_side)
+      pde_operator->evaluate_add_body_force_term_enriched(rhs_velocity, this->get_next_time());
+
+    auto const iter = pde_operator->solve_nonlinear_problem_enriched(solution_enriched,
+                                                                     rhs_velocity,
+                                                                     this->get_next_time(),
+                                                                     scaling_factor_mass);
+
+    iterations.first += 1;
+    std::get<0>(iterations.second) += std::get<0>(iter);
+    std::get<1>(iterations.second) += std::get<1>(iter);
+
+    if(this->print_solver_info() and not(this->is_test))
+    {
+      this->pcout << std::endl << "Solve nonlinear problem (enriched):";
+      print_solver_info_nonlinear(this->pcout,
+                                  std::get<0>(iter),
+                                  std::get<1>(iter),
+                                  timer.wall_time());
+    }
+  }
+  else // linear problem
+  {
+    // boundary data and body force (all rows), plus the time derivative history
+    BlockVectorType rhs;
+    pde_operator->initialize_block_vector_velocity_pressure_enriched(rhs);
+    pde_operator->rhs_stokes_problem_enriched(rhs, this->get_next_time());
+    rhs.block(0).add(1.0, rhs_velocity.block(0));
+    rhs.block(1).add(1.0, rhs_velocity.block(1));
+
+    unsigned int const n_iter =
+      pde_operator->solve_linear_stokes_problem_enriched(solution_enriched,
+                                                         rhs,
+                                                         scaling_factor_mass);
+
+    iterations.first += 1;
+    std::get<1>(iterations.second) += n_iter;
+
+    if(this->print_solver_info() and not(this->is_test))
+    {
+      this->pcout << std::endl << "Solve linear problem (enriched):";
+      print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+    }
+  }
+
+  solution_np.block(0)   = solution_enriched.block(0);
+  velocity_enrichment_np = solution_enriched.block(1);
+  solution_np.block(1)   = solution_enriched.block(2); // p^*
+
+  /*
+   * residual-based friction velocity: s (N, u_h - \hat{u}) + \nu (grad N, grad u_h) with
+   *   s M \hat{u} = M (velocity-space part) + F - c(u_h) [implicit] - s_c G(p^*),
+   * i.e., the momentum equation is s M (u_h - \hat{u}) + K u_h = 0 (+ boundary data)
+   */
+  if(this->param.wall_shear_stress_computation == WallShearStressComputation::MomentumResidual)
+  {
+    velocity_momentum.block(0) = solution_enriched.block(0);
+    velocity_momentum.block(1) = solution_enriched.block(1);
+
+    BlockVectorType term;
+    initialize_velocity_enriched(term);
+
+    pde_operator->apply_mass_operator(rhs_velocity, velocity_rhs);
+    if(this->param.right_hand_side)
+      pde_operator->evaluate_add_body_force_term_enriched(rhs_velocity, this->get_next_time());
+
+    if(this->param.implicit_convective_problem())
+    {
+      pde_operator->evaluate_convective_term_enriched(term,
+                                                      velocity_momentum,
+                                                      this->get_next_time());
+      rhs_velocity.add(-1.0, term);
+    }
+
+    pde_operator->evaluate_pressure_gradient_term_enriched(term,
+                                                           solution_enriched.block(2),
+                                                           this->get_next_time(),
+                                                           1.0 / scaling_factor_continuity);
+    rhs_velocity.add(-scaling_factor_continuity, term);
+
+    pde_operator->apply_inverse_mass_operator(velocity_momentum_hat, rhs_velocity);
+    velocity_momentum_hat *= 1.0 / scaling_factor_mass;
+
+    mass_factor_momentum = scaling_factor_mass;
+    residual_available   = true;
+  }
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFCoupled<dim, Number>::penalty_step_enriched()
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  /*
+   * Penalty step for u_h = \bar{u}_h + \psi \tilde{u}_h: for all v_h in V_h^{enr}
+   *   (v_h, u) + \Delta t (div-div and continuity penalty terms) = (v_h, u_h^{n+1}),
+   * penalty parameters from the extrapolated full velocity.
+   */
+  BlockVectorType velocity;
+  initialize_velocity_enriched(velocity);
+  velocity.block(0) = solution_np.block(0);
+  velocity.block(1) = velocity_enrichment_np;
+
+  BlockVectorType rhs;
+  initialize_velocity_enriched(rhs);
+  pde_operator->apply_mass_operator(rhs, velocity);
+
+  VectorType velocity_extrapolated, velocity_total_i;
+  pde_operator->initialize_vector_velocity(velocity_extrapolated);
+  pde_operator->initialize_vector_velocity(velocity_total_i);
+
+  BlockVectorType velocity_i;
+  initialize_velocity_enriched(velocity_i);
+  for(unsigned int i = 0; i < solution.size(); ++i)
+  {
+    get_velocity_enriched(velocity_i, i);
+    pde_operator->compute_total_velocity(velocity_total_i, velocity_i);
+    velocity_extrapolated.add(this->extra.get_beta(i), velocity_total_i);
+  }
+
+  pde_operator->update_projection_operator_enriched(velocity_extrapolated,
+                                                    this->get_time_step_size());
+
+  unsigned int const n_iter = pde_operator->solve_projection_enriched(velocity, rhs);
+
+  solution_np.block(0)   = velocity.block(0);
+  velocity_enrichment_np = velocity.block(1);
+
+  iterations_penalty.first += 1;
+  iterations_penalty.second += n_iter;
+
+  if(this->print_solver_info() and not(this->is_test))
+  {
+    this->pcout << std::endl << "Solve penalty step (enriched):";
+    print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+  }
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFCoupled<dim, Number>::compute_convective_history_entry(BlockVectorType &       w,
+                                                                 BlockVectorType const & u,
+                                                                 double const evaluation_time,
+                                                                 bool const   enriched) const
+{
+  BlockVectorType c(w);
+  if(enriched)
+  {
+    // c = (C_bar, C_tilde)(u_h), w = M^{-1} c with the block mass matrix
+    pde_operator->evaluate_convective_term_enriched(c, u, evaluation_time);
+    pde_operator->apply_inverse_mass_operator(w, c);
+  }
+  else
+  {
+    // polynomial space, U_tilde = 0
+    pde_operator->evaluate_convective_term(c.block(0), u.block(0), evaluation_time);
+    pde_operator->apply_inverse_mass_operator(w.block(0), c.block(0));
+    w.block(1) = 0.0;
+  }
 }
 
 template<int dim, typename Number>
@@ -512,7 +863,33 @@ TimeIntBDFCoupled<dim, Number>::prepare_vectors_for_next_timestep()
 
   if(this->param.wall_enrichment_enabled)
   {
-    this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
+    push_back(velocity_enrichment);
+    velocity_enrichment[0].swap(velocity_enrichment_np);
+
+    if(this->param.convective_problem() and
+       this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+    {
+      push_back(convective_history);
+      convective_history[0].swap(convective_history_np);
+    }
+
+    // U_tilde for postprocessing and the enrichment operators
+    auto const & function_enrichment = pde_operator->get_function_enrichment();
+    function_enrichment->enrichment_velocity = velocity_enrichment[0];
+    function_enrichment->enrichment_velocity.update_ghost_values();
+
+    // friction velocity for the next time step (psi still the one used in this time step)
+    bool const residual_based_wss =
+      this->param.wall_shear_stress_computation == WallShearStressComputation::MomentumResidual;
+
+    if(residual_based_wss and residual_available)
+      pde_operator->update_friction_velocity_from_residual(velocity_momentum,
+                                                           velocity_momentum_hat,
+                                                           mass_factor_momentum);
+    else // no enriched step yet (time step 1) or gradient-based wall shear stress
+      pde_operator->update_wall_enrichment_vectors(solution[0].block(0));
+
+    residual_available = false;
   }
 }
 

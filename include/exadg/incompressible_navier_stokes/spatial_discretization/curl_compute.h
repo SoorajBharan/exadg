@@ -64,6 +64,43 @@ struct CurlCompute<2, FEEval>
   }
 };
 
+template<int dim, typename Number>
+dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>
+vorticity_from_gradient(dealii::Tensor<2, dim, dealii::VectorizedArray<Number>>
+                        const & G)
+{
+  dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> omega;
+  if constexpr(dim == 2)
+  {
+    omega[0] = G[1][0] - G[0][1];
+  }
+  else
+{
+    omega[0] = G[2][1] - G[1][2];
+    omega[1] = G[0][2] - G[2][0];
+    omega[2] = G[1][0] - G[0][1];
+  }
+  return omega;
+}
+
+template<int dim, typename Number>
+dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>
+curl_of_vorticity_from_gradient(dealii::Tensor<2, dim,
+                                dealii::VectorizedArray<Number>> const & G)
+{
+  dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> curl;
+  if constexpr(dim == 2)
+  {
+    curl[0] = G[0][1];
+    curl[1] = -G[0][0];
+  }
+  else
+{
+    curl = vorticity_from_gradient<dim, Number>(G);
+  }
+  return curl;
+}
+
 } // namespace IncNS
 } // namespace ExaDG
 

@@ -226,10 +226,11 @@ Parameters::Parameters()
     wall_enrichment_layers(1),
     wall_shear_stress_computation(WallShearStressComputation::VelocityGradient),
     wall_shear_stress_min_fraction(0.02),
-    wall_enrichment_rank_tolerance(1.e-8),
+    wall_enrichment_rank_tolerance(1.e-6),
     use_enrichment_aware_penalty(false),
     wall_bc_viscous(WallBoundaryConditionViscous::Weak),
-    wall_penalty_factor_viscous(1.0)
+    wall_penalty_factor_viscous(1.0),
+    enrichment_quadrature_points(15)
 {
 }
 
@@ -581,6 +582,9 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
     AssertThrow(not(wall_bc_viscous == WallBoundaryConditionViscous::Strong and
                     wall_shear_stress_computation == WallShearStressComputation::MomentumResidual),
                 dealii::ExcMessage("Strong wall BC requires WallShearStressComputation::VelocityGradient."));
+
+    AssertThrow(enrichment_quadrature_points > 0,
+                dealii::ExcMessage("enrichment_quadrature_points must be positive."));
   }
 }
 
@@ -1350,6 +1354,9 @@ Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout
   print_parameter(pcout, "Wall boundary condition viscous step", wall_bc_viscous);
   if(wall_bc_viscous == WallBoundaryConditionViscous::Weak)
     print_parameter(pcout, "Wall penalty factor viscous step", wall_penalty_factor_viscous);
+  print_parameter(pcout, "Number of 1D quadrature points on enriched cells",
+                  enrichment_quadrature_points);
+
 }
 
 bool

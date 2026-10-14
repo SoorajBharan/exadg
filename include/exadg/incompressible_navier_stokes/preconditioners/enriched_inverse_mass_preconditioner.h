@@ -16,12 +16,15 @@
 
 #include <deal.II/lac/la_parallel_block_vector.h>
 
-#include <exadg/incompressible_navier_stokes/spatial_discretization/spatial_operator_base.h>
-
 namespace ExaDG
 {
 namespace IncNS
 {
+// forward declaration: SpatialOperatorBase owns this preconditioner (spatial_operator_base.h
+// includes this header), it is only accessed through a pointer in the member functions below
+template<int dim, typename Number>
+class SpatialOperatorBase;
+
 /*
  * Preconditioner for operators of the form K = s*M + (...) acting on the wall-enriched
  * velocity (block(0) = U_bar, block(1) = U_tilde):

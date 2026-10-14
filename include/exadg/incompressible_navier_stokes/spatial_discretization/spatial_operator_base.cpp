@@ -21,7 +21,11 @@
 
 // deal.II
 #include "spatial_operator_base.h"
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
 #include <deal.II/numerics/vector_tools.h>
+
+#include <typeinfo>
 
 // ExaDG
 #include <exadg/grid/mapping_dof_vector.h>
@@ -413,6 +417,7 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
                                     boundary_descriptor->velocity,
                                     grid->periodic_face_pairs,
                                     get_quad_index_velocity_standard(),
+                                    param.enrichment_quadrature_points,
                                     param.wall_enrichment_layers);
 
     wall_dg_coupler->initialize(*matrix_free, 
@@ -1364,6 +1369,71 @@ SpatialOperatorBase<dim, Number>::compute_vorticity(VectorType & dst, VectorType
 {
   vorticity_calculator.compute_vorticity(dst, src);
   this->apply_inverse_mass_operator(dst, dst);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::compute_vorticity(BlockVectorType &       dst,
+                                                    BlockVectorType const & src)
+const
+{ 
+  typedef dealii::FEEvaluation<dim, -1, 0, dim, Number>      CellIntegratorU;
+  typedef FEEnrichedEvaluation<dim, Number, CellIntegratorU>
+  EnrichedCellIntegrator;
+
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  BlockVectorType rhs(dst);
+  rhs.block(0).zero_out_ghost_values();
+  rhs.block(1).zero_out_ghost_values();
+
+  // (1)
+  vorticity_calculator.compute_vorticity(rhs.block(0), src.block(0));
+
+  // (2)
+  VectorType u_bar_shadow, rhs_bar_shadow;
+  mf_en.initialize_dof_vector(u_bar_shadow,
+                              function_enrichment->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(rhs_bar_shadow,
+                              function_enrichment->get_dof_index_shadow_vector());
+  function_enrichment->copy_global_dg_to_wall_layout(src.block(0), u_bar_shadow);
+  u_bar_shadow.update_ghost_values();
+  src.block(1).update_ghost_values();
+
+  rhs.block(1) = 0.0;
+
+  EnrichedCellIntegrator phi(mf_en, *function_enrichment);
+  for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+  {
+    if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+      continue;
+
+    phi.reinit(cell);
+    // values are needed as well: grad u_h contains U_tilde (x) grad psi
+    phi.gather_evaluate(u_bar_shadow,
+                        src.block(1),
+                        dealii::EvaluationFlags::values |
+                        dealii::EvaluationFlags::gradients);
+
+    for(unsigned int q = 0; q < phi.n_q_points; ++q)
+      phi.submit_value(vorticity_from_gradient<dim, Number>(phi.get_gradient(q)), q);
+
+    phi.integrate(dealii::EvaluationFlags::values);
+    phi.phi_dg.distribute_local_to_global(rhs_bar_shadow);
+    phi.phi_en.distribute_local_to_global(rhs.block(1));
+  }
+
+  rhs_bar_shadow.compress(dealii::VectorOperation::add);
+  rhs.block(1).compress(dealii::VectorOperation::add);
+  src.block(1).zero_out_ghost_values();
+
+  // enriched cells: overwrite with the complete rows
+  function_enrichment->copy_wall_layout_to_global_dg(rhs_bar_shadow,
+                                                     rhs.block(0));
+
+
+  // (3)
+  this->apply_inverse_mass_operator(dst, rhs);
 }
 
 template<int dim, typename Number>
@@ -2363,6 +2433,652 @@ SpatialOperatorBase<dim, Number>::evaluate_add_body_force_term_enriched(BlockVec
 
   dst.block(0) += f_bar;
   dst.block(1) += f_tilde;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_linearized_convective_term_enriched(
+  BlockVectorType &       dst,
+  BlockVectorType const & delta_u,
+  BlockVectorType const & linearization,
+  double const            time) const
+{
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
+
+  // (1) ExaDG's linearized operator c'(W_bar) delta_U_bar, whole domain (the linearization point
+  //     W_bar of the ConvectiveKernel is set by the caller)
+  convective_operator.set_time(time);
+  convective_operator.apply(dst.block(0), delta_u.block(0));
+
+  // (2) enriched rows (complete), halo corrections and U_tilde rows on matrix_free_en
+  VectorType w_bar_shadow, delta_u_bar_shadow, bar_enriched_shadow, bar_halo_shadow;
+  unsigned int const dof_shadow = function_enrichment->get_dof_index_shadow_vector();
+  mf_en.initialize_dof_vector(w_bar_shadow, dof_shadow);
+  mf_en.initialize_dof_vector(delta_u_bar_shadow, dof_shadow);
+  mf_en.initialize_dof_vector(bar_enriched_shadow, dof_shadow);
+  mf_en.initialize_dof_vector(bar_halo_shadow, dof_shadow);
+
+  function_enrichment->copy_global_dg_to_wall_layout(linearization.block(0), w_bar_shadow);
+  function_enrichment->copy_global_dg_to_wall_layout(delta_u.block(0), delta_u_bar_shadow);
+  w_bar_shadow.update_ghost_values();
+  delta_u_bar_shadow.update_ghost_values();
+  linearization.block(1).update_ghost_values();
+  delta_u.block(1).update_ghost_values();
+
+  convective_operator.apply_linearized_operator_enriched(bar_enriched_shadow,
+                                                         bar_halo_shadow,
+                                                         dst.block(1),
+                                                         w_bar_shadow,
+                                                         linearization.block(1),
+                                                         delta_u_bar_shadow,
+                                                         delta_u.block(1),
+                                                         *function_enrichment,
+                                                         time);
+
+  linearization.block(1).zero_out_ghost_values();
+  delta_u.block(1).zero_out_ghost_values();
+
+  // enriched cells: OVERWRITE with the complete rows (same quadrature as the U_tilde rows)
+  function_enrichment->copy_wall_layout_to_global_dg(bar_enriched_shadow, dst.block(0));
+  // halo cells: ADD the correction of their faces to enriched cells
+  function_enrichment->add_wall_layout_to_global_dg(bar_halo_shadow, dst.block(0));
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::setup_wall_enrichment_solvers(
+  MomentumOperator<dim, Number> const & momentum_operator_mass_viscous)
+{
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("setup_wall_enrichment_solvers() requires wall enrichment."));
+
+  // mass + viscous operator for (U_bar, U_tilde); the viscous wall condition is weak (Nitsche,
+  // penalty scaled by wall_penalty_factor_viscous) or strong (fixed U_bar DoFs, E_bar)
+  enriched_momentum_operator.initialize(momentum_operator_mass_viscous, function_enrichment);
+  enriched_momentum_operator.set_enrichment_aware_penalty(param.use_enrichment_aware_penalty);
+  enriched_momentum_operator.set_wall_penalty_factor(
+    param.wall_bc_viscous == WallBoundaryConditionViscous::Weak ? param.wall_penalty_factor_viscous :
+                                                                  1.0);
+
+  if(param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
+    setup_strong_wall_dofs();
+
+  enriched_momentum_preconditioner.initialize(*this);
+  enriched_block_jacobi_preconditioner.initialize(*this);
+
+  // penalty step operator (requires ExaDG's projection operator for the U_bar-U_bar block)
+  if(param.use_divergence_penalty or param.use_continuity_penalty)
+  {
+    AssertThrow(projection_operator.get() != nullptr,
+                dealii::ExcMessage("Wall enrichment: the projection operator has to be set up "
+                                   "before the enriched penalty operator."));
+
+    enriched_projection_operator.initialize(*projection_operator,
+                                            function_enrichment,
+                                            param.degree_u,
+                                            param.use_divergence_penalty,
+                                            param.use_continuity_penalty,
+                                            param.divergence_penalty_factor,
+                                            param.continuity_penalty_factor);
+  }
+}
+
+/*
+ * Strong no-slip on enrichment walls in the viscous step (Krank et al. 2018, App. C; thesis
+ * Sec. 5.3.1).
+ *
+ * u_h = \bar u_h + \psi \tilde u_h with \psi = \kappa u^+(0) = 0 at the wall, so
+ * u_h|_wall = \bar u_h|_wall. FE_DGQ uses Lagrange polynomials \ell_i on Gauss-Lobatto nodes,
+ * \ell_i(x_d = side) = 0 for every node i not on the face x_d = side, so the trace of \bar u_h
+ * depends only on the nodal values on that face. Fixing
+ *   \bar U_i = 0   for all nodes i on enrichment-wall faces (all components)
+ * gives u_h = 0 on the wall exactly. The remaining test functions vanish on the wall as well,
+ * so all NIPG wall face terms drop out: u_h^+ = u_h^- = 0, \nabla u_h^+ = \nabla u_h^- on the
+ * face terms, mass term unchanged.
+ *
+ * FEEvaluation stores the DoFs of FE_DGQ lexicographically per component:
+ *   local index = c (k+1)^dim + \sum_d i_d (k+1)^d,
+ * and face f of a hypercube has normal direction d = f / 2 and nodes i_d = (f % 2) k.
+ */
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::setup_strong_wall_dofs()
+{
+  AssertThrow(typeid(this->get_fe_u().base_element(0)) == typeid(dealii::FE_DGQ<dim>),
+              dealii::ExcMessage("Strong wall boundary condition requires FE_DGQ (Gauss-Lobatto nodes)."));
+  AssertThrow(this->param.degree_u >= 1,
+              dealii::ExcMessage("Strong wall boundary condition requires degree_u >= 1."));
+
+  this->initialize_vector_velocity(free_dofs_bar);
+  free_dofs_bar = 1.0;
+
+  auto const & mf = this->get_matrix_free();
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi(mf,
+                                                    this->get_dof_index_velocity(),
+                                                    this->get_quad_index_velocity_standard());
+
+  unsigned int const n_1d     = this->param.degree_u + 1;
+  unsigned int const n_scalar = dealii::Utilities::pow(n_1d, dim);
+  auto const &       wall_ids = this->boundary_descriptor->velocity->wall_enrichment_bc;
+
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+  {
+    phi.reinit(cell);
+    phi.read_dof_values_plain(free_dofs_bar);
+    for(unsigned int v = 0; v < mf.n_active_entries_per_cell_batch(cell); ++v)
+    {
+      auto const cell_it = mf.get_cell_iterator(cell, v);
+      for(auto const f : cell_it->face_indices())
+      {
+        if(not cell_it->at_boundary(f) or cell_it->has_periodic_neighbor(f))
+          continue;
+        if(wall_ids.find(cell_it->face(f)->boundary_id()) == wall_ids.end())
+          continue;
+
+        unsigned int const d       = f / 2;
+        unsigned int const index_d = (f % 2) * (n_1d - 1);
+        unsigned int const stride  = dealii::Utilities::pow(n_1d, d);
+
+        for(unsigned int i = 0; i < n_scalar; ++i)
+          if((i / stride) % n_1d == index_d)
+            for(unsigned int c = 0; c < dim; ++c)
+              phi.begin_dof_values()[c * n_scalar + i][v] = 0.0;
+      }
+    }
+    phi.set_dof_values_plain(free_dofs_bar);
+  }
+
+  double const n_fixed = double(free_dofs_bar.size()) - free_dofs_bar.l1_norm();
+  this->pcout << "  [strong wall BC] fixed U_bar DoFs: " << n_fixed << " of "
+              << free_dofs_bar.size() << std::endl;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::rhs_add_enriched_viscous_boundary_data(VectorType & dst_bar,
+                                                                              VectorType & dst_tilde,
+                                                                              double const time) const
+{
+  enriched_momentum_operator.update_enriched_penalty_parameter();
+  enriched_momentum_operator.rhs_add_boundary_data(dst_bar, dst_tilde, time);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::update_projection_operator_enriched(
+  VectorType const & velocity_total,
+  double const       time_step_size)
+{
+  // block(0): ExaDG's projection operator, tau from the full velocity
+  this->update_projection_operator(velocity_total, time_step_size);
+  // coupling terms: same tau formulas on matrix_free_en
+  enriched_projection_operator.update(velocity_total, time_step_size);
+}
+
+template<int dim, typename Number>
+unsigned int
+SpatialOperatorBase<dim, Number>::solve_projection_enriched(BlockVectorType &       dst,
+                                                                  BlockVectorType const & rhs)
+{
+  // operator = M + dt (D + C) ~ M  ->  block inverse mass is a good preconditioner
+  enriched_momentum_preconditioner.set_scaling_factor_mass(1.0);
+
+  // local operator on enriched cells: M + dt tau_D (div, div)
+  dealii::AlignedVector<dealii::VectorizedArray<Number>> const tau_divergence_times_dt =
+    enriched_projection_operator.get_tau_divergence_times_dt();
+  enriched_block_jacobi_preconditioner.update(
+    1.0,
+    0.0,
+    enriched_projection_operator.divergence_penalty_used() ? &tau_divergence_times_dt : nullptr);
+
+  // The enriched block system is far worse conditioned than ExaDG's projection operator
+  // (small Schur complement), so a relative tolerance of 1e-12 is not reachable in double
+  // precision. Use at most the tolerance of the momentum step.
+  double const rel_tol = std::max(this->param.solver_data_projection.rel_tol,
+                                  this->param.solver_data_momentum.rel_tol);
+
+  dealii::ReductionControl control(this->param.solver_data_projection.max_iter,
+                                   this->param.solver_data_projection.abs_tol,
+                                   rel_tol);
+
+  // Galerkin problem on the well-posed enrichment space (Step 5b):
+  //   K_c X = E B,  X_0 <- E X_0,  K_c = E K E + diag(0, I - P),  E = diag(I, P)
+  WallDGCoupler<dim, Number> const & coupler = *this->get_wall_dg_coupler();
+
+  BlockVectorType rhs_constrained(rhs);
+  coupler.apply_enrichment_projector(rhs_constrained.block(1), rhs.block(1), false); // E B
+  coupler.apply_enrichment_projector(dst.block(1), dst.block(1), false);             // E X_0
+
+  EnrichmentConstrainedOperator<dim, Number, EnrichedProjectionOperator<dim, Number>> const
+    constrained_operator(enriched_projection_operator, coupler);                     // K_c
+
+  /************************************DEBUG************************************/
+  // ---- DEBUG 1: symmetry  x.(A y) == y.(A x) -------------------------------------
+  {
+    BlockVectorType x(rhs), y(rhs), Ax(rhs), Ay(rhs);
+    for(unsigned int b = 0; b < 2; ++b)
+      for(unsigned int i = 0; i < x.block(b).locally_owned_size(); ++i)
+      {
+        x.block(b).local_element(i) = std::sin(1.0 + 3.0 * i + b);
+        y.block(b).local_element(i) = std::cos(2.0 + 7.0 * i + b);
+      }
+    constrained_operator.vmult(Ax, x);
+    constrained_operator.vmult(Ay, y);
+    double const xAy = x * Ay, yAx = y * Ax;
+    this->pcout << "  [penalty debug] x.Ay = " << xAy << "  y.Ax = " << yAx
+                << "  rel. asymmetry = " << std::abs(xAy - yAx) / std::abs(xAy) << std::endl;
+  }
+
+  // ---- DEBUG 2: convergence, without aborting the run ------------------------------
+  dealii::SolverCG<BlockVectorType> solver(control);
+  try
+  {
+    solver.solve(constrained_operator, dst, rhs_constrained, enriched_block_jacobi_preconditioner);
+  }
+  catch(dealii::SolverControl::NoConvergence const &)
+  {
+    this->pcout << "  [penalty debug] NOT converged" << std::endl;
+  }
+  this->pcout << "  [penalty debug] initial residual = " << control.initial_value()
+              << "   final residual = " << control.last_value()
+              << "   reduction = " << control.last_value() / control.initial_value()
+              << "   iterations = " << control.last_step() << std::endl;
+  /*****************************************************************************/
+
+  return control.last_step();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_velocity_divergence_term(VectorType &       dst,
+                                                                   VectorType const & src) const
+{
+  this->divergence_operator.apply(dst, src);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_velocity_divergence_term(
+  VectorType &            dst,
+  BlockVectorType const & src) const
+{
+  // (1) D(q, U_bar) on the whole domain: existing ExaDG operator
+  this->divergence_operator.apply(dst, src.block(0));
+
+  AssertThrow(this->param.divu_integrated_by_parts and
+                this->param.divu_formulation == FormulationVelocityDivergenceTerm::Weak,
+              dealii::ExcMessage("Enriched divergence: only weak formulation with "
+                                 "integration by parts is implemented."));
+
+  // (2) D(q, psi*U_tilde) on enriched cells and faces touching them
+  auto const & fe_en = this->get_function_enrichment();
+  auto const & mf_en = *fe_en->get_matrix_free();
+
+  unsigned int const dof_p = fe_en->get_dof_index_shadow_pressure();
+  unsigned int const quad  = fe_en->get_quad_index();
+
+  typedef dealii::FEEvaluation<dim, -1, 0, dim, Number>     CellIntU;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, dim, Number> FaceIntU;
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number>       CellIntP;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, 1, Number>   FaceIntP;
+
+  // U_bar = 0, so the enriched evaluators return exactly psi * U_tilde
+  VectorType zero_bar;
+  mf_en.initialize_dof_vector(zero_bar, fe_en->get_dof_index_shadow_vector());
+  zero_bar.update_ghost_values();
+  src.block(1).update_ghost_values();
+
+  VectorType correction_p;
+  mf_en.initialize_dof_vector(correction_p, dof_p);
+
+  // --- cell term: -int grad(q) . (psi U_tilde) ------------------------------
+  {
+    FEEnrichedEvaluation<dim, Number, CellIntU> phi_u(mf_en, *fe_en);
+    CellIntP                                    phi_p(mf_en, dof_p, quad, 0, 1);
+
+    for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+    {
+      if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+        continue;
+
+      phi_u.reinit(cell);
+      phi_u.gather_evaluate(zero_bar, src.block(1), dealii::EvaluationFlags::values);
+
+      phi_p.reinit(cell);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q)
+        phi_p.submit_gradient(-phi_u.get_value(q), q);
+      phi_p.integrate(dealii::EvaluationFlags::gradients);
+      phi_p.distribute_local_to_global(correction_p);
+    }
+  }
+
+  // psi*U_tilde on one side of a face; zero if that side is not enriched (halo)
+  auto const eval_side = [&](bool const interior, unsigned int const fe_index, unsigned int const face,
+                             unsigned int const n_q, std::vector<dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>> & vals) {
+    vals.assign(n_q, dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>());
+    if(fe_index != 1)
+      return;
+    FEFaceEnrichedEvaluation<dim, Number, FaceIntU> phi(mf_en, *fe_en, interior, 1);
+    phi.reinit(face);
+    phi.gather_evaluate(zero_bar, src.block(1), dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < n_q; ++q)
+      vals[q] = phi.get_value(q);
+  };
+
+  std::vector<dealii::Tensor<1, dim, dealii::VectorizedArray<Number>>> u_m, u_p;
+
+  // --- interior faces: int [q] * avg(psi U_tilde) . n ------------------------
+  for(unsigned int face = 0; face < mf_en.n_inner_face_batches(); ++face)
+  {
+    auto const         range = std::make_pair(face, face + 1);
+    unsigned int const fe_m  = mf_en.get_face_active_fe_index(range, true);
+    unsigned int const fe_p  = mf_en.get_face_active_fe_index(range, false);
+
+    if(fe_m != 1 and fe_p != 1)
+      continue;
+
+    AssertThrow(fe_m != 0 and fe_p != 0,
+                dealii::ExcMessage("Enriched cell has a neighbour outside the halo layer."));
+
+    FaceIntP p_m(mf_en, true, dof_p, quad, 0, fe_m);
+    FaceIntP p_p(mf_en, false, dof_p, quad, 0, fe_p);
+    p_m.reinit(face);
+    p_p.reinit(face);
+
+    eval_side(true, fe_m, face, p_m.n_q_points, u_m);
+    eval_side(false, fe_p, face, p_m.n_q_points, u_p);
+
+    for(unsigned int q = 0; q < p_m.n_q_points; ++q)
+    {
+      auto const flux = (0.5 * (u_m[q] + u_p[q])) * p_m.get_normal_vector(q);
+      p_m.submit_value(flux, q);
+      p_p.submit_value(-flux, q);
+    }
+
+    p_m.integrate(dealii::EvaluationFlags::values);
+    p_m.distribute_local_to_global(correction_p);
+    p_p.integrate(dealii::EvaluationFlags::values);
+    p_p.distribute_local_to_global(correction_p);
+  }
+
+  // --- boundary faces (homogeneous part) -------------------------------------
+  //   wall: psi = 0 -> nothing;  Dirichlet: avg = 0 -> nothing;  Neumann: u_m . n
+  unsigned int const b_begin = mf_en.n_inner_face_batches();
+  unsigned int const b_end   = b_begin + mf_en.n_boundary_face_batches();
+
+  for(unsigned int face = b_begin; face < b_end; ++face)
+  {
+    if(mf_en.get_face_active_fe_index(std::make_pair(face, face + 1), true) != 1)
+      continue;
+
+    BoundaryTypeU const type =
+      this->boundary_descriptor->velocity->get_boundary_type(mf_en.get_boundary_id(face));
+
+    if(type != BoundaryTypeU::Neumann)
+      continue; // WallEnrichment, Dirichlet, ...: homogeneous contribution of psi*U_tilde is zero
+
+    FaceIntP p_m(mf_en, true, dof_p, quad, 0, 1);
+    p_m.reinit(face);
+    eval_side(true, 1, face, p_m.n_q_points, u_m);
+
+    for(unsigned int q = 0; q < p_m.n_q_points; ++q)
+      p_m.submit_value(u_m[q] * p_m.get_normal_vector(q), q);
+
+    p_m.integrate(dealii::EvaluationFlags::values);
+    p_m.distribute_local_to_global(correction_p);
+  }
+
+  correction_p.compress(dealii::VectorOperation::add);
+
+  // (3) add onto the global pressure-space result
+  fe_en->add_wall_layout_to_global_pressure(correction_p, dst);
+
+  src.block(1).zero_out_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::evaluate_pressure_gradient_term_enriched(
+  BlockVectorType &  dst,
+  VectorType const & src,
+  double const       time,
+  double const       inverse_scaling_factor_pressure) const
+{
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
+
+  // (1) U_bar rows: existing ExaDG operator, full (incl. boundary data)
+  this->evaluate_pressure_gradient_term(dst.block(0), src, time);
+
+  // (2) U_tilde rows: test functions psi * v_tilde, incl. boundary data
+  pressure_gradient_term_enriched_tilde_rows(
+    dst.block(1), src, time, true /* include_boundary_data */, inverse_scaling_factor_pressure);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_pressure_gradient_term_enriched(BlockVectorType &  dst,
+                                                                       VectorType const & src) const
+{
+  dst.block(0).zero_out_ghost_values();
+  dst.block(1).zero_out_ghost_values();
+
+  // (1) U_bar rows: existing ExaDG operator, homogeneous
+  gradient_operator.apply(dst.block(0), src);
+
+  // (2) U_tilde rows: test functions psi * v_tilde, homogeneous
+  pressure_gradient_term_enriched_tilde_rows(
+    dst.block(1), src, 0.0 /* time */, false /* include_boundary_data */, 1.0);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::pressure_gradient_term_enriched_tilde_rows(
+  VectorType &       dst_tilde,
+  VectorType const & src,
+  double const       time,
+  bool const         include_boundary_data,
+  double const       inverse_scaling_factor_pressure) const
+{
+  AssertThrow(this->param.gradp_integrated_by_parts and
+                this->param.gradp_formulation == FormulationPressureGradientTerm::Weak and
+                this->param.gradp_use_boundary_data,
+              dealii::ExcMessage("Enriched pressure gradient: only weak formulation with "
+                                 "integration by parts and boundary data is implemented."));
+
+  dst_tilde.zero_out_ghost_values();
+
+  auto const & fe_en = this->get_function_enrichment();
+  auto const & mf_en = *fe_en->get_matrix_free();
+
+  unsigned int const dof_p = fe_en->get_dof_index_shadow_pressure();
+  unsigned int const quad  = fe_en->get_quad_index();
+
+  typedef dealii::FEEvaluation<dim, -1, 0, dim, Number>     CellIntU;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, dim, Number> FaceIntU;
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number>       CellIntP;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, 1, Number>   FaceIntP;
+  typedef dealii::VectorizedArray<Number>                   scalar;
+
+  // pressure in shadow layout (enriched + halo cells)
+  VectorType & p_shadow = fe_en->shadow_pressure;
+  fe_en->copy_global_pressure_to_wall_layout(src, p_shadow);
+  p_shadow.update_ghost_values();
+
+  // zero velocity vectors: the enriched evaluators are only used as test functions,
+  // gather_evaluate is needed so that y and u_tau (-> psi) are evaluated
+  VectorType zero_bar, zero_tilde;
+  mf_en.initialize_dof_vector(zero_bar, fe_en->get_dof_index_shadow_vector());
+  mf_en.initialize_dof_vector(zero_tilde, fe_en->get_dof_index_en());
+  zero_bar.update_ghost_values();
+  zero_tilde.update_ghost_values();
+
+  dst_tilde = 0.0;
+
+  // --- cell term: -int p div(psi v_tilde) ------------------------------------
+  {
+    FEEnrichedEvaluation<dim, Number, CellIntU> phi_u(mf_en, *fe_en);
+    CellIntP                                    phi_p(mf_en, dof_p, quad, 0, 1);
+
+    for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+    {
+      if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+        continue;
+
+      phi_u.reinit(cell);
+      phi_u.gather_evaluate(zero_bar, zero_tilde, dealii::EvaluationFlags::values);
+
+      phi_p.reinit(cell);
+      phi_p.gather_evaluate(p_shadow, dealii::EvaluationFlags::gradients);
+
+      // strong form: int psi v_tilde . grad(p)   (no grad(psi), no large p values)
+      for(unsigned int q = 0; q < phi_u.n_q_points; ++q)
+        phi_u.submit_value(phi_p.get_gradient(q), q); // submit_value tests with v_bar and psi v_tilde
+
+      phi_u.integrate(dealii::EvaluationFlags::values);
+
+      phi_u.phi_en.distribute_local_to_global(dst_tilde); // U_tilde rows only
+    }
+  }
+
+  // test one side of a face with psi*v_tilde: submits value_n[q] (a vector) and scatters
+  auto const test_side = [&](bool const interior, unsigned int const face,
+                             std::vector<dealii::Tensor<1, dim, scalar>> const & value_n) {
+    FEFaceEnrichedEvaluation<dim, Number, FaceIntU> phi(mf_en, *fe_en, interior, 1);
+    phi.reinit(face);
+    phi.gather_evaluate(zero_bar, zero_tilde, dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < phi.n_q_points; ++q)
+      phi.submit_value(value_n[q], q);
+    phi.integrate(dealii::EvaluationFlags::values);
+    phi.phi_en.distribute_local_to_global(dst_tilde);
+  };
+
+  std::vector<dealii::Tensor<1, dim, scalar>> flux_n_m, flux_n_p;
+
+  // --- interior faces: int {p} [psi v_tilde] . n -----------------------------
+  for(unsigned int face = 0; face < mf_en.n_inner_face_batches(); ++face)
+  {
+    auto const         range = std::make_pair(face, face + 1);
+    unsigned int const fe_m  = mf_en.get_face_active_fe_index(range, true);
+    unsigned int const fe_p  = mf_en.get_face_active_fe_index(range, false);
+
+    if(fe_m != 1 and fe_p != 1)
+      continue;
+
+    AssertThrow(fe_m != 0 and fe_p != 0,
+                dealii::ExcMessage("Enriched cell has a neighbour outside the halo layer."));
+
+    FaceIntP pm(mf_en, true, dof_p, quad, 0, fe_m);
+    FaceIntP pp(mf_en, false, dof_p, quad, 0, fe_p);
+    pm.reinit(face);
+    pp.reinit(face);
+    pm.gather_evaluate(p_shadow, dealii::EvaluationFlags::values);
+    pp.gather_evaluate(p_shadow, dealii::EvaluationFlags::values);
+
+    flux_n_m.resize(pm.n_q_points);
+    flux_n_p.resize(pm.n_q_points);
+    // strong form: - int psi v_tilde . n (p_side - {p}); for both sides this is
+    //   - 0.5 (p_m - p_p) psi v_tilde . n_m   (only the JUMP of p enters)
+    for(unsigned int q = 0; q < pm.n_q_points; ++q)
+    {
+      scalar const jump = pm.get_value(q) - pp.get_value(q);
+      flux_n_m[q]       = -0.5 * jump * pm.get_normal_vector(q);
+      flux_n_p[q]       = flux_n_m[q];
+    }
+
+    if(fe_m == 1)
+      test_side(true, face, flux_n_m);
+    if(fe_p == 1)
+      test_side(false, face, flux_n_p);
+  }
+
+  // --- boundary faces -----------------------------------------------------------
+  //   WallEnrichment: psi = 0 -> nothing
+  //   velocity Dirichlet (inflow)  = pressure Neumann   -> p* = p_m
+  //   velocity Neumann  (outflow)  = pressure Dirichlet -> p* = g_p(x,t)
+  unsigned int const b_begin = mf_en.n_inner_face_batches();
+  unsigned int const b_end   = b_begin + mf_en.n_boundary_face_batches();
+
+  for(unsigned int face = b_begin; face < b_end; ++face)
+  {
+    if(mf_en.get_face_active_fe_index(std::make_pair(face, face + 1), true) != 1)
+      continue;
+
+    auto const          boundary_id = mf_en.get_boundary_id(face);
+    BoundaryTypeU const type        = this->boundary_descriptor->velocity->get_boundary_type(boundary_id);
+
+    if(type == BoundaryTypeU::WallEnrichment)
+      continue;
+
+    FaceIntP pm(mf_en, true, dof_p, quad, 0, 1);
+    pm.reinit(face);
+    pm.gather_evaluate(p_shadow, dealii::EvaluationFlags::values);
+
+    flux_n_m.resize(pm.n_q_points);
+
+    if(type == BoundaryTypeU::Dirichlet)
+    {
+      // inflow = pressure Neumann: p* = p_m -> no contribution in the strong form
+      continue;
+    }
+    else if(type == BoundaryTypeU::Neumann)
+    {
+      // outflow = pressure Dirichlet: p* = g_p -> - int psi v_tilde . n (p_m - g_p),
+      // g_p scaled like in GradientOperator (homogeneous operator: g_p = 0)
+      auto const & g_p = this->boundary_descriptor->pressure->dirichlet_bc.find(boundary_id)->second;
+      g_p->set_time(time);
+
+      for(unsigned int q = 0; q < pm.n_q_points; ++q)
+      {
+        scalar g = dealii::make_vectorized_array<Number>(0.0);
+        if(include_boundary_data)
+        {
+          auto const xq = pm.quadrature_point(q);
+          for(unsigned int l = 0; l < scalar::size(); ++l)
+          {
+            dealii::Point<dim> pt;
+            for(unsigned int d = 0; d < dim; ++d)
+              pt[d] = xq[d][l];
+            g[l] = inverse_scaling_factor_pressure * g_p->value(pt);
+          }
+        }
+        flux_n_m[q] = -(pm.get_value(q) - g) * pm.get_normal_vector(q);
+      }
+    }
+    else
+    {
+      AssertThrow(false,
+                  dealii::ExcMessage("Enriched pressure gradient: boundary type not supported "
+                                     "on enriched cells."));
+    }
+
+    test_side(true, face, flux_n_m);
+  }
+
+  dst_tilde.compress(dealii::VectorOperation::add);
+  p_shadow.zero_out_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::evaluate_velocity_divergence_term(
+  VectorType &            dst,
+  BlockVectorType const & src,
+  double const            time) const
+{
+  // homogeneous part: D(q, \bar{u}_h + \psi \tilde{u}_h); the \psi \tilde{u}_h part has no
+  // boundary contribution on walls (\psi = 0) and velocity Dirichlet boundaries ({u} = g_u)
+  apply_velocity_divergence_term(dst, src);
+
+  // inhomogeneous part (velocity Dirichlet data g_u(t)):
+  // DivergenceOperator::evaluate = apply - rhs, rhs() contains -(boundary data term)
+  VectorType rhs_boundary_data;
+  rhs_boundary_data.reinit(dst, false);
+  this->divergence_operator.rhs(rhs_boundary_data, time);
+  dst.add(-1.0, rhs_boundary_data);
 }
 
 template class SpatialOperatorBase<2, float>;

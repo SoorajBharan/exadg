@@ -56,8 +56,18 @@
 #include <exadg/time_integration/interpolate.h>
 
 #include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
+#include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 #include <exadg/operators/wall_modelling/function_enrichment.h>
 #include <exadg/operators/wall_modelling/coupler.h>
+#include <exadg/incompressible_navier_stokes/spatial_discretization/curl_compute.h>
+
+// wall enrichment: solver components shared by all solution approaches (dual splitting,
+// pressure correction, coupled solver)
+#include <exadg/incompressible_navier_stokes/preconditioners/enriched_block_jacobi_preconditioner.h>
+#include <exadg/incompressible_navier_stokes/preconditioners/enriched_inverse_mass_preconditioner.h>
+#include <exadg/incompressible_navier_stokes/spatial_discretization/operators/enriched_momentum_operator.h>
+#include <exadg/incompressible_navier_stokes/spatial_discretization/operators/enriched_projection_operator.h>
+#include <exadg/incompressible_navier_stokes/spatial_discretization/operators/enrichment_constrained_operator.h>
 
 namespace ExaDG
 {
@@ -342,6 +352,9 @@ public:
   void
   compute_vorticity(VectorType & dst, VectorType const & src) const;
 
+  void
+  compute_vorticity(BlockVectorType & dst, BlockVectorType const & src) const;
+
   // divergence
   void
   compute_divergence(VectorType & dst, VectorType const & src) const;
@@ -433,6 +446,72 @@ public:
   update_friction_velocity_from_residual(BlockVectorType const & u,
                                          BlockVectorType const & u_hat,
                                          double const            mass_factor) const;
+
+  /*
+   * Wall enrichment (Krank et al. 2018): operators for u_h = \bar{u}_h + \psi \tilde{u}_h shared
+   * by all solution approaches. Velocity block vectors: block(0) = U_bar (global DG layout),
+   * block(1) = U_tilde (enrichment layout).
+   */
+
+  // homogeneous velocity divergence operator D(q, u)
+  void
+  apply_velocity_divergence_term(VectorType & dst, VectorType const & src) const;
+
+  // homogeneous velocity divergence operator D(q, \bar{u}_h + \psi \tilde{u}_h)
+  void
+  apply_velocity_divergence_term(VectorType & dst, BlockVectorType const & src) const;
+
+  // full velocity divergence operator (incl. velocity Dirichlet data g_u(t)) for u_h
+  void
+  evaluate_velocity_divergence_term(VectorType &            dst,
+                                    BlockVectorType const & src,
+                                    double const            time) const;
+
+  /*
+   * Pressure gradient G(v_h; p) tested with \bar{v}_h (block 0, ExaDG's operator) and with
+   * \psi \tilde{v}_h (block 1).
+   *   evaluate_...: full operator incl. pressure Dirichlet data g_p(t) (outflow boundaries);
+   *                 inverse_scaling_factor_pressure scales g_p as in GradientOperator (coupled
+   *                 solver with scaled continuity equation, p = s_c p^*)
+   *   apply_...:    homogeneous operator (g_p = 0), e.g. matrix-vector product of the
+   *                 saddle point system
+   */
+  void
+  evaluate_pressure_gradient_term_enriched(BlockVectorType &  dst,
+                                           VectorType const & src,
+                                           double const       time,
+                                           double const       inverse_scaling_factor_pressure = 1.0) const;
+
+  void
+  apply_pressure_gradient_term_enriched(BlockVectorType & dst, VectorType const & src) const;
+
+  /*
+   * Linearized convective operator c'(w_h) delta_u_h for u_h = \bar{u}_h + \psi \tilde{u}_h
+   * (Newton). The linearization point of ExaDG's ConvectiveKernel has to be set to
+   * linearization.block(0) beforehand (set_velocity_ptr()), it is used for the U_bar rows of the
+   * non-enriched cells.
+   */
+  void
+  apply_linearized_convective_term_enriched(BlockVectorType &       dst,
+                                            BlockVectorType const & delta_u,
+                                            BlockVectorType const & linearization,
+                                            double const            time) const;
+
+  // inhomogeneous boundary data (inflow) of the enriched viscous operator: U_tilde row, and the
+  // penalty correction of the U_bar row (enrichment-aware tau)
+  void
+  rhs_add_enriched_viscous_boundary_data(VectorType & dst_bar,
+                                         VectorType & dst_tilde,
+                                         double const time) const;
+
+  // penalty step (div-div and continuity penalty) for the wall-enriched velocity:
+  // tau from the full velocity, Galerkin solve on the well-posed enrichment space
+  void
+  update_projection_operator_enriched(VectorType const & velocity_total,
+                                      double const       time_step_size);
+
+  unsigned int
+  solve_projection_enriched(BlockVectorType & dst, BlockVectorType const & rhs);
 
   /*
    * Update variable viscosity.
@@ -538,6 +617,34 @@ protected:
 
   bool
   unsteady_problem_has_to_be_solved() const;
+
+  /*
+   * Wall enrichment: setup of the solver components for (U_bar, U_tilde). The momentum operator
+   * handed over provides the mass and viscous terms (and no convective term) of the U_bar rows
+   * on the whole domain; it has to stay alive as long as this object.
+   */
+  void
+  setup_wall_enrichment_solvers(MomentumOperator<dim, Number> const & momentum_operator_mass_viscous);
+
+  // strong no-slip on enrichment walls: fills free_dofs_bar (Krank et al. 2018, App. C)
+  void
+  setup_strong_wall_dofs();
+
+  // operator (mass + viscous) for the wall-enriched velocity
+  EnrichedMomentumOperator<dim, Number> enriched_momentum_operator;
+
+  // (1/s) M^{-1} with the block inverse mass operator
+  EnrichedInverseMassPreconditioner<dim, Number> enriched_momentum_preconditioner;
+
+  // block-Jacobi preconditioner (exact local inverse on enriched cells)
+  EnrichedBlockJacobiPreconditioner<dim, Number> enriched_block_jacobi_preconditioner;
+
+  // penalty step operator for the wall-enriched velocity
+  EnrichedProjectionOperator<dim, Number> enriched_projection_operator;
+
+  // strong no-slip on enrichment walls (Step 7c): diagonal of E_bar in the global DG layout of
+  // U_bar, 0 on the nodal U_bar DoFs of enrichment-wall faces, 1 otherwise
+  VectorType free_dofs_bar;
 
   /*
    * Grid
@@ -733,6 +840,19 @@ private:
   // Minimum element length h_min required for global CFL condition.
   double
   calculate_minimum_element_length() const;
+
+  /*
+   * Wall enrichment: U_tilde rows of the pressure gradient term, G(\psi \tilde{v}_h; p)
+   * (strong form on cells, jump of p on faces). With include_boundary_data, the pressure
+   * Dirichlet data g_p(t) * inverse_scaling_factor_pressure enters on velocity Neumann
+   * (outflow) boundaries; otherwise the homogeneous operator is evaluated.
+   */
+  void
+  pressure_gradient_term_enriched_tilde_rows(VectorType &       dst_tilde,
+                                             VectorType const & src,
+                                             double const       time,
+                                             bool const         include_boundary_data,
+                                             double const       inverse_scaling_factor_pressure) const;
 
   /*
    * Initialization functions called during setup phase.

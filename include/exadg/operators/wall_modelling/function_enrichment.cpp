@@ -57,6 +57,7 @@ FunctionEnrichment<dim, Number>::initialize(
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
   std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
   unsigned int                                           quad_index_in,
+  unsigned int                                           n_q_points_enrichment,
   unsigned int                                           layers)
 {
   this->boundary_descriptor = boundary_descriptor_in;
@@ -326,9 +327,10 @@ FunctionEnrichment<dim, Number>::initialize(
     &constraint_dg         // dof_handler_shadow_pressure (dof_index_shadow_pressure)
   };
 
-  unsigned int const n_q_1d = std::max({fe_degree_dg + 1, fe_degree_en + 1, 8u});
-  std::shared_ptr<dealii::Quadrature<dim>> quad =
-    create_quadrature<dim>(ExaDG::ElementType::Hypercube, n_q_1d);
+
+  unsigned int const n_q_1d = std::max({fe_degree_dg + 1, fe_degree_en + 1,
+  n_q_points_enrichment});
+  std::shared_ptr<dealii::Quadrature<dim>> quad = create_quadrature<dim>(ExaDG::ElementType::Hypercube, n_q_1d);
   std::vector<dealii::Quadrature<dim>> quadratures = { *quad };
 
   typename dealii::MatrixFree<dim, Number>::AdditionalData additional_data;

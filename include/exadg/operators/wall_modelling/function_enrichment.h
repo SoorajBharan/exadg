@@ -65,6 +65,7 @@ void
              std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor_in,
              std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
              unsigned int                                           quad_index_in,
+             unsigned int                                           n_q_points_enrichment,
              unsigned int                                           layers = 3);
 
 

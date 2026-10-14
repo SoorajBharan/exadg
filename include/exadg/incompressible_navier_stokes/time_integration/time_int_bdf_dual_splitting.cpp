@@ -141,7 +141,6 @@ TimeIntBDFDualSplitting<dim, Number>::allocate_vectors()
     if(this->param.wall_enrichment_enabled)
     {
       pde_operator->initialize_vector_enrichment(v.block(1));
-      pde_operator->initialize_vector_velocity(velocity_total);
     }
     else {
       v.block(1).reinit(dealii::IndexSet(0), v.block(0).get_mpi_communicator());
@@ -409,6 +408,9 @@ TimeIntBDFDualSplitting<dim, Number>::do_timestep_solve()
       penalty_step();
   }
   debug_norms("penalty");
+
+  if(this->param.wall_enrichment_enabled)
+    pde_operator->compute_total_velocity(this->velocity_total, velocity_np);
 
   // evaluate convective term once the final solution at time
   // t_{n+1} is known
@@ -680,16 +682,16 @@ TimeIntBDFDualSplitting<dim, Number>::rhs_pressure(VectorType & rhs) const
       {
         temp = 0.0;
 
-        if(this->param.wall_enrichment_enabled)
+
+        if(this->param.wall_enrichment_enabled and enrichment_coupling)
         {
-          VectorType velocity_total_i;
-          pde_operator->initialize_vector_velocity(velocity_total_i);
-          pde_operator->compute_total_velocity(velocity_total_i, velocity[i]);
-          pde_operator->rhs_ppe_div_term_convective_term_add(temp, velocity_total_i);
-        }
+          // Krank et al. (2018), Eq. (41): u_h = U_bar + psi U_tilde on the boundary faces
+          pde_operator->rhs_ppe_div_term_convective_term_add(temp, velocity[i]);
+        } 
         else
-        {
-          pde_operator->rhs_ppe_div_term_convective_term_add(temp, velocity[i].block(0));
+      {
+          pde_operator->rhs_ppe_div_term_convective_term_add(temp,
+                                                             velocity[i].block(0));
         }
 
         rhs.add(this->extra.get_beta(i), temp);
@@ -717,28 +719,46 @@ TimeIntBDFDualSplitting<dim, Number>::rhs_pressure(VectorType & rhs) const
 
   // II.3. pressure Neumann boundary condition: temporal derivative of velocity
   VectorType acceleration(velocity_dbc_np);
-  compute_bdf_time_derivative(
-    acceleration, velocity_dbc_np, velocity_dbc, this->bdf, this->get_time_step_size());
+  compute_bdf_time_derivative(acceleration, velocity_dbc_np, velocity_dbc, this->bdf, this->get_time_step_size());
   pde_operator->rhs_ppe_nbc_numerical_time_derivative_add(rhs, acceleration);
 
   // II.4. viscous term of pressure Neumann boundary condition on Gamma_D:
   //       extrapolate velocity, evaluate vorticity, and subsequently evaluate boundary
   //       face integral (this is possible since pressure Neumann BC is linear in vorticity)
+
   if(this->param.viscous_problem())
   {
     if(this->param.order_extrapolation_pressure_nbc > 0)
     {
-      VectorType velocity_extra(velocity[0].block(0));
-      velocity_extra = 0.0;
-      for(unsigned int i = 0; i < extra_pressure_nbc.get_order(); ++i)
+      if(this->param.wall_enrichment_enabled and enrichment_coupling)
       {
-        velocity_extra.add(this->extra_pressure_nbc.get_beta(i), velocity[i].block(0));
+        // Krank et al. (2018), Eq. (41); thesis Eq. (3.16): omega_h in the         enriched space.
+        // All velocity[i] are already projected onto the current psi           (do_timestep_solve).
+        BlockVectorType velocity_extra(velocity[0]);
+        velocity_extra = 0.0;
+        for(unsigned int i = 0; i < extra_pressure_nbc.get_order(); ++i)
+          velocity_extra.add(this->extra_pressure_nbc.get_beta(i), velocity[i]);
+
+        BlockVectorType vorticity(velocity_extra);
+        pde_operator->compute_vorticity(vorticity, velocity_extra);
+
+        pde_operator->rhs_ppe_nbc_viscous_add(rhs, vorticity);
       }
+      else
+    {
+        VectorType velocity_extra(velocity[0].block(0));
+        velocity_extra = 0.0;
+        for(unsigned int i = 0; i < extra_pressure_nbc.get_order(); ++i)
+        {
+          velocity_extra.add(this->extra_pressure_nbc.get_beta(i),
+                             velocity[i].block(0));
+        }
 
-      VectorType vorticity(velocity_extra);
-      pde_operator->compute_vorticity(vorticity, velocity_extra);
+        VectorType vorticity(velocity_extra);
+        pde_operator->compute_vorticity(vorticity, velocity_extra);
 
-      pde_operator->rhs_ppe_nbc_viscous_add(rhs, vorticity);
+        pde_operator->rhs_ppe_nbc_viscous_add(rhs, vorticity);
+      }
     }
   }
 
@@ -754,18 +774,16 @@ TimeIntBDFDualSplitting<dim, Number>::rhs_pressure(VectorType & rhs) const
       {
         temp = 0.0;
 
-        if(this->param.wall_enrichment_enabled)
+
+        if(this->param.wall_enrichment_enabled and enrichment_coupling)
         {
-          VectorType velocity_total_i;
-          pde_operator->initialize_vector_velocity(velocity_total_i);
-          pde_operator->compute_total_velocity(velocity_total_i, velocity[i]);
-          pde_operator->rhs_ppe_nbc_convective_add(temp, velocity_total_i);
-        }
+          // Krank et al. (2018), Eq. (41): u_h = U_bar + psi U_tilde on the boundary faces
+          pde_operator->rhs_ppe_nbc_convective_add(temp, velocity[i]);
+        } 
         else
-        {
+      {
           pde_operator->rhs_ppe_nbc_convective_add(temp, velocity[i].block(0));
         }
-
         rhs.add(this->extra_pressure_nbc.get_beta(i), temp);
       }
     }
@@ -1199,9 +1217,7 @@ TimeIntBDFDualSplitting<dim, Number>::prepare_vectors_for_next_timestep()
     fe->enrichment_velocity = velocity[0].block(1);                    // NEW
     fe->enrichment_velocity.update_ghost_values();
 
-    pde_operator->compute_total_velocity(velocity_total, velocity[0]);
-    bool const residual_based_wss = this->param.wall_shear_stress_computation ==
-      WallShearStressComputation::MomentumResidual;
+    bool const residual_based_wss = this->param.wall_shear_stress_computation == WallShearStressComputation::MomentumResidual;
     if(residual_based_wss and residual_available)
     {
       // u_tau from the residual of the enriched viscous step (robust against large U_bar/U_tilde)

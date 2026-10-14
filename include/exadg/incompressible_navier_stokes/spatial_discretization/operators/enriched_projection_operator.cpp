@@ -63,57 +63,72 @@ void
 EnrichedProjectionOperator<dim, Number>::update(VectorType const & velocity_total,
                                                 double const       time_step_size_in)
 {
+
+  AssertThrow(not use_divergence_penalty or projection_operator->get_divergence_kernel_data().type_penalty_parameter == TypePenaltyParameter::ConvectiveTerm, dealii::ExcMessage("Enriched penalty step: only TypePenaltyParameter::ConvectiveTerm."));
+  AssertThrow(not use_continuity_penalty or projection_operator->get_continuity_kernel_data().type_penalty_parameter == TypePenaltyParameter::ConvectiveTerm,  dealii::ExcMessage("Enriched penalty step: only TypePenaltyParameter::ConvectiveTerm."));
   time_step_size = time_step_size_in;
 
-  auto const & mf = *function_enrichment->get_matrix_free();
 
-  // full velocity in shadow layout (enriched + halo cells)
-  VectorType u_shadow;
-  mf.initialize_dof_vector(u_shadow, function_enrichment->get_dof_index_shadow_vector());
-  function_enrichment->copy_global_dg_to_wall_layout(velocity_total, u_shadow);
-  u_shadow.update_ghost_values();
+  // (1) tau per active cell, on ExaDG's MatrixFree with ExaDG's quadrature
+  auto const &       mf_std   = projection_operator->get_matrix_free();
+  unsigned int const dof_std  = projection_operator->get_dof_index();
+  unsigned int const quad_std = projection_operator->get_quad_index();
+  auto const &       tria     = 
+    mf_std.get_dof_handler(dof_std).get_triangulation();
 
+  std::vector<double> tau_divergence_cell(tria.n_active_cells(), 0.0);
+  std::vector<double> tau_continuity_cell(tria.n_active_cells(), 0.0);
+
+  velocity_total.update_ghost_values();
+
+  CellIntegratorU    phi_std(mf_std, dof_std, quad_std);
+
+  unsigned int const n_batches_std = mf_std.n_cell_batches() + mf_std.n_ghost_cell_batches();
+  for(unsigned int cell = 0; cell < n_batches_std; ++cell)
+  {
+    phi_std.reinit(cell);
+    phi_std.read_dof_values(velocity_total);
+    phi_std.evaluate(dealii::EvaluationFlags::values);
+
+    scalar volume      = dealii::make_vectorized_array<Number>(0.0);
+    scalar norm_U_mean = dealii::make_vectorized_array<Number>(0.0);
+    for(unsigned int q = 0; q < phi_std.n_q_points; ++q)
+    {
+      volume += phi_std.JxW(q);
+      norm_U_mean += phi_std.JxW(q) * phi_std.get_value(q).norm();
+    }
+    norm_U_mean /= volume;
+
+    for(unsigned int l = 0; l < mf_std.n_active_entries_per_cell_batch(cell);
+    ++l)
+    {
+      unsigned int const index = mf_std.get_cell_iterator(cell,
+                                                          l)->active_cell_index();
+      double const h_eff = std::pow(volume[l], 1.0 / (double)dim) /
+        (double)(degree_velocity + 1);
+
+      tau_divergence_cell[index] = divergence_penalty_factor * norm_U_mean[l] * h_eff;
+      tau_continuity_cell[index] = continuity_penalty_factor * norm_U_mean[l];
+    } 
+  } 
+
+  // (2) the same values on the cell batches of matrix_free_en (same 
+  auto const &       mf        = *function_enrichment->get_matrix_free();
   unsigned int const n_batches = mf.n_cell_batches() + mf.n_ghost_cell_batches();
   tau_divergence.resize(n_batches);
   tau_continuity.resize(n_batches);
 
-  unsigned int const dof_index  = function_enrichment->get_dof_index_shadow_vector();
-  unsigned int const quad_index = function_enrichment->get_quad_index();
-
-  // same formulas as ExaDG's ConvectiveTerm penalty parameters:
-  //   tau_D = factor_D * mean|u| * h_eff,  h_eff = volume^(1/dim) / (k+1)
-  //   tau_C = factor_C * mean|u|
-  for(unsigned int fe_index = 1; fe_index <= 2; ++fe_index)
+  for(unsigned int cell = 0; cell < n_batches; ++cell)
   {
-    CellIntegratorU phi(mf, dof_index, quad_index, 0, fe_index);
-
-    for(unsigned int cell = 0; cell < n_batches; ++cell)
+    tau_divergence[cell] = dealii::make_vectorized_array<Number>(0.0);
+    tau_continuity[cell] = dealii::make_vectorized_array<Number>(0.0);
+    for(unsigned int l = 0; l < mf.n_active_entries_per_cell_batch(cell); ++l)
     {
-      if(mf.get_cell_iterator(cell, 0)->active_fe_index() != fe_index)
-        continue;
-
-      phi.reinit(cell);
-      phi.gather_evaluate(u_shadow, dealii::EvaluationFlags::values);
-
-      scalar volume      = dealii::make_vectorized_array<Number>(0.0);
-      scalar norm_U_mean = dealii::make_vectorized_array<Number>(0.0);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-      {
-        volume += phi.JxW(q);
-        norm_U_mean += phi.JxW(q) * phi.get_value(q).norm();
-      }
-      norm_U_mean /= volume;
-
-      scalar h_eff;
-      for(unsigned int l = 0; l < scalar::size(); ++l)
-        h_eff[l] = std::pow(volume[l], 1.0 / (double)dim) / (double)(degree_velocity + 1);
-
-      tau_divergence[cell] = divergence_penalty_factor * norm_U_mean * h_eff;
-      tau_continuity[cell] = continuity_penalty_factor * norm_U_mean;
+      unsigned int const index = mf.get_cell_iterator(cell, l)->active_cell_index();
+      tau_divergence[cell][l]  = tau_divergence_cell[index];
+      tau_continuity[cell][l]  = tau_continuity_cell[index];
     }
   }
-
-  u_shadow.zero_out_ghost_values();
 }
 
 template<int dim, typename Number>

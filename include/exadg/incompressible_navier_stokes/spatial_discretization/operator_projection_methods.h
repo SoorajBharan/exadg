@@ -33,6 +33,7 @@
 #include <exadg/incompressible_navier_stokes/preconditioners/enriched_inverse_mass_preconditioner.h>
 #include <exadg/incompressible_navier_stokes/preconditioners/enriched_block_jacobi_preconditioner.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/operators/enrichment_constrained_operator.h>
+#include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 
 namespace ExaDG
 {
@@ -175,28 +176,17 @@ public:
                                  VectorType const & rhs,
                                  bool const &       update_preconditioner,
                                  double const &     scaling_factor_mass);
+  // wall enrichment: momentum (viscous) step for (U_bar, U_tilde), Krank et al. (2018)
   unsigned int
   solve_linear_momentum_equation(BlockVectorType &       solution,
                                  BlockVectorType const & rhs,
                                  double const &          scaling_factor_mass);
-  // wall enrichment: inflow data for the U_tilde row of the viscous step
-  void
-  rhs_add_enriched_viscous_boundary_data(VectorType & dst_bar,
-                                         VectorType & dst_tilde,
-                                         double const time) const;
 
   /**********************************DEBUG*************************************/
   void
   apply_enriched_momentum_operator_test(BlockVectorType &       dst,
                                         BlockVectorType const & src,
                                         double const            scaling_factor_mass);
-
-  // wall enrichment: penalty step operator (tau from the full velocity) and solve
-  void
-  update_projection_operator_enriched(VectorType const & velocity_total, double const time_step_size);
-
-  unsigned int
-  solve_projection_enriched(BlockVectorType & dst, BlockVectorType const & rhs);
 
   void
   apply_momentum_operator_test(VectorType &       dst,
@@ -255,22 +245,6 @@ protected:
   // linear solver (momentum_operator serves as linear operator)
   std::shared_ptr<PreconditionerBase<Number>>     momentum_preconditioner;
   std::shared_ptr<Krylov::SolverBase<VectorType>> momentum_linear_solver;
-
-  EnrichedMomentumOperator<dim, Number> enriched_momentum_operator;
-  EnrichedInverseMassPreconditioner<dim, Number> enriched_momentum_preconditioner;
-
-  // block-Jacobi preconditioner (exact local inverse on enriched cells), viscous and penalty step
-  EnrichedBlockJacobiPreconditioner<dim, Number> enriched_block_jacobi_preconditioner;
-
-  // penalty step operator for the wall-enriched velocity
-  EnrichedProjectionOperator<dim, Number> enriched_projection_operator;
-
-  // strong no-slip on enrichment walls in the viscous step (Step 7c): diagonal of E_bar in the
-  // global DG layout of U_bar, 0 on the nodal U_bar DoFs of enrichment-wall faces, 1 otherwise
-  VectorType free_dofs_bar;
-
-  void
-  setup_strong_wall_dofs();
 
   void
   setup_momentum_preconditioner();

@@ -89,6 +89,9 @@ TimeIntBDF<dim, Number>::allocate_vectors()
     for(unsigned int i = 0; i < vec_grid_coordinates.size(); ++i)
       this->operator_base->initialize_vector_velocity(vec_grid_coordinates[i]);
   }
+
+  if(param.wall_enrichment_enabled)
+    this->operator_base->initialize_vector_velocity(velocity_total);
 }
 
 template<int dim, typename Number>
@@ -132,7 +135,7 @@ TimeIntBDF<dim, Number>::setup_derived()
   // Compute friction velocity for wall function enrichment
   if(this->param.wall_enrichment_enabled)
   {
-    this->operator_base->update_wall_enrichment_vectors(get_velocity(0)); 
+    this->operator_base->update_wall_enrichment_vectors(get_velocity(0));
   }
 }
 
@@ -456,7 +459,7 @@ TimeIntBDF<dim, Number>::get_velocities_and_times_np(std::vector<VectorType cons
     velocities,
     times,
     [&](const auto i) { return &get_velocity(i); },
-    [&]() { return &get_velocity_np(); });
+    [&]() { return param.wall_enrichment_enabled ? &velocity_total : &get_velocity_np(); });
 }
 
 template<int dim, typename Number>

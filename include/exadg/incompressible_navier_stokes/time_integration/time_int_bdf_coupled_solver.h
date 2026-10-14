@@ -99,6 +99,33 @@ private:
   void
   penalty_step();
 
+  /*
+   * Wall enrichment (Krank et al. 2018): coupled system for (U_bar, U_tilde, p^*) with
+   * u_h = \bar{u}_h + \psi \tilde{u}_h; the convective term is treated explicitly (history in
+   * velocity space) or implicitly (Newton).
+   */
+  void
+  solve_coupled_system_enriched();
+
+  // penalty step (postprocessing) for (U_bar, U_tilde)
+  void
+  penalty_step_enriched();
+
+  // w = M^{-1} C(u_h): convective term in velocity space (can be projected like the velocity)
+  void
+  compute_convective_history_entry(BlockVectorType &       w,
+                                   BlockVectorType const & u,
+                                   double const            evaluation_time,
+                                   bool const              enriched) const;
+
+  // velocity block vector (U_bar, U_tilde)
+  void
+  initialize_velocity_enriched(BlockVectorType & velocity) const;
+
+  // (U_bar, U_tilde) at t_{n-i}
+  void
+  get_velocity_enriched(BlockVectorType & velocity, unsigned int const i /* t_{n-i} */) const;
+
   void
   prepare_vectors_for_next_timestep() final;
 
@@ -133,6 +160,28 @@ private:
   // scaling factor continuity equation
   double scaling_factor_continuity;
   double characteristic_element_length;
+
+  /*
+   * Wall enrichment
+   */
+
+  // false until the first enriched time step (U_tilde = 0 before)
+  bool enrichment_coupling = false;
+
+  // U_tilde at t_{n-i} and t_{n+1}; U_bar is block(0) of solution
+  std::vector<VectorType> velocity_enrichment;
+  VectorType              velocity_enrichment_np;
+
+  // explicit convective term: history in velocity space, w_i = M^{-1} C(u_h^{n-i})
+  std::vector<BlockVectorType> convective_history;
+  BlockVectorType              convective_history_np;
+
+  // solution u_h^{n+1} of the coupled system (before the penalty step) and \hat{u} with
+  // (gamma0/dt) M \hat{u} = rhs - c(u_h) - G(p), needed for the residual-based friction velocity
+  BlockVectorType velocity_momentum;
+  BlockVectorType velocity_momentum_hat;
+  double          mass_factor_momentum = 0.0;
+  bool            residual_available   = false;
 };
 
 } // namespace IncNS

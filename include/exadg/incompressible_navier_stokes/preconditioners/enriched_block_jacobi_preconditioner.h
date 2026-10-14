@@ -18,8 +18,9 @@
 #include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/matrix_free/fe_evaluation.h>
 
-#include <exadg/incompressible_navier_stokes/spatial_discretization/spatial_operator_base.h>
+#include <exadg/operators/wall_modelling/coupler.h>
 #include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
+#include <exadg/operators/wall_modelling/function_enrichment.h>
 
 #include <vector>
 
@@ -27,6 +28,11 @@ namespace ExaDG
 {
 namespace IncNS
 {
+// forward declaration: SpatialOperatorBase owns this preconditioner (spatial_operator_base.h
+// includes this header), it is only accessed through a pointer in the member functions below
+template<int dim, typename Number>
+class SpatialOperatorBase;
+
 /*
  * Block-Jacobi preconditioner for the wall-enriched velocity (block(0) = U_bar, block(1) = U_tilde).
  *

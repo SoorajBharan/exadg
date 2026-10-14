@@ -432,6 +432,8 @@ public:
   double wall_shear_stress_min_fraction;
 
   double wall_enrichment_rank_tolerance;
+
+  unsigned int enrichment_quadrature_points;
   // viscous interior penalty on enriched cells:
   //   false: polynomial tau_IP = (k+1)^2 A/V (Krank et al. 2018, Eq. (35)-(36)) -- default
   //   true:  max(polynomial tau, enrichment tau ~ (l+1)^2 int_F |grad psi|^2 / int_K |grad psi|^2)

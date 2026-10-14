@@ -173,8 +173,6 @@ private:
   // std::vector<VectorType> velocity;
   std::vector<BlockVectorType> velocity;
 
-  VectorType velocity_total;
-
   // wall enrichment: velocity after the projection step and gamma0/dt of the last
   // enriched viscous step (needed for the residual-based u_tau)
   BlockVectorType velocity_projected;

@@ -85,6 +85,23 @@ template<int dim, typename Number>
 void
 TimeIntBDFPressureCorrection<dim, Number>::setup_derived()
 {
+  if(this->param.wall_enrichment_enabled)
+  {
+    AssertThrow(not this->param.ale_formulation,
+                dealii::ExcMessage("Pressure correction with wall enrichment: ALE not implemented."));
+    AssertThrow(this->param.viscous_problem() and
+                not this->param.nonlinear_problem_has_to_be_solved(),
+                dealii::ExcMessage("Pressure correction with wall enrichment: only the linear "
+                                   "momentum step (explicit convective term) is implemented."));
+    AssertThrow(not this->param.viscosity_is_variable(),
+                dealii::ExcMessage("Pressure correction with wall enrichment: variable viscosity "
+                                   "is not implemented."));
+    AssertThrow(not(this->param.use_continuity_penalty and
+                this->param.continuity_penalty_use_boundary_data),
+                dealii::ExcMessage("Pressure correction with wall enrichment: continuity penalty "
+                                   "with boundary data is not implemented."));
+  }
+
   Base::setup_derived();
 
   // pressure_dbc does not have to be initialized in case of a restart, where
@@ -92,6 +109,19 @@ TimeIntBDFPressureCorrection<dim, Number>::setup_derived()
   if(this->param.restarted_simulation == false)
   {
     initialize_pressure_on_boundary();
+  }
+
+  // wall enrichment: initial convective history (U_tilde = 0 at the start -> standard form)
+  if(this->param.wall_enrichment_enabled and this->param.convective_problem())
+  {
+    compute_convective_history_entry(convective_history[0], velocity[0], this->get_time(), false);
+
+    if(this->param.start_with_low_order == false)
+      for(unsigned int i = 1; i < convective_history.size(); ++i)
+        compute_convective_history_entry(convective_history[i],
+                                         velocity[i],
+                                         this->get_previous_time(i),
+                                         false);
   }
 }
 
@@ -146,6 +176,20 @@ TimeIntBDFPressureCorrection<dim, Number>::allocate_vectors()
   for(unsigned int i = 0; i < velocity.size(); ++i)
     init_velocity(velocity[i]);
   init_velocity(velocity_np);
+  // wall enrichment
+  if(this->param.wall_enrichment_enabled)
+  {
+    init_velocity(velocity_momentum);
+    init_velocity(velocity_momentum_hat);
+
+    if(this->param.convective_problem())
+    {
+      convective_history.resize(this->vec_convective_term.size());
+      for(unsigned int i = 0; i < convective_history.size(); ++i)
+        init_velocity(convective_history[i]);
+      init_velocity(convective_history_np);
+    }
+  }
 
   // pressure
   for(unsigned int i = 0; i < pressure.size(); ++i)
@@ -184,7 +228,7 @@ TimeIntBDFPressureCorrection<dim, Number>::initialize_former_multistep_dof_vecto
                                                pressure[i],
                                                this->get_previous_time(i));
     if(this->param.wall_enrichment_enabled)
-      velocity[0].block(1) = 0.0;
+      velocity[i].block(1) = 0.0;
   }
 }
 
@@ -337,20 +381,40 @@ template<int dim, typename Number>
 void
 TimeIntBDFPressureCorrection<dim, Number>::do_timestep_solve()
 {
-  if(this->param.wall_enrichment_enabled)
+  // wall enrichment: the coupled (U_bar, U_tilde) sub-steps start in time step 2, when u_tau
+  // has been computed from a velocity field; before, U_tilde = 0 and the polynomial scheme is used
+  enrichment_coupling = this->param.wall_enrichment_enabled and this->get_time_step_number() > 1;
+
+  if(enrichment_coupling)
   {
     pde_operator->precompute_schur_matrices();
-  }
-  // perform the sub-steps of the pressure-correction scheme
 
-  momentum_step();
+    // rewrite the history, computed with the previous u_tau, in the current enrichment space
+    for(unsigned int i = 0; i < velocity.size(); ++i)
+      pde_operator->project_enrichment_history(velocity[i]);
+
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      pde_operator->project_enrichment_history(convective_history[i]);
+  }
+
+  // perform the sub-steps of the pressure-correction scheme
+  if(enrichment_coupling)
+    momentum_step_enriched();
+  else
+    momentum_step();
 
   VectorType pressure_increment;
   pressure_increment.reinit(pressure_np, false /* init with zero */);
 
   pressure_step(pressure_increment);
 
-  projection_step(pressure_increment);
+  if(enrichment_coupling)
+    projection_step_enriched(pressure_increment);
+  else
+    projection_step(pressure_increment);
+
+  if(this->param.wall_enrichment_enabled)
+    pde_operator->compute_total_velocity(this->velocity_total, velocity_np);
 
   // evaluate convective term once the final solution at time
   // t_{n+1} is known
@@ -422,22 +486,6 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
         update_preconditioner,
         this->get_scaling_factor_time_derivative_term());
 
-      if(this->param.wall_enrichment_enabled)
-      {
-        pde_operator->update_wall_enrichment_vectors(velocity_np.block(0));
-        
-        pde_operator->precompute_schur_matrices();
-
-        double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
-
-        pde_operator->reinit_enrichment_residual();
-
-        pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
-          velocity_np.block(0), // This is \bar{U}^* that GMRES just found!
-          scaling
-        );
-      }
-
       iterations_momentum.first += 1;
       std::get<0>(iterations_momentum.second) += std::get<0>(iter);
       std::get<1>(iterations_momentum.second) += std::get<1>(iter);
@@ -464,16 +512,6 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step()
       // solve linear system of equations
       unsigned int n_iter = pde_operator->solve_linear_momentum_equation(
         velocity_np.block(0), rhs, update_preconditioner, this->get_scaling_factor_time_derivative_term());
-
-      if(this->param.wall_enrichment_enabled)
-      {
-        double scaling = this->get_time_step_size() / this->bdf.get_gamma0();
-        
-        pde_operator->get_wall_dg_coupler()->compute_enrichment_velocity(
-            velocity_np.block(0), // This is \bar{U}^* that GMRES just found!
-            scaling
-        );
-      }
 
       iterations_momentum.first += 1;
       std::get<1>(iterations_momentum.second) += n_iter;
@@ -593,48 +631,134 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_momentum(VectorType & rhs)
 
 template<int dim, typename Number>
 void
-TimeIntBDFPressureCorrection<dim, Number>::pressure_step(VectorType & pressure_increment)
+TimeIntBDFPressureCorrection<dim, Number>::momentum_step_enriched()
 {
   dealii::Timer timer;
   timer.restart();
 
-  // compute right-hand side vector
-  VectorType rhs(pressure_np);
-  rhs_pressure(rhs);
+  /*
+     * Momentum step for u_h = \bar{u}_h + \psi \tilde{u}_h (Krank et al. 2018), convective term
+     * explicit: find u* in V_h^{enr} such that for all v_h in V_h^{enr}
+     *
+     *   \gamma_0/\Delta t (v_h, u*) + a_\nu(v_h, u*) = \gamma_0/\Delta t (v_h, \hat{u}) + l_\nu(v_h),
+     *
+     *   \gamma_0/\Delta t M \hat{u} = M ( \sum_i \alpha_i/\Delta t u^{n-i} - \sum_i \beta_i w^{n-i} )
+     *                                 + F(t_{n+1}) - \sum_i \beta^p_i G(p^{n-i}),
+     *
+     * with w = M^{-1} C(u_h) (convective history in velocity space), G the pressure gradient tested
+     * with \bar{v}_h and \psi \tilde{v}_h, and l_\nu the inhomogeneous boundary data of the
+     * viscous term. Block mass matrix M with the current \psi.
+     */
+  double const mass_factor = this->get_scaling_factor_time_derivative_term(); // gamma_0 / dt
 
-  // calculate initial guess for pressure solve
-  if(this->use_extrapolation)
+  // (1) velocity-space part: \sum_i \alpha_i/\Delta t u^{n-i} - \sum_i \beta_i w^{n-i}
+  BlockVectorType u_rhs(velocity_np);
+  u_rhs = 0.0;
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+    u_rhs.add(this->bdf.get_alpha(i) / this->get_time_step_size(), velocity[i]);
+
+  if(this->param.convective_problem())
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      u_rhs.add(-this->extra.get_beta(i), convective_history[i]);
+
+  BlockVectorType rhs(velocity_np);
+  pde_operator->apply_mass_operator(rhs, u_rhs);
+
+  // (2) body force F(t_{n+1}), tested with \bar{v}_h and \psi \tilde{v}_h
+  if(this->param.right_hand_side)
+    pde_operator->evaluate_add_body_force_term_enriched(rhs, this->get_next_time());
+  // (3) incremental formulation: - \sum_i \beta^p_i G(p^{n-i}), boundary data g_p(t_{n-i})
+  if(extra_pressure_gradient.get_order() > 0)
   {
-    // extrapolate old solution to get a good initial estimate for the
-    // pressure solution p_{n+1} at time t^{n+1}
-    for(unsigned int i = 0; i < pressure.size(); ++i)
+    BlockVectorType gradient(velocity_np);
+    for(unsigned int i = 0; i < extra_pressure_gradient.get_order(); ++i)
     {
-      pressure_increment.add(this->extra.get_beta(i), pressure[i]);
+      pde_operator->evaluate_pressure_gradient_term_enriched(gradient,
+                                                             pressure[i],
+                                                             this->get_previous_time(i));
+      rhs.add(-extra_pressure_gradient.get_beta(i), gradient);
     }
+  }
 
-    // incremental formulation
-    if(extra_pressure_gradient.get_order() > 0)
+  // \hat{u} = (\Delta t/\gamma_0) M^{-1} rhs, needed for the residual-based friction velocity
+  pde_operator->apply_inverse_mass_operator(velocity_momentum_hat, rhs);
+  velocity_momentum_hat *= 1.0 / mass_factor;
+
+  // (4) inhomogeneous boundary data of the viscous term (zero velocity at enrichment walls)
+  pde_operator->rhs_add_viscous_term(rhs.block(0), this->get_next_time());
+  pde_operator->rhs_add_enriched_viscous_boundary_data(rhs.block(0),
+                                                       rhs.block(1),
+                                                       this->get_next_time());
+
+  // initial guess: extrapolation of the (projected) history
+  velocity_np = 0.0;
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+    velocity_np.add(this->extra.get_beta(i), velocity[i]);
+
+  unsigned int const n_iter =
+    pde_operator->solve_linear_momentum_equation(velocity_np, rhs, mass_factor);
+
+  // residual-based friction velocity: s (N, u* - \hat{u}) + \nu (grad N, grad u*)
+  velocity_momentum    = velocity_np;
+  mass_factor_momentum = mass_factor;
+  residual_available   = true;
+
+  iterations_momentum.first += 1;
+  std::get<1>(iterations_momentum.second) += n_iter;
+
+  if(this->print_solver_info() and not(this->is_test))
+  {
+    this->pcout << std::endl << "Solve momentum step (enriched):";
+    print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+  }
+
+  this->timer_tree->insert({"Timeloop", "Momentum step"}, timer.wall_time());
+}
+
+  template<int dim, typename Number>
+  void
+  TimeIntBDFPressureCorrection<dim, Number>::pressure_step(VectorType & pressure_increment)
+  {
+    dealii::Timer timer;
+    timer.restart();
+
+    // compute right-hand side vector
+    VectorType rhs(pressure_np);
+    rhs_pressure(rhs);
+
+    // calculate initial guess for pressure solve
+    if(this->use_extrapolation)
     {
-      // Subtract extrapolation of pressure since the PPE is solved for the
-      // pressure increment phi = p_{n+1} - sum_i (beta_pressure_extra_i * pressure_i),
-      // where p_{n+1} is approximated by an extrapolation of order J (=order of BDF scheme).
-      // Note that the divergence correction term in case of the rotational formulation is not
-      // considered when calculating a good initial guess for the solution of the PPE,
-      // which will slightly increase the number of iterations compared to the standard
-      // formulation of the pressure-correction scheme.
-      for(unsigned int i = 0; i < extra_pressure_gradient.get_order(); ++i)
+      // extrapolate old solution to get a good initial estimate for the
+      // pressure solution p_{n+1} at time t^{n+1}
+      for(unsigned int i = 0; i < pressure.size(); ++i)
       {
-        pressure_increment.add(-extra_pressure_gradient.get_beta(i), pressure[i]);
+        pressure_increment.add(this->extra.get_beta(i), pressure[i]);
+      }
+
+      // incremental formulation
+      if(extra_pressure_gradient.get_order() > 0)
+      {
+        // Subtract extrapolation of pressure since the PPE is solved for the
+        // pressure increment phi = p_{n+1} - sum_i (beta_pressure_extra_i * pressure_i),
+        // where p_{n+1} is approximated by an extrapolation of order J (=order of BDF scheme).
+        // Note that the divergence correction term in case of the rotational formulation is not
+        // considered when calculating a good initial guess for the solution of the PPE,
+        // which will slightly increase the number of iterations compared to the standard
+        // formulation of the pressure-correction scheme.
+        for(unsigned int i = 0; i < extra_pressure_gradient.get_order(); ++i)
+        {
+          pressure_increment.add(-extra_pressure_gradient.get_beta(i), pressure[i]);
+        }
       }
     }
-  }
-  else
+    else
   {
-    pressure_increment = pressure_increment_last_iter;
-  }
+      pressure_increment = pressure_increment_last_iter;
+    }
 
-  // solve linear system of equations
-  bool const update_preconditioner =
+    // solve linear system of equations
+    bool const update_preconditioner =
     this->param.update_preconditioner_pressure_poisson and
     ((this->time_step_number - 1) %
        this->param.update_preconditioner_pressure_poisson_every_time_steps ==
@@ -697,7 +821,12 @@ TimeIntBDFPressureCorrection<dim, Number>::rhs_pressure(VectorType & rhs) const
    *  I. calculate divergence term
    */
   VectorType temp(pressure_np);
-  pde_operator->evaluate_velocity_divergence_term(temp, velocity_np.block(0), this->get_next_time());
+  if(enrichment_coupling) // D(u_h), u_h = \bar{u}_h + \psi \tilde{u}_h
+    pde_operator->evaluate_velocity_divergence_term(temp, velocity_np, this->get_next_time());
+  else
+    pde_operator->evaluate_velocity_divergence_term(temp,
+                                                    velocity_np.block(0),
+                                                    this->get_next_time());
 
   rhs.equ(-this->bdf.get_gamma0() / this->get_time_step_size(), temp);
 
@@ -745,9 +874,15 @@ TimeIntBDFPressureCorrection<dim, Number>::pressure_update(VectorType const & pr
   if(this->param.rotational_formulation == true)
   {
     // Automatically sets pressure_np to zero before operator evaluation.
-    pde_operator->evaluate_velocity_divergence_term(pressure_np,
-                                                    velocity_np.block(0),
-                                                    this->get_next_time());
+    // u* = \bar{u}_h + \psi \tilde{u}_h with wall enrichment
+    if(enrichment_coupling)
+      pde_operator->evaluate_velocity_divergence_term(pressure_np,
+                                                      velocity_np,
+                                                      this->get_next_time());
+    else
+      pde_operator->evaluate_velocity_divergence_term(pressure_np,
+                                                      velocity_np.block(0),
+                                                      this->get_next_time());
 
     pde_operator->apply_inverse_pressure_mass_operator(pressure_np, pressure_np);
 
@@ -888,6 +1023,90 @@ TimeIntBDFPressureCorrection<dim, Number>::projection_step(VectorType const & pr
 
 template<int dim, typename Number>
 void
+TimeIntBDFPressureCorrection<dim, Number>::projection_step_enriched(
+  VectorType const & pressure_increment)
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  /*
+     * Projection for u_h = \bar{u}_h + \psi \tilde{u}_h: for all v_h in V_h^{enr}
+     *
+     *   (v_h, u) + \Delta t (penalty terms) = (v_h, u*) - \Delta t/\gamma_0 G(v_h; \phi),
+     *
+     * with the boundary data of the increment g_\phi = g_p(t_{n+1}) - \sum_i \beta_i g_p(t_{n-i}).
+     * G is linear in (\phi, g): G(\phi; g_\phi) = G(\phi; g_p(t_{n+1})) - \sum_i \beta_i G(0; 
+  g_p(t_{n-i})).
+     */
+  double const factor = this->get_time_step_size() / this->bdf.get_gamma0();
+
+  BlockVectorType rhs(velocity_np), gradient(velocity_np);
+
+  // - \Delta t/\gamma_0 G(\phi; g_p(t_{n+1}))
+  pde_operator->evaluate_pressure_gradient_term_enriched(gradient,
+                                                         pressure_increment,
+                                                         this->get_next_time());
+  rhs.equ(-factor, gradient);
+
+  // incremental formulation: + \Delta t/\gamma_0 \sum_i \beta_i G(0; g_p(t_{n-i}))
+  if(extra_pressure_gradient.get_order() > 0)
+  {
+    VectorType zero_pressure(pressure_np);
+    zero_pressure = 0.0;
+
+    for(unsigned int i = 0; i < extra_pressure_gradient.get_order(); ++i)
+    {
+      pde_operator->evaluate_pressure_gradient_term_enriched(gradient,
+                                                             zero_pressure,
+                                                             this->get_previous_time(i));
+      rhs.add(factor * extra_pressure_gradient.get_beta(i), gradient);
+    }
+  }
+  // + M u*
+  BlockVectorType mass_u(velocity_np);
+  pde_operator->apply_mass_operator(mass_u, velocity_np);
+  rhs.add(1.0, mass_u);
+
+  // block inverse mass: the solution without penalty terms, initial guess otherwise
+  pde_operator->apply_inverse_mass_operator(velocity_np, rhs);
+
+  if(this->param.use_divergence_penalty or this->param.use_continuity_penalty)
+  {
+    // penalty parameters from the extrapolated full velocity u_h
+    VectorType velocity_extrapolated, velocity_total_i;
+    pde_operator->initialize_vector_velocity(velocity_extrapolated);
+    pde_operator->initialize_vector_velocity(velocity_total_i);
+    for(unsigned int i = 0; i < velocity.size(); ++i)
+    {
+      pde_operator->compute_total_velocity(velocity_total_i, velocity[i]);
+      velocity_extrapolated.add(this->extra.get_beta(i), velocity_total_i);
+    }
+
+    pde_operator->update_projection_operator_enriched(velocity_extrapolated,
+                                                      this->get_time_step_size());
+
+    unsigned int const n_iter = pde_operator->solve_projection_enriched(velocity_np, rhs);
+
+    iterations_projection.first += 1;
+    iterations_projection.second += n_iter;
+
+    if(this->print_solver_info() and not(this->is_test))
+    {
+      this->pcout << std::endl << "Solve projection step (enriched):";
+      print_solver_info_linear(this->pcout, n_iter, timer.wall_time());
+    }
+  }
+  else if(this->print_solver_info() and not(this->is_test))
+  {
+    this->pcout << std::endl << "Explicit projection step (enriched):";
+    print_wall_time(this->pcout, timer.wall_time());
+  }
+
+  this->timer_tree->insert({"Timeloop", "Projection step"}, timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDFPressureCorrection<dim, Number>::evaluate_convective_term()
 {
   dealii::Timer timer;
@@ -899,13 +1118,48 @@ TimeIntBDFPressureCorrection<dim, Number>::evaluate_convective_term()
   {
     if(this->param.ale_formulation == false) // Eulerian case
     {
-      pde_operator->evaluate_convective_term(this->convective_term_np,
-                                             velocity_np.block(0),
-                                             this->get_next_time());
+      if(this->param.wall_enrichment_enabled)
+      {
+        // w_np = M^{-1} C(u_h); enriched form once the coupling is active in this step
+        compute_convective_history_entry(convective_history_np,
+                                         velocity_np,
+                                         this->get_next_time(),
+                                         enrichment_coupling);
+      }
+      else
+    {
+        pde_operator->evaluate_convective_term(this->convective_term_np,
+                                               velocity_np.block(0),
+                                               this->get_next_time());
+      }
     }
   }
 
   this->timer_tree->insert({"Timeloop", "Momentum step"}, timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDFPressureCorrection<dim, Number>::compute_convective_history_entry(
+  BlockVectorType &       w,
+  BlockVectorType const & u,
+  double const            evaluation_time,
+  bool const              enriched) const
+{
+  BlockVectorType c(w);
+  if(enriched)
+  {
+    // c = (C_bar, C_tilde)(u_h), w = M^{-1} c with the block mass matrix
+    pde_operator->evaluate_convective_term_enriched(c, u, evaluation_time);
+    pde_operator->apply_inverse_mass_operator(w, c);
+  }
+  else
+{
+    // polynomial space, U_tilde = 0
+    pde_operator->evaluate_convective_term(c.block(0), u.block(0), evaluation_time);
+    pde_operator->apply_inverse_mass_operator(w.block(0), c.block(0));
+    w.block(1) = 0.0;
+  }
 }
 
 template<int dim, typename Number>
@@ -931,7 +1185,29 @@ TimeIntBDFPressureCorrection<dim, Number>::prepare_vectors_for_next_timestep()
 
   if(this->param.wall_enrichment_enabled)
   {
-    this->pde_operator->update_wall_enrichment_vectors(velocity_np.block(0));
+    if(this->param.convective_problem())
+    {
+      push_back(convective_history);
+      convective_history[0].swap(convective_history_np);
+    }
+
+    // U_tilde for postprocessing and the enrichment operators
+    auto const & function_enrichment = pde_operator->get_function_enrichment();
+    function_enrichment->enrichment_velocity = velocity[0].block(1);
+    function_enrichment->enrichment_velocity.update_ghost_values();
+
+    // friction velocity for the next time step (\psi still the one used in this time step)
+    bool const residual_based_wss =
+      this->param.wall_shear_stress_computation == WallShearStressComputation::MomentumResidual;
+
+    if(residual_based_wss and residual_available)
+      pde_operator->update_friction_velocity_from_residual(velocity_momentum,
+                                                           velocity_momentum_hat,
+                                                           mass_factor_momentum);
+    else // no enriched step yet (time step 1) or gradient-based wall shear stress
+      pde_operator->update_wall_enrichment_vectors(velocity[0].block(0));
+
+    residual_available = false;
   }
 }
 

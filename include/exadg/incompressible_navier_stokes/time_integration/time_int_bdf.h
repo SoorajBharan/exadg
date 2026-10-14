@@ -134,6 +134,8 @@ protected:
   std::vector<VectorType> vec_convective_term;
   VectorType              convective_term_np;
 
+  VectorType              velocity_total;
+
   // required for strongly-coupled partitioned iteration
   bool use_extrapolation;
   bool store_solution;

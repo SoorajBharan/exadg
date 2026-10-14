@@ -19,6 +19,9 @@
  *  ______________________________________________________________________
  */
 
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/numerics/vector_tools_mean_value.h>
 
 #include <exadg/incompressible_navier_stokes/preconditioners/multigrid_preconditioner_momentum.h>
@@ -79,6 +82,12 @@ OperatorCoupled<dim, Number>::setup_preconditioners_and_solvers()
 
   setup_block_preconditioner();
   setup_solver_coupled();
+
+  // wall enrichment: coupled system for (U_bar, U_tilde, p^*) of the unsteady solver
+  // (TimeIntBDFCoupled); the standard solver above is used in the first time step
+  // (U_tilde = 0). The steady solver (DriverSteadyProblems) keeps its own treatment.
+  if(this->param.wall_enrichment_enabled and this->param.solver_type == SolverType::Unsteady)
+    setup_wall_enrichment_coupled();
 }
 
 template<int dim, typename Number>
@@ -1208,6 +1217,543 @@ OperatorCoupled<dim, Number>::apply_inverse_negative_laplace_operator(VectorType
   }
 }
 
+
+/*
+ * Wall enrichment (Krank et al. 2018): coupled system for X = (U_bar, U_tilde, p^*).
+ */
+
+template<int dim, typename Number>
+unsigned int
+LinearSolverCoupledEnriched<dim, Number>::solve(BlockVectorType &       dst,
+                                                BlockVectorType const & rhs) const
+{
+  AssertThrow(linear_operator != nullptr and preconditioner != nullptr,
+              dealii::ExcMessage("LinearSolverCoupledEnriched not initialized."));
+
+  dealii::ReductionControl control(solver_data.max_iter, solver_data.abs_tol, solver_data.rel_tol);
+
+  if(solver_type == SolverCoupled::GMRES)
+  {
+    typename dealii::SolverGMRES<BlockVectorType>::AdditionalData additional_data;
+    additional_data.max_basis_size        = solver_data.max_krylov_size;
+    additional_data.right_preconditioning = true;
+
+    dealii::SolverGMRES<BlockVectorType> solver(control, additional_data);
+    if(use_preconditioner)
+      solver.solve(*linear_operator, dst, rhs, *preconditioner);
+    else
+      solver.solve(*linear_operator, dst, rhs, dealii::PreconditionIdentity());
+  }
+  else if(solver_type == SolverCoupled::FGMRES)
+  {
+    typename dealii::SolverFGMRES<BlockVectorType>::AdditionalData additional_data;
+    additional_data.max_basis_size = solver_data.max_krylov_size;
+
+    dealii::SolverFGMRES<BlockVectorType> solver(control, additional_data);
+    if(use_preconditioner)
+      solver.solve(*linear_operator, dst, rhs, *preconditioner);
+    else
+      solver.solve(*linear_operator, dst, rhs, dealii::PreconditionIdentity());
+  }
+  else
+  {
+    AssertThrow(false,
+                dealii::ExcMessage("Specified solver for the enriched coupled problem is not "
+                                   "implemented."));
+  }
+
+  return control.last_step();
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::setup_wall_enrichment_coupled()
+{
+  AssertThrow(this->unsteady_problem_has_to_be_solved(),
+              dealii::ExcMessage("Coupled solver with wall enrichment: only unsteady problems "
+                                 "are implemented."));
+  AssertThrow(not this->param.ale_formulation,
+              dealii::ExcMessage("Coupled solver with wall enrichment: ALE not implemented."));
+  AssertThrow(this->param.viscous_problem() and not this->param.viscosity_is_variable(),
+              dealii::ExcMessage("Coupled solver with wall enrichment: only a constant viscosity "
+                                 "is implemented."));
+  AssertThrow(this->param.apply_penalty_terms_in_postprocessing_step or
+                (not this->param.use_divergence_penalty and not this->param.use_continuity_penalty),
+              dealii::ExcMessage("Coupled solver with wall enrichment: penalty terms inside the "
+                                 "coupled system are not implemented (use "
+                                 "apply_penalty_terms_in_postprocessing_step)."));
+  AssertThrow(not(this->param.use_continuity_penalty and
+                  this->param.continuity_penalty_use_boundary_data),
+              dealii::ExcMessage("Coupled solver with wall enrichment: continuity penalty with "
+                                 "boundary data is not implemented."));
+  AssertThrow(this->param.preconditioner_coupled != PreconditionerCoupled::None or
+                this->param.solver_coupled == SolverCoupled::GMRES or
+                this->param.solver_coupled == SolverCoupled::FGMRES,
+              dealii::ExcMessage("Coupled solver with wall enrichment: unsupported solver."));
+
+  // mass + viscous operator for the U_bar rows: same data and kernels as momentum_operator,
+  // without the convective term (added by apply_linearized_convective_term_enriched())
+  MomentumOperatorData<dim> data = this->momentum_operator.get_data();
+  data.convective_problem        = false;
+
+  dealii::AffineConstraints<Number> constraint_dummy;
+  constraint_dummy.close();
+
+  momentum_operator_mass_viscous.initialize(
+    this->get_matrix_free(), constraint_dummy, data, this->viscous_kernel, this->convective_kernel);
+
+  this->setup_wall_enrichment_solvers(momentum_operator_mass_viscous);
+
+  // temporary vectors
+  auto const init_velocity = [&](BlockVectorType & v) {
+    v.reinit(2);
+    this->initialize_vector_velocity(v.block(0));
+    this->initialize_vector_enrichment(v.block(1));
+    v.collect_sizes();
+  };
+  init_velocity(linearization_enriched);
+  init_velocity(tmp_velocity_enriched);
+  init_velocity(tmp_velocity_enriched_2);
+  init_velocity(tmp_velocity_enriched_3);
+  initialize_block_vector_velocity_pressure_enriched(tmp_solution_enriched);
+  this->initialize_vector_pressure(tmp_pressure_enriched);
+  if(this->param.preconditioner_coupled == PreconditionerCoupled::BlockTriangularFactorization)
+    this->initialize_vector_pressure(vec_tmp_pressure);
+
+  // linear solver, preconditioner and Newton solver
+  linear_operator_enriched.initialize(*this);
+  block_preconditioner_enriched.initialize(this);
+  linear_solver_enriched.initialize(linear_operator_enriched,
+                                    block_preconditioner_enriched,
+                                    this->param.solver_data_coupled,
+                                    this->param.solver_coupled,
+                                    this->param.preconditioner_coupled !=
+                                      PreconditionerCoupled::None);
+
+  if(this->param.nonlinear_problem_has_to_be_solved())
+  {
+    nonlinear_operator_enriched.initialize(*this);
+
+    newton_solver_enriched =
+      std::make_shared<Newton::Solver<BlockVectorType,
+                                      NonlinearOperatorCoupledEnriched<dim, Number>,
+                                      LinearOperatorCoupledEnriched<dim, Number>,
+                                      LinearSolverCoupledEnriched<dim, Number>>>(
+        this->param.newton_solver_data_coupled,
+        nonlinear_operator_enriched,
+        linear_operator_enriched,
+        linear_solver_enriched);
+  }
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::initialize_block_vector_velocity_pressure_enriched(
+  BlockVectorType & dst) const
+{
+  dst.reinit(3);
+  this->initialize_vector_velocity(dst.block(0));
+  this->initialize_vector_enrichment(dst.block(1));
+  this->initialize_vector_pressure(dst.block(2));
+  dst.collect_sizes();
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::constrain_velocity_enriched(BlockVectorType & dst) const
+{
+  // E_bar: strong no-slip, U_bar DoFs on enrichment walls fixed (homogeneous data)
+  if(this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
+    dst.block(0).scale(this->free_dofs_bar);
+
+  // P: projection onto the well-posed enrichment modes
+  this->get_wall_dg_coupler()->apply_enrichment_projector(dst.block(1), dst.block(1), false);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::copy_velocity_enriched(BlockVectorType &       velocity,
+                                                     BlockVectorType const & src) const
+{
+  velocity.block(0) = src.block(0);
+  velocity.block(1) = src.block(1);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::set_velocity_enriched(BlockVectorType &       dst,
+                                                    BlockVectorType const & velocity) const
+{
+  dst.block(0) = velocity.block(0);
+  dst.block(1) = velocity.block(1);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::rhs_stokes_problem_enriched(BlockVectorType & dst,
+                                                          double const      time) const
+{
+  BlockVectorType & rhs_velocity = tmp_velocity_enriched;
+  BlockVectorType & gradient     = tmp_velocity_enriched_2;
+
+  /*
+   * velocity rows (\bar{v}_h and \psi \tilde{v}_h)
+   */
+
+  // pressure gradient, boundary data g_p: s_c G(0; g_p / s_c) moved to the right-hand side
+  VectorType zero_pressure;
+  this->initialize_vector_pressure(zero_pressure);
+  this->evaluate_pressure_gradient_term_enriched(gradient,
+                                                 zero_pressure,
+                                                 time,
+                                                 1.0 / scaling_factor_continuity);
+  rhs_velocity.equ(-scaling_factor_continuity, gradient);
+
+  // viscous term, velocity Dirichlet data (U_bar rows: ExaDG's operator, U_tilde rows and
+  // enrichment-aware penalty correction: EnrichedMomentumOperator)
+  this->viscous_operator.set_time(time);
+  this->viscous_operator.rhs_add(rhs_velocity.block(0));
+  this->rhs_add_enriched_viscous_boundary_data(rhs_velocity.block(0),
+                                               rhs_velocity.block(1),
+                                               time);
+
+  // body force
+  if(this->param.right_hand_side)
+    this->evaluate_add_body_force_term_enriched(rhs_velocity, time);
+
+  set_velocity_enriched(dst, rhs_velocity);
+
+  /*
+   * continuity rows: velocity Dirichlet data of the divergence term (the \psi \tilde{u}_h part
+   * has no inhomogeneous contribution); minus sign and scaling as in rhs_stokes_problem()
+   */
+  this->divergence_operator.rhs(dst.block(2), time);
+  dst.block(2) *= -scaling_factor_continuity;
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::apply_velocity_block_enriched(BlockVectorType &       dst,
+                                                            BlockVectorType const & velocity) const
+{
+  // mass + viscous terms (U_bar-U_bar block: momentum_operator_mass_viscous)
+  this->enriched_momentum_operator.vmult(dst, velocity);
+
+  // linearized convective term c'(w_h) u_h (Newton)
+  if(this->param.implicit_convective_problem())
+  {
+    BlockVectorType & convective = tmp_velocity_enriched_3;
+    this->apply_linearized_convective_term_enriched(convective,
+                                                    velocity,
+                                                    linearization_enriched,
+                                                    time_linearization_enriched);
+    dst.add(1.0, convective);
+  }
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::apply_linearized_problem_enriched(BlockVectorType &       dst,
+                                                                BlockVectorType const & src) const
+{
+  // E X
+  BlockVectorType & src_constrained = tmp_solution_enriched;
+  src_constrained                   = src;
+  constrain_velocity_enriched(src_constrained);
+
+  BlockVectorType & velocity = tmp_velocity_enriched;
+  BlockVectorType & result   = tmp_velocity_enriched_2;
+  copy_velocity_enriched(velocity, src_constrained);
+
+  // (1,1) block: A_h u_h
+  apply_velocity_block_enriched(result, velocity);
+
+  // (1,2) block: s_c G_h p^* (homogeneous), tested with \bar{v}_h and \psi \tilde{v}_h
+  {
+    BlockVectorType & gradient = tmp_velocity_enriched_3;
+    this->apply_pressure_gradient_term_enriched(gradient, src_constrained.block(2));
+    result.add(scaling_factor_continuity, gradient);
+  }
+
+  set_velocity_enriched(dst, result);
+
+  // (2,1) block: -s_c D_h u_h (homogeneous)
+  this->apply_velocity_divergence_term(dst.block(2), velocity);
+  dst.block(2) *= -scaling_factor_continuity;
+
+  // E K E X + (I - E) X on the velocity rows
+  constrain_velocity_enriched(dst);
+  for(unsigned int b = 0; b < 2; ++b)
+  {
+    dst.block(b).add(1.0, src.block(b));
+    dst.block(b).add(-1.0, src_constrained.block(b));
+  }
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::evaluate_nonlinear_residual_enriched(
+  BlockVectorType &       dst,
+  BlockVectorType const & src,
+  BlockVectorType const & rhs_velocity,
+  double const            time,
+  double const            scaling_factor_mass) const
+{
+  (void)scaling_factor_mass; // set in solve_nonlinear_problem_enriched()
+
+  BlockVectorType & velocity = tmp_velocity_enriched;
+  BlockVectorType & residual = tmp_velocity_enriched_2;
+  BlockVectorType & term     = tmp_velocity_enriched_3;
+  copy_velocity_enriched(velocity, src);
+
+  /*
+   * momentum rows: s M u_h + K u_h + c(u_h) + s_c G(p^*) - rhs, tested with \bar{v}_h and
+   * \psi \tilde{v}_h
+   */
+
+  // mass + viscous, homogeneous
+  this->enriched_momentum_operator.vmult(residual, velocity);
+
+  // viscous term, velocity Dirichlet data
+  term = 0.0;
+  this->viscous_operator.set_time(time);
+  this->viscous_operator.rhs_add(term.block(0));
+  this->rhs_add_enriched_viscous_boundary_data(term.block(0), term.block(1), time);
+  residual.add(-1.0, term);
+
+  // implicit convective term c(u_h), incl. Dirichlet data
+  if(this->param.implicit_convective_problem())
+  {
+    this->evaluate_convective_term_enriched(term, velocity, time);
+    residual.add(1.0, term);
+  }
+
+  // pressure gradient, incl. Dirichlet data g_p / s_c
+  this->evaluate_pressure_gradient_term_enriched(term,
+                                                 src.block(2),
+                                                 time,
+                                                 1.0 / scaling_factor_continuity);
+  residual.add(scaling_factor_continuity, term);
+
+  // constant right-hand side (time derivative history, body force)
+  residual.add(-1.0, rhs_velocity);
+
+  set_velocity_enriched(dst, residual);
+
+  /*
+   * continuity rows: -s_c D(u_h), incl. velocity Dirichlet data
+   */
+  this->evaluate_velocity_divergence_term(dst.block(2), velocity, time);
+  dst.block(2) *= -scaling_factor_continuity;
+
+  // R_c(X) = E R(X) + (I - E) X on the velocity rows
+  constrain_velocity_enriched(dst);
+  BlockVectorType & src_constrained = tmp_solution_enriched;
+  src_constrained                   = src;
+  constrain_velocity_enriched(src_constrained);
+  for(unsigned int b = 0; b < 2; ++b)
+  {
+    dst.block(b).add(1.0, src.block(b));
+    dst.block(b).add(-1.0, src_constrained.block(b));
+  }
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::set_linearization_enriched(
+  BlockVectorType const & solution_linearization) const
+{
+  copy_velocity_enriched(linearization_enriched, solution_linearization);
+
+  // U_bar rows of non-enriched cells: ExaDG's ConvectiveKernel, linearized about W_bar
+  this->set_velocity_ptr(linearization_enriched.block(0));
+}
+
+template<int dim, typename Number>
+unsigned int
+OperatorCoupled<dim, Number>::solve_linear_stokes_problem_enriched(BlockVectorType &       dst,
+                                                                   BlockVectorType const & rhs,
+                                                                   double const scaling_factor_mass)
+{
+  AssertThrow(not this->param.implicit_convective_problem(),
+              dealii::ExcMessage("solve_linear_stokes_problem_enriched(): use "
+                                 "solve_nonlinear_problem_enriched() for an implicit convective "
+                                 "term."));
+
+  // mass factor of the velocity block, also used by the Schur-complement preconditioner
+  momentum_operator_mass_viscous.set_scaling_factor_mass_operator(scaling_factor_mass);
+  this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
+
+  // the block-Jacobi preconditioner depends on psi (u_tau) and on the mass factor
+  update_block_preconditioner_enriched();
+
+  // K_c X = E B, X_0 <- E X_0
+  BlockVectorType rhs_constrained(rhs);
+  constrain_velocity_enriched(rhs_constrained);
+  constrain_velocity_enriched(dst);
+
+  return linear_solver_enriched.solve(dst, rhs_constrained);
+}
+
+template<int dim, typename Number>
+std::tuple<unsigned int, unsigned int>
+OperatorCoupled<dim, Number>::solve_nonlinear_problem_enriched(
+  BlockVectorType &       dst,
+  BlockVectorType const & rhs_velocity,
+  double const            time,
+  double const            scaling_factor_mass)
+{
+  AssertThrow(newton_solver_enriched.get() != nullptr,
+              dealii::ExcMessage("Newton solver for the enriched coupled problem not set up."));
+
+  nonlinear_operator_enriched.update(rhs_velocity, time, scaling_factor_mass);
+
+  // mass factor of the velocity block, also used by the Schur-complement preconditioner
+  momentum_operator_mass_viscous.set_scaling_factor_mass_operator(scaling_factor_mass);
+  this->momentum_operator.set_scaling_factor_mass_operator(scaling_factor_mass);
+  this->momentum_operator.set_time(time);
+
+  // Dirichlet data of the linearization point in the linearized convective term
+  time_linearization_enriched = time;
+
+  // the block-Jacobi preconditioner depends on psi (u_tau) and on the mass factor, not on the
+  // linearization point: update once per time step
+  update_block_preconditioner_enriched();
+
+  // initial guess in the constrained space
+  constrain_velocity_enriched(dst);
+
+  Newton::UpdateData update;
+  update.do_update = false;
+
+  return newton_solver_enriched->solve(dst, update);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::update_block_preconditioner_enriched()
+{
+  VectorType const * free_bar =
+    (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &this->free_dofs_bar :
+                                                                           nullptr;
+
+  // local operator on enriched cells: s M + nu (grad, grad) on (U_bar, U_tilde), restricted by E
+  this->enriched_block_jacobi_preconditioner.update(
+    momentum_operator_mass_viscous.get_scaling_factor_mass_operator(),
+    this->param.viscosity,
+    nullptr,
+    free_bar);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::apply_preconditioner_velocity_block_enriched(
+  BlockVectorType &       dst,
+  BlockVectorType const & src) const
+{
+  this->enriched_block_jacobi_preconditioner.vmult(dst, src);
+}
+
+template<int dim, typename Number>
+void
+OperatorCoupled<dim, Number>::apply_block_preconditioner_enriched(BlockVectorType &       dst,
+                                                                  BlockVectorType const & src) const
+{
+  /*
+   * Same block preconditioners as apply_block_preconditioner(): the velocity block A_h^{-1} is
+   * approximated by the enriched block-Jacobi preconditioner, the pressure Schur complement by
+   * the preconditioner of the standard solver (the pressure space is not enriched). The
+   * pressure gradient and velocity divergence operators act on u_h = \bar{u}_h + \psi \tilde{u}_h.
+   */
+  auto const type = this->param.preconditioner_coupled;
+
+  BlockVectorType & velocity_in  = tmp_velocity_enriched;
+  BlockVectorType & velocity_out = tmp_velocity_enriched_2;
+
+  if(type == PreconditionerCoupled::BlockDiagonal)
+  {
+    // dst = diag(A^{-1}, -S^{-1}) src
+    apply_preconditioner_pressure_block(dst.block(2), src.block(2));
+
+    copy_velocity_enriched(velocity_in, src);
+    apply_preconditioner_velocity_block_enriched(velocity_out, velocity_in);
+    set_velocity_enriched(dst, velocity_out);
+  }
+  else if(type == PreconditionerCoupled::BlockTriangular)
+  {
+    /*
+     *                         / A^{-1}  0 \   / I  B^{T} \   / I      0    \
+     *  -> P_triangular^{-1} = |           | * |          | * |             |
+     *                         \   0     I /   \ 0   -I   /   \ 0   -S^{-1} /
+     */
+    apply_preconditioner_pressure_block(dst.block(2), src.block(2));
+
+    // velocity rows: src_u + s_c E G_h dst_p
+    copy_velocity_enriched(velocity_in, src);
+    {
+      BlockVectorType & gradient = tmp_velocity_enriched_3;
+      this->apply_pressure_gradient_term_enriched(gradient, dst.block(2));
+      gradient.block(0) *= scaling_factor_continuity;
+      gradient.block(1) *= scaling_factor_continuity;
+      if(this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
+        gradient.block(0).scale(this->free_dofs_bar);
+      this->get_wall_dg_coupler()->apply_enrichment_projector(gradient.block(1),
+                                                              gradient.block(1),
+                                                              false);
+      velocity_in.add(1.0, gradient);
+    }
+    dst.block(2) *= -1.0;
+
+    apply_preconditioner_velocity_block_enriched(velocity_out, velocity_in);
+    set_velocity_enriched(dst, velocity_out);
+  }
+  else if(type == PreconditionerCoupled::BlockTriangularFactorization)
+  {
+    /*
+     *                          / I  - A^{-1} B^{T} \   / I      0    \   / I   0 \   / A^{-1} 0 \
+     *  -> P_tria-factor^{-1} = |                   | * |             | * |       | * |          |
+     *                          \ 0          I      /   \ 0   -S^{-1} /   \ B  -I /   \   0    I /
+     */
+
+    // dst_u = A^{-1} src_u
+    copy_velocity_enriched(velocity_in, src);
+    apply_preconditioner_velocity_block_enriched(velocity_out, velocity_in);
+
+    // dst_p = -(src_p - s_c D_h dst_u)  (B = -s_c D_h)
+    this->apply_velocity_divergence_term(vec_tmp_pressure, velocity_out);
+    tmp_pressure_enriched = src.block(2);
+    tmp_pressure_enriched.add(scaling_factor_continuity, vec_tmp_pressure);
+    tmp_pressure_enriched *= -1.0;
+
+    // dst_p = -S^{-1} dst_p
+    apply_preconditioner_pressure_block(dst.block(2), tmp_pressure_enriched);
+
+    // dst_u = dst_u - A^{-1} s_c E G_h dst_p
+    BlockVectorType & gradient = tmp_velocity_enriched_3;
+    this->apply_pressure_gradient_term_enriched(gradient, dst.block(2));
+    gradient.block(0) *= scaling_factor_continuity;
+    gradient.block(1) *= scaling_factor_continuity;
+    if(this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
+      gradient.block(0).scale(this->free_dofs_bar);
+    this->get_wall_dg_coupler()->apply_enrichment_projector(gradient.block(1),
+                                                            gradient.block(1),
+                                                            false);
+    apply_preconditioner_velocity_block_enriched(velocity_in, gradient);
+    velocity_out.add(-1.0, velocity_in);
+
+    set_velocity_enriched(dst, velocity_out);
+  }
+  else
+  {
+    AssertThrow(false, dealii::ExcNotImplemented());
+  }
+}
+
+template class LinearSolverCoupledEnriched<2, float>;
+template class LinearSolverCoupledEnriched<2, double>;
+
+template class LinearSolverCoupledEnriched<3, float>;
+template class LinearSolverCoupledEnriched<3, double>;
 
 template class OperatorCoupled<2, float>;
 template class OperatorCoupled<2, double>;

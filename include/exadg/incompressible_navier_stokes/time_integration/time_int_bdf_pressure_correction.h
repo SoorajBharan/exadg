@@ -113,6 +113,24 @@ private:
   void
   rhs_momentum(VectorType & rhs);
 
+  /*
+     * Wall enrichment (Krank et al. 2018): sub-steps for u_h = \bar{u}_h + \psi \tilde{u}_h.
+     * Momentum step with explicit convective term (linear system in both blocks).
+     */
+  void
+  momentum_step_enriched();
+
+  // projection with the enriched pressure gradient (and enriched penalty terms)
+  void
+  projection_step_enriched(VectorType const & pressure_increment);
+
+  // w = M^{-1} C(u_h): convective term in velocity space (can be projected like the velocity)
+  void
+  compute_convective_history_entry(BlockVectorType &       w,
+                                   BlockVectorType const & u,
+                                   double const            evaluation_time,
+                                   bool const              enriched) const;
+
   void
   pressure_step(VectorType & pressure_increment);
 
@@ -182,6 +200,18 @@ private:
     iterations_pressure;
   std::pair<unsigned int /* calls */, unsigned long long /* iteration counts */>
     iterations_projection;
+
+  bool enrichment_coupling = false;
+  // wall enrichment: convective term history in velocity space, w_i = M^{-1} C(u_h^{n-i})
+  std::vector<BlockVectorType> convective_history;
+  BlockVectorType              convective_history_np;
+
+  // wall enrichment: momentum-step solution u* and \hat{u} with (gamma0/dt) M \hat{u} = rhs,
+  // needed for the residual-based friction velocity
+  BlockVectorType velocity_momentum;
+  BlockVectorType velocity_momentum_hat;
+  double          mass_factor_momentum = 0.0;
+  bool            residual_available   = false;
 };
 
 } // namespace IncNS

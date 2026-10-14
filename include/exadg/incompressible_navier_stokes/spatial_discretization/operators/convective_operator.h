@@ -792,7 +792,11 @@ public:
     // element e⁺
     dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> delta_uP;
 
-    if(boundary_type == BoundaryTypeU::Dirichlet or boundary_type == BoundaryTypeU::DirichletCached)
+    // enrichment walls are velocity Dirichlet boundaries (u = g_wall), see
+    // calculate_exterior_value_nonlinear(): the linearization is the homogeneous Dirichlet case
+    if(boundary_type == BoundaryTypeU::Dirichlet or
+       boundary_type == BoundaryTypeU::DirichletCached or
+       boundary_type == BoundaryTypeU::WallEnrichment)
     {
       if(data.type_dirichlet_bc == TypeDirichletBCs::Mirror)
       {
@@ -938,6 +942,34 @@ public:
                                        VectorType const &                      u_tilde,
                                        FunctionEnrichment<dim, Number> const & function_enrichment,
                                        Number const                            evaluation_time) const;
+
+  /*
+   * Wall enrichment, Eulerian: linearized convective operator c'(w_h) delta_u_h (Newton), with
+   * the linearization point w_h = W_bar + psi W_tilde and the increment
+   * delta_u_h = delta_U_bar + psi delta_U_tilde (both formulations of the convective term),
+   *
+   *   divergence form:  -(grad v_h, w_h (x) delta_u_h + delta_u_h (x) w_h) + (v_h, F'(w_h) delta_u_h)_faces
+   *   convective form:   (v_h, grad(w_h) delta_u_h + grad(delta_u_h) w_h) + (v_h, F'(w_h) delta_u_h)_faces
+   *
+   * with the linearized Lax-Friedrichs / upwind fluxes F' of the kernel (homogeneous boundary
+   * data for delta_u_h, Dirichlet data for w_h). Same output layout as
+   * evaluate_nonlinear_operator_enriched():
+   *   dst_bar_enriched (shadow layout): COMPLETE rows (v_bar, c'(w_h) delta_u_h) of enriched cells
+   *                                     (cell + all faces incl. boundary)                -> overwrite
+   *   dst_bar_halo     (shadow layout): correction (v_bar, c'(w_h) delta_u_h) - (v_bar, c'(W_bar) delta_U_bar)
+   *                                     of halo cells (faces to enriched cells)          -> add
+   *   dst_tilde        (enrichment layout): (psi v_tilde, c'(w_h) delta_u_h)
+   */
+  void
+  apply_linearized_operator_enriched(VectorType &                            dst_bar_enriched,
+                                     VectorType &                            dst_bar_halo,
+                                     VectorType &                            dst_tilde,
+                                     VectorType const &                      w_bar_shadow,
+                                     VectorType const &                      w_tilde,
+                                     VectorType const &                      delta_u_bar_shadow,
+                                     VectorType const &                      delta_u_tilde,
+                                     FunctionEnrichment<dim, Number> const & function_enrichment,
+                                     Number const                            evaluation_time) const;
 
   void
   evaluate_nonlinear_operator_add(VectorType &       dst,

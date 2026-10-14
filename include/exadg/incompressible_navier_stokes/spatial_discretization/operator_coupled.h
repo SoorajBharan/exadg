@@ -184,6 +184,196 @@ private:
   PDEOperator * pde_operator;
 };
 
+/*
+ * Wall enrichment (Krank et al. 2018) for the coupled solver. The unknowns are stored in a block
+ * vector with three blocks
+ *
+ *   X = (U_bar, U_tilde, p^*),   u_h = \bar{u}_h + \psi \tilde{u}_h,   p = s_c p^*,
+ *
+ * block(0): U_bar (global DG layout), block(1): U_tilde (enrichment layout), block(2): scaled
+ * pressure p^* (s_c = scaling_factor_continuity, as in the standard coupled solver). The momentum
+ * rows are tested with \bar{v}_h and \psi \tilde{v}_h, the continuity rows with q_h. The classes
+ * below mirror NonlinearOperatorCoupled, LinearOperatorCoupled and BlockPreconditioner for this
+ * layout so that ExaDG's Newton::Solver can be used.
+ */
+template<int dim, typename Number>
+class NonlinearOperatorCoupledEnriched
+{
+private:
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+  typedef OperatorCoupled<dim, Number> PDEOperator;
+
+public:
+  NonlinearOperatorCoupledEnriched()
+    : pde_operator(nullptr), rhs_velocity(nullptr), time(0.0), scaling_factor_mass(1.0)
+  {
+  }
+
+  void
+  initialize(PDEOperator const & pde_operator)
+  {
+    this->pde_operator = &pde_operator;
+  }
+
+  // rhs_velocity: (U_bar, U_tilde) rows of the constant right-hand side
+  void
+  update(BlockVectorType const & rhs_velocity, double const & time, double const & scaling_factor)
+  {
+    this->rhs_velocity        = &rhs_velocity;
+    this->time                = time;
+    this->scaling_factor_mass = scaling_factor;
+  }
+
+  /*
+   * The implementation of the Newton solver requires a function called
+   * 'evaluate_residual'.
+   */
+  void
+  evaluate_residual(BlockVectorType & dst, BlockVectorType const & src) const
+  {
+    pde_operator->evaluate_nonlinear_residual_enriched(
+      dst, src, *rhs_velocity, time, scaling_factor_mass);
+  }
+
+private:
+  PDEOperator const * pde_operator;
+
+  BlockVectorType const * rhs_velocity;
+  double                  time;
+  double                  scaling_factor_mass;
+};
+
+template<int dim, typename Number>
+class LinearOperatorCoupledEnriched : public dealii::Subscriptor
+{
+private:
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+  typedef OperatorCoupled<dim, Number> PDEOperator;
+
+public:
+  LinearOperatorCoupledEnriched() : dealii::Subscriptor(), pde_operator(nullptr)
+  {
+  }
+
+  void
+  initialize(PDEOperator const & pde_operator)
+  {
+    this->pde_operator = &pde_operator;
+  }
+
+  /*
+   * The implementation of the Newton solver requires a function called
+   * 'set_solution_linearization'.
+   */
+  void
+  set_solution_linearization(BlockVectorType const & solution_linearization) const
+  {
+    pde_operator->set_linearization_enriched(solution_linearization);
+  }
+
+  /*
+   * The implementation of linear solvers in deal.ii requires that a function called 'vmult' is
+   * provided.
+   */
+  void
+  vmult(BlockVectorType & dst, BlockVectorType const & src) const
+  {
+    pde_operator->apply_linearized_problem_enriched(dst, src);
+  }
+
+private:
+  PDEOperator const * pde_operator;
+};
+
+template<int dim, typename Number>
+class BlockPreconditionerCoupledEnriched
+{
+private:
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+  typedef OperatorCoupled<dim, Number> PDEOperator;
+
+public:
+  BlockPreconditionerCoupledEnriched() : pde_operator(nullptr)
+  {
+  }
+
+  void
+  initialize(PDEOperator * pde_operator_in)
+  {
+    pde_operator = pde_operator_in;
+  }
+
+  void
+  update()
+  {
+    pde_operator->update_block_preconditioner_enriched();
+  }
+
+  void
+  vmult(BlockVectorType & dst, BlockVectorType const & src) const
+  {
+    pde_operator->apply_block_preconditioner_enriched(dst, src);
+  }
+
+private:
+  PDEOperator * pde_operator;
+};
+
+/*
+ * Krylov solver (GMRES/FGMRES, right preconditioning as in ExaDG's Krylov::SolverGMRES) for the
+ * linear(ized) enriched coupled system, with the interface required by Newton::Solver.
+ */
+template<int dim, typename Number>
+class LinearSolverCoupledEnriched
+{
+private:
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+public:
+  LinearSolverCoupledEnriched()
+    : linear_operator(nullptr),
+      preconditioner(nullptr),
+      solver_type(SolverCoupled::GMRES),
+      use_preconditioner(true)
+  {
+  }
+
+  void
+  initialize(LinearOperatorCoupledEnriched<dim, Number> const & linear_operator_in,
+             BlockPreconditionerCoupledEnriched<dim, Number> &  preconditioner_in,
+             SolverData const &                                 solver_data_in,
+             SolverCoupled const                                solver_type_in,
+             bool const                                         use_preconditioner_in)
+  {
+    linear_operator    = &linear_operator_in;
+    preconditioner     = &preconditioner_in;
+    solver_data        = solver_data_in;
+    solver_type        = solver_type_in;
+    use_preconditioner = use_preconditioner_in;
+  }
+
+  void
+  update_preconditioner(bool const update) const
+  {
+    if(update and use_preconditioner)
+      preconditioner->update();
+  }
+
+  unsigned int
+  solve(BlockVectorType & dst, BlockVectorType const & rhs) const;
+
+private:
+  LinearOperatorCoupledEnriched<dim, Number> const * linear_operator;
+  BlockPreconditionerCoupledEnriched<dim, Number> *  preconditioner;
+
+  SolverData    solver_data;
+  SolverCoupled solver_type;
+  bool          use_preconditioner;
+};
+
 template<int dim, typename Number = double>
 class OperatorCoupled : public SpatialOperatorBase<dim, Number>
 {
@@ -324,9 +514,98 @@ public:
   void
   apply_block_preconditioner(BlockVectorType & dst, BlockVectorType const & src) const;
 
+  /*
+   * Wall enrichment (Krank et al. 2018): coupled system for X = (U_bar, U_tilde, p^*), see
+   * NonlinearOperatorCoupledEnriched. Saddle point system (homogeneous part)
+   *
+   *   [ A_h   s_c G_h ] [ u_h ]   [ b_u ]
+   *   [ -s_c D_h   0  ] [ p^* ] = [ b_p ],
+   *
+   * A_h: mass + viscous (+ linearized convective) operator tested with \bar{v}_h and
+   * \psi \tilde{v}_h, G_h/D_h: pressure gradient/velocity divergence of u_h. The velocity rows
+   * are restricted to the well-posed enrichment space and to the strong no-slip condition
+   * (if selected) with E = diag(E_bar, P) as in EnrichmentConstrainedOperator:
+   *   K_c = E K E + (I - E) on the velocity rows, right-hand side E b_u.
+   */
+
+  // X with three blocks (U_bar, U_tilde, p^*)
+  void
+  initialize_block_vector_velocity_pressure_enriched(BlockVectorType & dst) const;
+
+  /*
+   * Right-hand side of the Stokes problem (or explicit convective term): inhomogeneous boundary
+   * data of the pressure gradient, viscous and divergence terms, and the body force, all rows.
+   * The terms of the time derivative and the explicit convective term are added by the caller.
+   */
+  void
+  rhs_stokes_problem_enriched(BlockVectorType & dst, double const time) const;
+
+  unsigned int
+  solve_linear_stokes_problem_enriched(BlockVectorType &       dst,
+                                       BlockVectorType const & rhs,
+                                       double const            scaling_factor_mass);
+
+  /*
+   * Implicit convective term: Newton's method for X; rhs_velocity contains the constant
+   * (U_bar, U_tilde) rows of the right-hand side (time derivative history, body force).
+   */
+  std::tuple<unsigned int, unsigned int>
+  solve_nonlinear_problem_enriched(BlockVectorType &       dst,
+                                   BlockVectorType const & rhs_velocity,
+                                   double const            time,
+                                   double const            scaling_factor_mass);
+
+  // constrained nonlinear residual R_c(X) = E R(X) + (I - E) X (velocity rows)
+  void
+  evaluate_nonlinear_residual_enriched(BlockVectorType &       dst,
+                                       BlockVectorType const & src,
+                                       BlockVectorType const & rhs_velocity,
+                                       double const            time,
+                                       double const            scaling_factor_mass) const;
+
+  // linearization point w_h of the convective term (Newton)
+  void
+  set_linearization_enriched(BlockVectorType const & solution_linearization) const;
+
+  // constrained linear(ized) operator K_c
+  void
+  apply_linearized_problem_enriched(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  void
+  update_block_preconditioner_enriched();
+
+  void
+  apply_block_preconditioner_enriched(BlockVectorType & dst, BlockVectorType const & src) const;
+
 private:
   void
   setup_solver_coupled();
+
+  /*
+   * Wall enrichment
+   */
+  void
+  setup_wall_enrichment_coupled();
+
+  // X <- E X on the velocity blocks (block(0), block(1)) of X = (U_bar, U_tilde, p^*)
+  void
+  constrain_velocity_enriched(BlockVectorType & dst) const;
+
+  // (U_bar, U_tilde) of X = (U_bar, U_tilde, p^*) to/from a velocity block vector
+  void
+  copy_velocity_enriched(BlockVectorType & velocity, BlockVectorType const & src) const;
+
+  void
+  set_velocity_enriched(BlockVectorType & dst, BlockVectorType const & velocity) const;
+
+  // A_h u_h: mass + viscous (+ linearized convective) terms, homogeneous
+  void
+  apply_velocity_block_enriched(BlockVectorType & dst, BlockVectorType const & velocity) const;
+
+  // approximate inverse of the velocity block (block-Jacobi, includes the constraints E)
+  void
+  apply_preconditioner_velocity_block_enriched(BlockVectorType &       dst,
+                                               BlockVectorType const & src) const;
 
   /*
    * Block preconditioner
@@ -420,6 +699,37 @@ private:
   // temporary vectors that are necessary when applying the Schur-complement preconditioner (scp)
   VectorType mutable tmp_scp_pressure;
   VectorType mutable tmp_scp_velocity, tmp_scp_velocity_2;
+
+  /*
+   * Wall enrichment
+   */
+
+  // mass + viscous operator of the U_bar rows (no convective term), wrapped by the
+  // EnrichedMomentumOperator of SpatialOperatorBase; the convective term (implicit) is added
+  // separately by apply_linearized_convective_term_enriched()
+  MomentumOperator<dim, Number> momentum_operator_mass_viscous;
+
+  // linearization point (W_bar, W_tilde) of the convective term, and the evaluation time of
+  // its boundary data
+  mutable BlockVectorType linearization_enriched;
+  mutable double          time_linearization_enriched = 0.0;
+
+  NonlinearOperatorCoupledEnriched<dim, Number>   nonlinear_operator_enriched;
+  LinearOperatorCoupledEnriched<dim, Number>      linear_operator_enriched;
+  BlockPreconditionerCoupledEnriched<dim, Number> block_preconditioner_enriched;
+  LinearSolverCoupledEnriched<dim, Number>        linear_solver_enriched;
+
+  std::shared_ptr<Newton::Solver<BlockVectorType,
+                                 NonlinearOperatorCoupledEnriched<dim, Number>,
+                                 LinearOperatorCoupledEnriched<dim, Number>,
+                                 LinearSolverCoupledEnriched<dim, Number>>>
+    newton_solver_enriched;
+
+  // temporary vectors: velocity block vectors (U_bar, U_tilde) and X = (U_bar, U_tilde, p^*)
+  mutable BlockVectorType tmp_velocity_enriched, tmp_velocity_enriched_2,
+    tmp_velocity_enriched_3;
+  mutable BlockVectorType tmp_solution_enriched;
+  mutable VectorType      tmp_pressure_enriched;
 };
 
 } // namespace IncNS

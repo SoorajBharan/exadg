@@ -497,6 +497,9 @@ Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
   }
   else if(application->fluid->get_parameters().solver_type == IncNS::SolverType::Steady)
   {
+
+    AssertThrow(not application->fluid->get_parameters().wall_enrichment_enabled, dealii::ExcMessage("Wall enrichment: steady fluid solver coupled to scalar transport is not implemented."));
+
     velocities.resize(1);
     times.resize(1);
 
@@ -514,6 +517,8 @@ Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
     if(application->scalars[i]->get_parameters().temporal_discretization ==
        ConvDiff::TemporalDiscretization::ExplRK)
     {
+      AssertThrow(not application->fluid->get_parameters().wall_enrichment_enabled, dealii::ExcMessage("Wall enrichment: use TemporalDiscretization::BDF for the scalar transport (ExplRK needs several velocity levels)."));
+
       std::shared_ptr<ConvDiff::TimeIntExplRK<Number>> time_int_scalar =
         std::dynamic_pointer_cast<ConvDiff::TimeIntExplRK<Number>>(scalar_time_integrator[i]);
       time_int_scalar->set_velocities_and_times(velocities, times);

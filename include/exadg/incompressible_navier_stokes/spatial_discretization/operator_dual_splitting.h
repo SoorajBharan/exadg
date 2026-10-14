@@ -74,20 +74,6 @@ public:
    * Pressure Poisson equation.
    */
 
-  // rhs pressure: velocity divergence
-  void
-  apply_velocity_divergence_term(VectorType & dst, VectorType const & src) const;
-
-  void
-  apply_velocity_divergence_term(VectorType & dst, BlockVectorType const & src) const;
-
-  // wall enrichment: pressure gradient tested with v_bar (block 0, standard operator incl.
-  // boundary data) and with psi*v_tilde (block 1)
-  void
-  evaluate_pressure_gradient_term_enriched(BlockVectorType &  dst,
-                                           VectorType const & src,
-                                           double const       time) const;
-
   void
   rhs_velocity_divergence_term_dirichlet_bc_from_dof_vector(VectorType &       dst,
                                                             VectorType const & velocity) const;
@@ -119,6 +105,15 @@ public:
   void
   rhs_ppe_laplace_add(VectorType & dst, double const & time) const;
 
+  void
+  rhs_ppe_div_term_convective_term_add(VectorType & dst, BlockVectorType const & src) const;
+
+  void
+  rhs_ppe_nbc_convective_add(VectorType & dst, BlockVectorType const & src) const;
+
+  void
+  rhs_ppe_nbc_viscous_add(VectorType & dst, BlockVectorType const & vorticity) const;
+
   unsigned int
   solve_pressure(VectorType & dst, VectorType const & src, bool const update_preconditioner) const;
 
@@ -142,6 +137,17 @@ public:
   interpolate_velocity_dirichlet_bc(VectorType & dst, double const & time) const;
 
 private:
+  enum class EnrichedPPETerm
+  {
+    DivTermConvective, // velocity Dirichlet / wall boundaries, + n . F
+    NBCConvective,     // pressure Neumann boundaries,          - n . F
+    NBCViscous         // pressure Neumann boundaries,          - n . nu     curl(omega)
+  };
+
+  void
+  rhs_ppe_boundary_correction_enriched(VectorType &            dst,
+                                       BlockVectorType const & src,
+                                       EnrichedPPETerm const   term) const;
   /*
    * rhs pressure Poisson equation
    */
