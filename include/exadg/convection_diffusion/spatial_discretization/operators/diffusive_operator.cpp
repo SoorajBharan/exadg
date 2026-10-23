@@ -26,13 +26,13 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::initialize(
+DiffusiveOperator<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const &                  matrix_free,
   dealii::AffineConstraints<Number> const &                affine_constraints,
   DiffusiveOperatorData<dim> const &                       data,
-  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>> kernel)
+  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>> kernel)
 {
   operator_data = data;
 
@@ -43,33 +43,37 @@ DiffusiveOperator<dim, n_components, Number>::initialize(
   this->integrator_flags = kernel->get_integrator_flags();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::update()
+DiffusiveOperator<dim, Number>::update()
 {
   kernel->calculate_penalty_parameter(*this->matrix_free, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
+DiffusiveOperator<dim, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
                                                     IntegratorFace &   integrator_p,
                                                     unsigned int const face) const
 {
-  kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index, face);
+  (void)face;
+
+  kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
+DiffusiveOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
                                                              unsigned int const face) const
 {
-  kernel->reinit_boundary_face(integrator_m, operator_data.dof_index, face);
+  (void)face;
+
+  kernel->reinit_boundary_face(integrator_m, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
+DiffusiveOperator<dim, Number>::reinit_face_cell_based_derived(
   IntegratorFace &                 integrator_m,
   IntegratorFace &                 integrator_p,
   unsigned int const               cell,
@@ -82,9 +86,9 @@ DiffusiveOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
   kernel->reinit_face_cell_based(boundary_id, integrator_m, integrator_p, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & integrator) const
+DiffusiveOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) const
 {
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
@@ -92,36 +96,35 @@ DiffusiveOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & 
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & integrator_m,
+DiffusiveOperator<dim, Number>::do_face_integral(IntegratorFace & integrator_m,
                                                  IntegratorFace & integrator_p) const
 {
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    auto value_m = integrator_m.get_value(q);
-    auto value_p = integrator_p.get_value(q);
+    scalar value_m = integrator_m.get_value(q);
+    scalar value_p = integrator_p.get_value(q);
 
-    auto gradient_flux_m = kernel->calculate_gradient_flux_m(value_m, value_p, q);
-    auto gradient_flux_p = kernel->calculate_gradient_flux_p(value_m, value_p, q);
+    scalar gradient_flux = kernel->calculate_gradient_flux(value_m, value_p);
 
-    auto normal_gradient_m = integrator_m.get_normal_derivative(q);
-    auto normal_gradient_p = integrator_p.get_normal_derivative(q);
+    scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
+    scalar normal_gradient_p = integrator_p.get_normal_derivative(q);
 
-    auto value_flux =
-      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p, q, false);
+    scalar value_flux =
+      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p);
 
-    integrator_m.submit_normal_derivative(gradient_flux_m, q);
-    integrator_p.submit_normal_derivative(gradient_flux_p, q);
+    integrator_m.submit_normal_derivative(gradient_flux, q);
+    integrator_p.submit_normal_derivative(gradient_flux, q);
 
     integrator_m.submit_value(-value_flux, q);
     integrator_p.submit_value(value_flux, q); // opposite sign since n⁺ = -n⁻
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace & integrator_m,
+DiffusiveOperator<dim, Number>::do_face_int_integral(IntegratorFace & integrator_m,
                                                      IntegratorFace & integrator_p) const
 {
   (void)integrator_p;
@@ -129,26 +132,26 @@ DiffusiveOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFac
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
     // set exterior value to zero
-    auto value_m = integrator_m.get_value(q);
-    auto value_p = value_m * 0.0;
+    scalar value_m = integrator_m.get_value(q);
+    scalar value_p = dealii::make_vectorized_array<Number>(0.0);
 
-    auto gradient_flux_m = kernel->calculate_gradient_flux_m(value_m, value_p, q);
+    scalar gradient_flux = kernel->calculate_gradient_flux(value_m, value_p);
 
     // set exterior value to zero
-    auto normal_gradient_m = integrator_m.get_normal_derivative(q);
-    auto normal_gradient_p = normal_gradient_m * 0.0;
+    scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
+    scalar normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
-    auto value_flux =
-      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p, q, false);
+    scalar value_flux =
+      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p);
 
-    integrator_m.submit_normal_derivative(gradient_flux_m, q);
+    integrator_m.submit_normal_derivative(gradient_flux, q);
     integrator_m.submit_value(-value_flux, q);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
+DiffusiveOperator<dim, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
                                                      IntegratorFace & integrator_p) const
 {
   (void)integrator_m;
@@ -156,27 +159,27 @@ DiffusiveOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFac
   for(unsigned int q = 0; q < integrator_p.n_q_points; ++q)
   {
     // set value_m to zero
-    auto value_p = integrator_p.get_value(q);
-    auto value_m = value_p * 0.0;
+    scalar value_m = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_p = integrator_p.get_value(q);
 
-    auto gradient_flux = kernel->calculate_gradient_flux_p(value_p, value_m, q);
+    scalar gradient_flux = kernel->calculate_gradient_flux(value_p, value_m);
 
-    // minus sign to get the correct normal vector n⁺ = -n⁻
-    auto normal_gradient_p = -integrator_p.get_normal_derivative(q);
     // set gradient_m to zero
-    auto normal_gradient_m = normal_gradient_p * 0.0;
+    scalar normal_gradient_m = dealii::make_vectorized_array<Number>(0.0);
+    // minus sign to get the correct normal vector n⁺ = -n⁻
+    scalar normal_gradient_p = -integrator_p.get_normal_derivative(q);
 
-    auto value_flux =
-      kernel->calculate_value_flux(normal_gradient_p, normal_gradient_m, value_p, value_m, q, false);
+    scalar value_flux =
+      kernel->calculate_value_flux(normal_gradient_p, normal_gradient_m, value_p, value_m);
 
     integrator_p.submit_normal_derivative(-gradient_flux, q); // opposite sign since n⁺ = -n⁻
     integrator_p.submit_value(-value_flux, q);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-DiffusiveOperator<dim, n_components, Number>::do_boundary_integral(
+DiffusiveOperator<dim, Number>::do_boundary_integral(
   IntegratorFace &                   integrator_m,
   OperatorType const &               operator_type,
   dealii::types::boundary_id const & boundary_id) const
@@ -185,9 +188,9 @@ DiffusiveOperator<dim, n_components, Number>::do_boundary_integral(
 
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    auto value_m = calculate_interior_value(q, integrator_m, operator_type);
+    scalar value_m = calculate_interior_value(q, integrator_m, operator_type);
 
-    auto value_p = calculate_exterior_value(value_m,
+    scalar value_p = calculate_exterior_value(value_m,
                                               q,
                                               integrator_m,
                                               operator_type,
@@ -196,11 +199,11 @@ DiffusiveOperator<dim, n_components, Number>::do_boundary_integral(
                                               operator_data.bc,
                                               this->time);
 
-    auto gradient_flux = kernel->calculate_gradient_flux_m(value_m, value_p, q);
+    scalar gradient_flux = kernel->calculate_gradient_flux(value_m, value_p);
 
-    auto normal_gradient_m = calculate_interior_normal_gradient(q, integrator_m, operator_type);
+    scalar normal_gradient_m = calculate_interior_normal_gradient(q, integrator_m, operator_type);
 
-    auto normal_gradient_p = calculate_exterior_normal_gradient(normal_gradient_m,
+    scalar normal_gradient_p = calculate_exterior_normal_gradient(normal_gradient_m,
                                                                   q,
                                                                   integrator_m,
                                                                   operator_type,
@@ -209,30 +212,19 @@ DiffusiveOperator<dim, n_components, Number>::do_boundary_integral(
                                                                   operator_data.bc,
                                                                   this->time);
 
-    auto value_flux =
-      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p, q, true);
+    scalar value_flux =
+      kernel->calculate_value_flux(normal_gradient_m, normal_gradient_p, value_m, value_p);
 
     integrator_m.submit_normal_derivative(gradient_flux, q);
     integrator_m.submit_value(-value_flux, q);
   }
 }
 
-template<int dim, int n_components, typename Number>
-void
-DiffusiveOperator<dim, n_components, Number>::set_eddy_viscosity_ptr(dealii::LinearAlgebra::distributed::Vector<Number> const & eddy_viscosity_in) const
-{
-  kernel->set_eddy_viscosity_ptr(eddy_viscosity_in);
-}
+template class DiffusiveOperator<2, float>;
+template class DiffusiveOperator<2, double>;
 
-template class DiffusiveOperator<2, 1, float>;
-template class DiffusiveOperator<2, 1, double>;
-template class DiffusiveOperator<3, 1, float>;
-template class DiffusiveOperator<3, 1, double>;
-
-template class DiffusiveOperator<2, 2, float>;
-template class DiffusiveOperator<2, 2, double>;
-template class DiffusiveOperator<3, 2, float>;
-template class DiffusiveOperator<3, 2, double>;
+template class DiffusiveOperator<3, float>;
+template class DiffusiveOperator<3, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

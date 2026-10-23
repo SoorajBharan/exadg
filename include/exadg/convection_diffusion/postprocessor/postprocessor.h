@@ -39,6 +39,8 @@
 #include <exadg/convection_diffusion/postprocessor/line_plot_data.h>
 #include "line_plot_calculation.h"
 
+#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+
 namespace ExaDG
 {
 namespace ConvDiff
@@ -55,25 +57,26 @@ struct PostProcessorData
   LinePlotData<dim>         line_plot_data;
 };
 
-template<int dim, int n_components, typename Number>
-class PostProcessor : public PostProcessorBase<dim, n_components, Number>
+template<int dim, typename Number>
+class PostProcessor : public PostProcessorBase<dim, Number>
 {
 protected:
-  typedef PostProcessorBase<dim, n_components, Number> Base;
+  typedef PostProcessorBase<dim, Number> Base;
 
   typedef typename Base::VectorType VectorType;
+  typedef typename Base::BlockVectorType BlockVectorType;
 
 public:
   PostProcessor(PostProcessorData<dim> const & pp_data, MPI_Comm const & mpi_comm);
 
   void
-  setup(Operator<dim, n_components, Number> const & pde_operator) override;
+  setup(Operator<dim, Number> const & pde_operator) override;
 
   void
   setup_after_coarsening_and_refinement() override;
 
   void
-  do_postprocessing(VectorType const &     solution,
+  do_postprocessing(BlockVectorType const &     solution,
                     double const           time             = 0.0,
                     types::time_step const time_step_number = numbers::steady_timestep) override;
 
@@ -90,15 +93,15 @@ private:
   PostProcessorData<dim> pp_data;
 
   OutputGenerator<dim, Number> output_generator;
-  ErrorCalculator<dim, Number> error_calculator;
+  std::vector<std::shared_ptr<ErrorCalculator<dim, Number>>> error_calculators;
 
   SolutionField<dim, Number> eddy_viscosity;
 
-  dealii::SmartPointer<Operator<dim, n_components, Number> const> conv_diff_operator;
+  dealii::SmartPointer<Operator<dim, Number> const> conv_diff_operator;
 
   VectorType nu_t;
 
-  std::shared_ptr<LinePlotCalculator<dim, n_components, Number>> line_plot_calculator;
+  std::shared_ptr<LinePlotCalculator<dim, Number>> line_plot_calculator;
 };
 
 } // namespace ConvDiff

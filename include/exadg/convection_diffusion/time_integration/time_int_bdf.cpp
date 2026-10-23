@@ -31,9 +31,9 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
-TimeIntBDF<dim, n_components, Number>::TimeIntBDF(
-  std::shared_ptr<Operator<dim, n_components, Number>>          operator_in,
+template<int dim, typename Number>
+TimeIntBDF<dim, Number>::TimeIntBDF(
+  std::shared_ptr<Operator<dim, Number>>          operator_in,
   std::shared_ptr<HelpersALE<dim, Number> const>  helpers_ale_in,
   std::shared_ptr<PostProcessorInterface<Number>> postprocessor_in,
   Parameters const &                              param_in,
@@ -62,9 +62,9 @@ TimeIntBDF<dim, n_components, Number>::TimeIntBDF(
 {
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::setup_derived()
+TimeIntBDF<dim, Number>::setup_derived()
 {
   // In the case of an arbitrary Lagrangian-Eulerian formulation:
   if(param.ale_formulation and param.restarted_simulation == false)
@@ -112,9 +112,9 @@ TimeIntBDF<dim, n_components, Number>::setup_derived()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::allocate_vectors()
+TimeIntBDF<dim, Number>::allocate_vectors()
 {
   for(unsigned int i = 0; i < solution.size(); ++i)
     pde_operator->initialize_dof_vector(solution[i]);
@@ -159,33 +159,38 @@ TimeIntBDF<dim, n_components, Number>::allocate_vectors()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::shared_ptr<std::vector<dealii::LinearAlgebra::distributed::Vector<Number> *>>
-TimeIntBDF<dim, n_components, Number>::get_vectors()
+TimeIntBDF<dim, Number>::get_vectors()
 {
   std::shared_ptr<std::vector<VectorType *>> vectors =
     std::make_shared<std::vector<VectorType *>>();
 
+  auto const add_blocks = [&](BlockVectorType & vector) {
+    for(unsigned int b = 0; b < vector.n_blocks(); ++b)
+      vectors->emplace_back(&vector.block(b));
+  };  
+
   for(unsigned int i = 0; i < this->order; i++)
   {
-    vectors->emplace_back(&solution[i]);
+    add_blocks(solution[i]);
   }
 
-  vectors->emplace_back(&solution_np);
+  add_blocks(solution_np);
 
-  vectors->emplace_back(&rhs_vector);
+  add_blocks(rhs_vector);
 
   if(param.convective_problem() and
      param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
   {
     for(unsigned int i = 0; i < this->order; i++)
     {
-      vectors->emplace_back(&vec_convective_term[i]);
+      add_blocks(vec_convective_term[i]);
     }
 
     if(param.ale_formulation == false)
     {
-      vectors->emplace_back(&convective_term_np);
+      add_blocks(convective_term_np);
     }
   }
 
@@ -193,11 +198,11 @@ TimeIntBDF<dim, n_components, Number>::get_vectors()
   {
     for(unsigned int i = 0; i < vec_source_term.size(); ++i)
     {
-      vectors->emplace_back(&vec_source_term[i]);
+      add_blocks(vec_source_term[i]);
     }
     if(param.ale_formulation == false)
     {
-      vectors->emplace_back(&source_term_np);
+      add_blocks(source_term_np);
     }
   }
 
@@ -216,17 +221,17 @@ TimeIntBDF<dim, n_components, Number>::get_vectors()
   return vectors;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::prepare_coarsening_and_refinement()
+TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 {
   std::shared_ptr<std::vector<VectorType *>> vectors = get_vectors();
   pde_operator->prepare_coarsening_and_refinement(*vectors);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::interpolate_after_coarsening_and_refinement()
+TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
 {
   this->allocate_vectors();
 
@@ -234,9 +239,9 @@ TimeIntBDF<dim, n_components, Number>::interpolate_after_coarsening_and_refineme
   pde_operator->interpolate_after_coarsening_and_refinement(*vectors);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::initialize_current_solution()
+TimeIntBDF<dim, Number>::initialize_current_solution()
 {
   if(this->param.ale_formulation)
     helpers_ale->move_grid(this->get_time());
@@ -244,9 +249,9 @@ TimeIntBDF<dim, n_components, Number>::initialize_current_solution()
   pde_operator->prescribe_initial_conditions(solution[0], this->get_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::initialize_former_multistep_dof_vectors()
+TimeIntBDF<dim, Number>::initialize_former_multistep_dof_vectors()
 {
   // Start with i=1 since we only want to initialize the solution at former instants of time.
   for(unsigned int i = 1; i < solution.size(); ++i)
@@ -258,9 +263,9 @@ TimeIntBDF<dim, n_components, Number>::initialize_former_multistep_dof_vectors()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::initialize_vec_convective_term()
+TimeIntBDF<dim, Number>::initialize_vec_convective_term()
 {
   if(this->param.get_type_velocity_field() != TypeVelocityField::DoFVector)
   {
@@ -278,9 +283,9 @@ TimeIntBDF<dim, n_components, Number>::initialize_vec_convective_term()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::initialize_vec_source_term()
+TimeIntBDF<dim, Number>::initialize_vec_source_term()
 {
   if(this->param.get_type_velocity_field() != TypeVelocityField::DoFVector)
   {
@@ -306,9 +311,9 @@ TimeIntBDF<dim, n_components, Number>::initialize_vec_source_term()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-TimeIntBDF<dim, n_components, Number>::calculate_time_step_size()
+TimeIntBDF<dim, Number>::calculate_time_step_size()
 {
   double time_step = 1.0;
 
@@ -395,9 +400,9 @@ TimeIntBDF<dim, n_components, Number>::calculate_time_step_size()
   return time_step;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-TimeIntBDF<dim, n_components, Number>::recalculate_time_step_size() const
+TimeIntBDF<dim, Number>::recalculate_time_step_size() const
 {
   AssertThrow(param.calculation_of_time_step_size == TimeStepCalculation::CFL,
               dealii::ExcMessage(
@@ -437,9 +442,9 @@ TimeIntBDF<dim, n_components, Number>::recalculate_time_step_size() const
   return new_time_step_size;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::prepare_vectors_for_next_timestep()
+TimeIntBDF<dim, Number>::prepare_vectors_for_next_timestep()
 {
   push_back(solution);
 
@@ -471,9 +476,9 @@ TimeIntBDF<dim, n_components, Number>::prepare_vectors_for_next_timestep()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::ale_update()
+TimeIntBDF<dim, Number>::ale_update()
 {
   // and compute grid coordinates at the end of the current time step t_{n+1}
   helpers_ale->fill_grid_coordinates_vector(grid_coordinates_np,
@@ -487,22 +492,23 @@ TimeIntBDF<dim, n_components, Number>::ale_update()
                               this->get_time_step_size());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 bool
-TimeIntBDF<dim, n_components, Number>::print_solver_info() const
+TimeIntBDF<dim, Number>::print_solver_info() const
 {
   return param.solver_info_data.write(this->global_timer.wall_time(),
                                       this->time,
                                       this->time_step_number);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::read_restart_vectors(boost::archive::binary_iarchive & ia)
+TimeIntBDF<dim, Number>::read_restart_vectors(boost::archive::binary_iarchive & ia)
 {
   for(unsigned int i = 0; i < this->order; i++)
   {
-    ia >> solution[i];
+    for(unsigned int b = 0; b < solution[i].n_blocks(); ++b)
+      ia >> solution[i].block(b);
   }
 
   if(param.convective_problem() and
@@ -512,7 +518,8 @@ TimeIntBDF<dim, n_components, Number>::read_restart_vectors(boost::archive::bina
     {
       for(unsigned int i = 0; i < this->order; i++)
       {
-        ia >> vec_convective_term[i];
+        for(unsigned int b = 0; b < vec_convective_term[i].n_blocks(); ++b)
+          ia >> vec_convective_term[i].block(b);
       }
     }
   }
@@ -523,7 +530,8 @@ TimeIntBDF<dim, n_components, Number>::read_restart_vectors(boost::archive::bina
     {
       for(unsigned int i = 0; i < this->order; i++)
       {
-        ia >> vec_source_term[i];
+        for(unsigned int b = 0; b < vec_source_term[i].n_blocks(); ++b)
+          ia >> vec_source_term[i].block(b);
       }
     }
   }
@@ -537,13 +545,14 @@ TimeIntBDF<dim, n_components, Number>::read_restart_vectors(boost::archive::bina
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::write_restart_vectors(boost::archive::binary_oarchive & oa) const
+TimeIntBDF<dim, Number>::write_restart_vectors(boost::archive::binary_oarchive & oa) const
 {
   for(unsigned int i = 0; i < this->order; i++)
   {
-    oa << solution[i];
+    for(unsigned int b = 0; b < solution[i].n_blocks(); ++b)
+      oa << solution[i].block(b);
   }
 
   if(param.convective_problem() and
@@ -553,7 +562,8 @@ TimeIntBDF<dim, n_components, Number>::write_restart_vectors(boost::archive::bin
     {
       for(unsigned int i = 0; i < this->order; i++)
       {
-        oa << vec_convective_term[i];
+        for(unsigned int b = 0; b < vec_convective_term[i].n_blocks(); ++b)
+          oa << vec_convective_term[i].block(b);
       }
     }
   }
@@ -564,7 +574,8 @@ TimeIntBDF<dim, n_components, Number>::write_restart_vectors(boost::archive::bin
     {
       for(unsigned int i = 0; i < this->order; i++)
       {
-        oa << vec_source_term[i];
+        for(unsigned int b = 0; b < vec_source_term[i].n_blocks(); ++b)
+          oa << vec_source_term[i].block(b);
       }
     }
   }
@@ -578,15 +589,10 @@ TimeIntBDF<dim, n_components, Number>::write_restart_vectors(boost::archive::bin
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
+TimeIntBDF<dim, Number>::prepare_timestep(VectorType & velocity_np)
 {
-  dealii::Timer timer;
-  timer.restart();
-
-  VectorType solution_extrapolated;
-
   if(param.turbulence_model_data.is_active)
   {
     AssertThrow(velocities.size() > 0 and velocities[0] != nullptr,
@@ -594,10 +600,9 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
                   "Velocity must be set (via set_velocities_and_times) before "
                   "do_timestep_solve() can update eddy viscosity."));
 
-    pde_operator->initialize_dof_vector(solution_extrapolated);
-    extrapolate_solution(solution_extrapolated);
-
-    pde_operator->update_eddy_viscosity(solution_extrapolated, velocities[0]);
+    // stored (nodal) eddy viscosity of the previous time step, used outside the transport
+    // equations (coupling to the flow solver, postprocessing)
+    pde_operator->update_eddy_viscosity(solution[0], velocities[0]);
   }
 
   if(param.modal_filter_is_active)
@@ -606,8 +611,6 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
   }
 
   // transport velocity
-  VectorType velocity_np;
-
   if(param.convective_problem())
   {
     if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
@@ -638,16 +641,18 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
       AssertThrow(param.ale_formulation == false, dealii::ExcMessage("not implemented."));
     }
   }
+}
 
+template<int dim, typename Number>
+void
+TimeIntBDF<dim, Number>::assemble_right_hand_side(VectorType const & velocity_np)
+{
   pde_operator->update_time_step_size(this->get_time_step_size(),
                                       this->get_time(),
                                       param.end_time,
                                       this->time_step_number);
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
-  pde_operator->rhs(rhs_vector,
-                    param.turbulence_model_data.is_active ? solution_extrapolated : solution_np,
-                    this->get_next_time(),
-                    &velocity_np);
+  pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
 
   // if the convective term is involved in the equations:
   // add the convective term to the right-hand side of the equations
@@ -691,37 +696,19 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
       rhs_vector.add(this->extra.get_beta(i), vec_source_term[i]);
   }
 
-  VectorType sum_alphai_ui(solution[0]);
+  BlockVectorType sum_alphai_ui(solution[0]);
   sum_alphai_ui.equ(this->bdf.get_alpha(0) / this->get_time_step_size(), solution[0]);
   for(unsigned int i = 1; i < solution.size(); ++i)
     sum_alphai_ui.add(this->bdf.get_alpha(i) / this->get_time_step_size(), solution[i]);
 
   // apply mass operator to sum_alphai_ui and add to rhs_vector
   pde_operator->apply_mass_operator_add(rhs_vector, sum_alphai_ui);
+}
 
-  // extrapolate old solution to obtain a good initial guess for the solver
-  solution_np.equ(this->extra.get_beta(0), solution[0]);
-  for(unsigned int i = 1; i < solution.size(); ++i)
-    solution_np.add(this->extra.get_beta(i), solution[i]);
-
-  // solve the linear system of equations
-  bool const update_preconditioner =
-    this->param.update_preconditioner and
-    (this->time_step_number % this->param.update_preconditioner_every_time_steps == 0);
-
-  unsigned int const N_iter =
-    pde_operator->solve(solution_np,
-                        rhs_vector,
-                        update_preconditioner,
-                        this->bdf.get_gamma0() / this->get_time_step_size(),
-                        this->get_next_time(),
-                        &velocity_np);
-
-  iterations.first += 1;
-  iterations.second += N_iter;
-
-  pde_operator->enforce_positivity(solution_np);
-
+template<int dim, typename Number>
+void
+TimeIntBDF<dim, Number>::evaluate_explicit_terms_at_new_time(VectorType const & velocity_np)
+{
   // evaluate convective term at end time t_{n+1} at which we know the boundary condition
   // g_u(t_{n+1})
   if(param.convective_problem() and
@@ -757,6 +744,56 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
                         &velocity_np);
     }
   }
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDF<dim, Number>::do_timestep_solve()
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  // transport velocity
+  VectorType velocity_np;
+  prepare_timestep(velocity_np);
+
+  // right-hand side without turbulence: f, inhomogeneous boundary terms, explicit convective and
+  // source terms, BDF history terms
+  assemble_right_hand_side(velocity_np);
+
+  // turbulence terms: Explicit terms and linearization of the Implicit terms at the previous time
+  // step Q^n = solution[0]
+  if(param.turbulence_model_data.is_active)
+  {
+    pde_operator->rhs_add_turbulence(
+      rhs_vector, solution[0], this->get_time(), this->get_next_time(), &velocity_np);
+  }
+
+  // extrapolate old solution to obtain a good initial guess for the solver
+  solution_np.equ(this->extra.get_beta(0), solution[0]);
+  for(unsigned int i = 1; i < solution.size(); ++i)
+    solution_np.add(this->extra.get_beta(i), solution[i]);
+
+  // solve the linear system of equations
+  bool const update_preconditioner =
+    this->param.update_preconditioner and
+    (this->time_step_number % this->param.update_preconditioner_every_time_steps == 0);
+
+  unsigned int const N_iter =
+    pde_operator->solve(solution_np,
+                        rhs_vector,
+                        update_preconditioner,
+                        this->bdf.get_gamma0() / this->get_time_step_size(),
+                        this->get_next_time(),
+                        &velocity_np);
+
+  iterations.first += 1;
+  iterations.second += N_iter;
+
+  pde_operator->enforce_positivity(solution_np);
+
+  // explicit convective and source terms at t_{n+1} for the next time steps
+  evaluate_explicit_terms_at_new_time(velocity_np);
 
   if(print_solver_info() and not(this->is_test))
   {
@@ -767,9 +804,9 @@ TimeIntBDF<dim, n_components, Number>::do_timestep_solve()
   this->timer_tree->insert({"Timeloop", "Solve"}, timer.wall_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::postprocessing() const
+TimeIntBDF<dim, Number>::postprocessing() const
 {
   dealii::Timer timer;
   timer.restart();
@@ -788,9 +825,9 @@ TimeIntBDF<dim, n_components, Number>::postprocessing() const
   this->timer_tree->insert({"Timeloop", "Postprocessing"}, timer.wall_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::print_iterations() const
+TimeIntBDF<dim, Number>::print_iterations() const
 {
   std::vector<std::string> names = {"Linear system"};
 
@@ -801,9 +838,9 @@ TimeIntBDF<dim, n_components, Number>::print_iterations() const
   print_list_of_iterations(this->pcout, names, iterations_avg);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::set_velocities_and_times(
+TimeIntBDF<dim, Number>::set_velocities_and_times(
   std::vector<VectorType const *> const & velocities_in,
   std::vector<double> const &             times_in)
 {
@@ -811,16 +848,16 @@ TimeIntBDF<dim, n_components, Number>::set_velocities_and_times(
   times      = times_in;
 }
 
-template<int dim, int n_components, typename Number>
-dealii::LinearAlgebra::distributed::Vector<Number> const &
-TimeIntBDF<dim, n_components, Number>::get_solution_np() const
+template<int dim, typename Number>
+dealii::LinearAlgebra::distributed::BlockVector<Number> const &
+TimeIntBDF<dim, Number>::get_solution_np() const
 {
   return (this->solution_np);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-TimeIntBDF<dim, n_components, Number>::extrapolate_solution(VectorType & vector)
+TimeIntBDF<dim, Number>::extrapolate_solution(BlockVectorType & vector)
 {
   // make sure that the time integrator constants are up-to-date
   this->update_time_integrator_constants();
@@ -832,16 +869,10 @@ TimeIntBDF<dim, n_components, Number>::extrapolate_solution(VectorType & vector)
 
 // instantiations
 
-template class TimeIntBDF<2, 1, float>;
-template class TimeIntBDF<2, 1, double>;
+template class TimeIntBDF<2, float>;
+template class TimeIntBDF<2, double>;
 
-template class TimeIntBDF<3, 1, float>;
-template class TimeIntBDF<3, 1, double>;
-
-template class TimeIntBDF<2, 2, float>;
-template class TimeIntBDF<2, 2, double>;
-
-template class TimeIntBDF<3, 2, float>;
-template class TimeIntBDF<3, 2, double>;
+template class TimeIntBDF<3, float>;
+template class TimeIntBDF<3, double>;
 } // namespace ConvDiff
 } // namespace ExaDG

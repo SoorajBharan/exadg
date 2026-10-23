@@ -24,8 +24,6 @@
 
 #include <exadg/convection_diffusion/spatial_discretization/operators/convective_operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/diffusive_operator.h>
-#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
-
 #include <exadg/operators/mass_kernel.h>
 
 namespace ExaDG
@@ -39,19 +37,13 @@ struct CombinedOperatorData : public OperatorBaseData
     : OperatorBaseData(),
       unsteady_problem(false),
       convective_problem(false),
-      diffusive_problem(false),
-      dissipation_implicit(false),
-      production_implicit(false),
-      square_gradient_implicit(false)
+      diffusive_problem(false)
   {
   }
 
   bool unsteady_problem;
   bool convective_problem;
   bool diffusive_problem;
-  bool dissipation_implicit;
-  bool production_implicit;
-  bool square_gradient_implicit;
 
   Operators::ConvectiveKernelData<dim> convective_kernel_data;
   Operators::DiffusiveKernelData       diffusive_kernel_data;
@@ -59,15 +51,14 @@ struct CombinedOperatorData : public OperatorBaseData
   std::shared_ptr<BoundaryDescriptor<dim> const> bc;
 };
 
-template<int dim, int n_components, typename Number>
-class CombinedOperator : public OperatorBase<dim, Number, n_components>
+template<int dim, typename Number>
+class CombinedOperator : public OperatorBase<dim, Number, 1>
 {
 public:
   typedef Number value_type;
 
 private:
-
-  typedef OperatorBase<dim, Number, n_components> Base;
+  typedef OperatorBase<dim, Number, 1> Base;
 
   typedef typename Base::IntegratorCell IntegratorCell;
   typedef typename Base::IntegratorFace IntegratorFace;
@@ -78,9 +69,6 @@ private:
   typedef dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> vector;
 
 public:
-  using simd_value_type = typename  IntegratorCell::value_type;
-  using gradient_type = typename IntegratorCell::gradient_type;
-
   CombinedOperator();
 
   /**
@@ -96,8 +84,8 @@ public:
   initialize(dealii::MatrixFree<dim, Number> const &                   matrix_free,
              dealii::AffineConstraints<Number> const &                 affine_constraints,
              CombinedOperatorData<dim> const &                         data,
-             std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel,
-             std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel);
+             std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel,
+             std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel);
 
   CombinedOperatorData<dim> const &
   get_data() const;
@@ -119,9 +107,6 @@ public:
 
   void
   set_scaling_factor_mass_operator(Number const & scaling_factor);
-
-  void
-  set_turbulence_source_kernel(std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel_in);
 
 private:
   void
@@ -168,9 +153,8 @@ private:
   CombinedOperatorData<dim> operator_data;
 
   std::shared_ptr<MassKernel<dim, Number>>                  mass_kernel;
-  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
-  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
-  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel;
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel;
+  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel;
 
   double scaling_factor_mass;
 };

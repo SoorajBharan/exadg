@@ -65,7 +65,7 @@ FunctionEnrichment<dim, Number>::initialize(
   this->global_dof_handler = &global_dof_handler_in;
 
   ExaDG::ElementType type = ExaDG::ElementType::Hypercube;
-  
+
   // ====================================================================
   // FE collections. MatrixFree requires the same active_fe_index in all
   // DoFHandlers of a cell:
@@ -329,7 +329,7 @@ FunctionEnrichment<dim, Number>::initialize(
 
 
   unsigned int const n_q_1d = std::max({fe_degree_dg + 1, fe_degree_en + 1,
-  n_q_points_enrichment});
+    n_q_points_enrichment});
   std::shared_ptr<dealii::Quadrature<dim>> quad = create_quadrature<dim>(ExaDG::ElementType::Hypercube, n_q_1d);
   std::vector<dealii::Quadrature<dim>> quadratures = { *quad };
 
@@ -348,11 +348,11 @@ FunctionEnrichment<dim, Number>::initialize(
     dealii::update_normal_vectors;
 
   additional_data.mapping_update_flags_inner_faces = dealii::update_values |
-                                                     dealii::update_gradients |
-                                                     dealii::update_JxW_values |
-                                                     dealii::update_quadrature_points |
-                                                     dealii::update_normal_vectors;
-  
+    dealii::update_gradients |
+    dealii::update_JxW_values |
+    dealii::update_quadrature_points |
+    dealii::update_normal_vectors;
+
   matrix_free_en = std::make_shared<dealii::MatrixFree<dim, Number>>();
   matrix_free_en->reinit(*mapping_in, dof_handlers, constraints, quadratures, additional_data);
 
@@ -389,6 +389,61 @@ FunctionEnrichment<dim, Number>::initialize(
   wall_velocity = 0.0;
   friction_velocity_old = 0.0;
   wall_shear_stress = 0.0;
+
+  // ====================================================================
+  //  Index maps global DG layout <-> shadow layout, locally owned enriched (1) and halo (2)
+  //  cells; the enriched pairs come first. Both layouts are DG, so all DoFs of a locally
+  //  owned cell are locally owned; the stored index is the position in the locally owned
+  //  index set (= local_element index of a vector of that DoFHandler).
+  // ====================================================================
+  auto const build_index_map = [](dealii::DoFHandler<dim> const & dof_handler_global,
+                                  dealii::DoFHandler<dim> const & dof_handler_shadow,
+                                  std::vector<unsigned int> &     index_global,
+                                  std::vector<unsigned int> &     index_shadow) -> unsigned int {
+      index_global.clear();
+      index_shadow.clear();
+
+      dealii::IndexSet const & owned_global = dof_handler_global.locally_owned_dofs();
+      dealii::IndexSet const & owned_shadow = dof_handler_shadow.locally_owned_dofs();
+
+      unsigned int n_enriched = 0;
+      for(unsigned int const fe_index : {1u, 2u})
+      {
+        unsigned int const dofs_per_cell = dof_handler_shadow.get_fe(fe_index).n_dofs_per_cell();
+        std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
+        std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
+
+        auto cell_g = dof_handler_global.begin_active();
+        auto cell_s = dof_handler_shadow.begin_active();
+        for(; cell_g != dof_handler_global.end(); ++cell_g, ++cell_s)
+        {
+          if(cell_s->is_locally_owned() and cell_s->active_fe_index() == fe_index)
+          {
+            cell_g->get_dof_indices(global_dofs);
+            cell_s->get_dof_indices(shadow_dofs);
+            for(unsigned int i = 0; i < dofs_per_cell; ++i)
+            {
+              AssertThrow(owned_global.is_element(global_dofs[i]) and owned_shadow.is_element(shadow_dofs[i]),
+                          dealii::ExcMessage("Index map: DoF of a locally owned cell not owned."));
+              index_global.push_back(static_cast<unsigned int>(owned_global.index_within_set(global_dofs[i])));
+              index_shadow.push_back(static_cast<unsigned int>(owned_shadow.index_within_set(shadow_dofs[i])));
+            }
+          }
+        }
+
+        if(fe_index == 1)
+          n_enriched = static_cast<unsigned int>(index_global.size());
+      }
+      return n_enriched;
+    };
+  n_velocity_index_enriched = build_index_map(*global_dof_handler,
+                                              dof_handler_shadow_vector,
+                                              velocity_index_global,
+                                              velocity_index_shadow);
+  build_index_map(*global_dof_handler_pressure,
+                  dof_handler_shadow_pressure,
+                  pressure_index_global,
+                  pressure_index_shadow);
 }
 
 template<int dim, typename Number>
@@ -397,28 +452,18 @@ FunctionEnrichment<dim, Number>::copy_global_dg_to_wall_layout(
   VectorType const & global_vec,
   VectorType &       wall_vec) const
 {
-  wall_vec = 0.0;
-  const unsigned int dofs_per_cell = dof_handler_shadow_vector.get_fe(1).n_dofs_per_cell();
-  std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
+#ifdef EXADG_DEBUG
+  AssertThrow(global_vec.locally_owned_size() == global_dof_handler->n_locally_owned_dofs() and
+              wall_vec.locally_owned_size() == dof_handler_shadow_vector.n_locally_owned_dofs(),
+              dealii::ExcMessage("copy_global_dg_to_wall_layout: vector layouts do not match."));
+#endif
 
-  // get the cell iterator to the first active cell using dof handler
-  auto cell_g      = global_dof_handler->begin_active();
-  auto cell_shadow = dof_handler_shadow_vector.begin_active();
-  
-  // Loop throught the triangulation using cell iterators
-  for (; cell_g != global_dof_handler->end(); ++cell_g, ++cell_shadow)
-  {
-    if (cell_shadow->is_locally_owned() && cell_shadow->active_fe_index() >= 1)
-    {
-      cell_g->get_dof_indices(global_dofs);
-      cell_shadow->get_dof_indices(shadow_dofs);
-      for (unsigned int i = 0; i < dofs_per_cell; ++i) 
-      {
-        wall_vec[shadow_dofs[i]] = global_vec[global_dofs[i]];
-      }
-    }
-  }
+  wall_vec = 0.0;
+
+  // locally owned enriched (1) and halo (2) cells
+  for(unsigned int i = 0; i < velocity_index_global.size(); ++i)
+    wall_vec.local_element(velocity_index_shadow[i]) =
+      global_vec.local_element(velocity_index_global[i]);
 }
 
 template<int dim, typename Number>
@@ -427,25 +472,16 @@ FunctionEnrichment<dim, Number>::copy_wall_layout_to_global_dg(
   VectorType const & wall_vec,
   VectorType &       global_vec) const
 {
-  const unsigned int dofs_per_cell = dof_handler_shadow_vector.get_fe(1).n_dofs_per_cell();
-  std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
+#ifdef EXADG_DEBUG
+  AssertThrow(global_vec.locally_owned_size() == global_dof_handler->n_locally_owned_dofs() and
+              wall_vec.locally_owned_size() == dof_handler_shadow_vector.n_locally_owned_dofs(),
+              dealii::ExcMessage("copy_wall_layout_to_global_dg: vector layouts do not match."));
+#endif
 
-  auto cell_g      = global_dof_handler->begin_active();
-  auto cell_shadow = dof_handler_shadow_vector.begin_active();
-  
-  for (; cell_g != global_dof_handler->end(); ++cell_g, ++cell_shadow)
-  {
-    if (cell_shadow->is_locally_owned() && cell_shadow->active_fe_index() == 1)
-    {
-      cell_g->get_dof_indices(global_dofs);
-      cell_shadow->get_dof_indices(shadow_dofs);
-      for (unsigned int i = 0; i < dofs_per_cell; ++i) 
-      {
-        global_vec[global_dofs[i]] = wall_vec[shadow_dofs[i]];
-      }
-    }
-  }
+  // locally owned enriched cells (1) only, as before: the enriched pairs come first in the map
+  for(unsigned int i = 0; i < n_velocity_index_enriched; ++i)
+    global_vec.local_element(velocity_index_global[i]) = 
+      wall_vec.local_element(velocity_index_shadow[i]);
 }
 
 template<int dim, typename Number>
@@ -453,23 +489,16 @@ void
 FunctionEnrichment<dim, Number>::add_wall_layout_to_global_dg(VectorType const & wall_vec,
                                                               VectorType &       global_vec) const
 {
-  const unsigned int dofs_per_cell = dof_handler_shadow_vector.get_fe(1).n_dofs_per_cell();
-  std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
+#ifdef EXADG_DEBUG
+  AssertThrow(global_vec.locally_owned_size() == global_dof_handler->n_locally_owned_dofs() and
+              wall_vec.locally_owned_size() == dof_handler_shadow_vector.n_locally_owned_dofs(),
+              dealii::ExcMessage("add_wall_layout_to_global_dg: vector layouts do not match."));
+#endif
 
-  auto cell_g      = global_dof_handler->begin_active();
-  auto cell_shadow = dof_handler_shadow_vector.begin_active();
-
-  for(; cell_g != global_dof_handler->end(); ++cell_g, ++cell_shadow)
-  {
-    if(cell_shadow->is_locally_owned() && cell_shadow->active_fe_index() >= 1)
-    {
-      cell_g->get_dof_indices(global_dofs);
-      cell_shadow->get_dof_indices(shadow_dofs);
-      for(unsigned int i = 0; i < dofs_per_cell; ++i)
-        global_vec[global_dofs[i]] += wall_vec[shadow_dofs[i]];
-    }
-  }
+  // locally owned enriched (1) and halo (2) cells
+  for(unsigned int i = 0; i < velocity_index_global.size(); ++i)
+    global_vec.local_element(velocity_index_global[i]) +=
+      wall_vec.local_element(velocity_index_shadow[i]);
 }
 
 /* ============================================================================
@@ -1339,50 +1368,32 @@ void
 FunctionEnrichment<dim, Number>::copy_global_pressure_to_wall_layout(VectorType const & global_p,
                                                                      VectorType &       wall_p) const
 {
+#ifdef EXADG_DEBUG
+  AssertThrow(global_p.locally_owned_size() == global_dof_handler_pressure->n_locally_owned_dofs() and wall_p.locally_owned_size() == dof_handler_shadow_pressure.n_locally_owned_dofs(),
+              dealii::ExcMessage("copy_global_pressure_to_wall_layout: vector layouts do not match."));
+#endif
+
   wall_p = 0.0;
 
-  unsigned int const dofs_per_cell = dof_handler_shadow_pressure.get_fe(1).n_dofs_per_cell();
-  std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
-
-  auto cell_g = global_dof_handler_pressure->begin_active();
-  auto cell_s = dof_handler_shadow_pressure.begin_active();
-
-  for(; cell_g != global_dof_handler_pressure->end(); ++cell_g, ++cell_s)
-  {
-    // enriched (1) and halo (2) cells carry the shadow pressure
-    if(cell_s->is_locally_owned() && cell_s->active_fe_index() >= 1)
-    {
-      cell_g->get_dof_indices(global_dofs);
-      cell_s->get_dof_indices(shadow_dofs);
-      for(unsigned int i = 0; i < dofs_per_cell; ++i)
-        wall_p[shadow_dofs[i]] = global_p[global_dofs[i]];
-    }
-  }
+  // locally owned enriched (1) and halo (2) cells carry the shadow pressure
+  for(unsigned int i = 0; i < pressure_index_global.size(); ++i)
+    wall_p.local_element(pressure_index_shadow[i]) =
+      global_p.local_element(pressure_index_global[i]);
 }
 
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::add_wall_layout_to_global_pressure(VectorType const & wall_p,
                                                                     VectorType &       global_p) const
-{
-  unsigned int const dofs_per_cell = dof_handler_shadow_pressure.get_fe(1).n_dofs_per_cell();
-  std::vector<dealii::types::global_dof_index> global_dofs(dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> shadow_dofs(dofs_per_cell);
+{ 
+#ifdef EXADG_DEBUG
+  AssertThrow(global_p.locally_owned_size() == global_dof_handler_pressure->n_locally_owned_dofs() and wall_p.locally_owned_size() == dof_handler_shadow_pressure.n_locally_owned_dofs(),
+              dealii::ExcMessage("add_wall_layout_to_global_pressure: vector layouts do not match."));
+#endif
 
-  auto cell_g = global_dof_handler_pressure->begin_active();
-  auto cell_s = dof_handler_shadow_pressure.begin_active();
-
-  for(; cell_g != global_dof_handler_pressure->end(); ++cell_g, ++cell_s)
-  {
-    if(cell_s->is_locally_owned() && cell_s->active_fe_index() >= 1)
-    {
-      cell_g->get_dof_indices(global_dofs);
-      cell_s->get_dof_indices(shadow_dofs);
-      for(unsigned int i = 0; i < dofs_per_cell; ++i)
-        global_p[global_dofs[i]] += wall_p[shadow_dofs[i]];
-    }
-  }
+  // locally owned enriched (1) and halo (2) cells
+  for(unsigned int i = 0; i < pressure_index_global.size(); ++i)
+    global_p.local_element(pressure_index_global[i]) += wall_p.local_element(pressure_index_shadow[i]);
 }
 
 /*

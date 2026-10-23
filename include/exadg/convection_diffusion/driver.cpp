@@ -34,9 +34,9 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
-Driver<dim, n_components, Number>::Driver(MPI_Comm const &                              comm,
-                            std::shared_ptr<ApplicationBase<dim, n_components, Number>> app,
+template<int dim, typename Number>
+Driver<dim, Number>::Driver(MPI_Comm const &                              comm,
+                            std::shared_ptr<ApplicationBase<dim, Number>> app,
                             bool const                                    is_test,
                             bool const                                    is_throughput_study)
   : mpi_comm(comm),
@@ -48,9 +48,9 @@ Driver<dim, n_components, Number>::Driver(MPI_Comm const &                      
   print_general_info<Number>(pcout, mpi_comm, is_test);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::setup()
+Driver<dim, Number>::setup()
 {
   dealii::Timer timer;
   timer.restart();
@@ -95,7 +95,7 @@ Driver<dim, n_components, Number>::setup()
 
   // initialize convection-diffusion operator
   pde_operator =
-    std::make_shared<Operator<dim, n_components, Number>>(grid,
+    std::make_shared<Operator<dim, Number>>(grid,
                                             ale ? ale_mapping->get_mapping() : mapping,
                                             ale ? ale_multigrid_mappings : multigrid_mappings,
                                             application->get_boundary_descriptor(),
@@ -116,7 +116,7 @@ Driver<dim, n_components, Number>::setup()
     // initialize time integrator or driver for steady problems
     if(application->get_parameters().problem_type == ProblemType::Unsteady)
     {
-      time_integrator = create_time_integrator<dim, n_components, Number>(
+      time_integrator = create_time_integrator<dim, Number>(
         pde_operator, helpers_ale, postprocessor, application->get_parameters(), mpi_comm, is_test);
 
       time_integrator->setup(application->get_parameters().restarted_simulation);
@@ -137,38 +137,42 @@ Driver<dim, n_components, Number>::setup()
   timer_tree.insert({"Convection-diffusion", "Setup"}, timer.wall_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::ale_update() const
+Driver<dim, Number>::ale_update() const
 {
   // move the mesh and update dependent data structures
   helpers_ale->move_grid(time_integrator->get_next_time());
 
   helpers_ale->update_pde_operator_after_grid_motion();
 
-  std::shared_ptr<TimeIntBDF<dim, n_components, Number>> time_int_bdf =
-    std::dynamic_pointer_cast<TimeIntBDF<dim, n_components, Number>>(time_integrator);
+  std::shared_ptr<TimeIntBDF<dim, Number>> time_int_bdf =
+    std::dynamic_pointer_cast<TimeIntBDF<dim, Number>>(time_integrator);
   time_int_bdf->ale_update();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::mark_cells_coarsening_and_refinement(dealii::Triangulation<dim> & tria,
-                                                          VectorType const & solution) const
+Driver<dim, Number>::mark_cells_coarsening_and_refinement(dealii::Triangulation<dim> & tria,
+                                                          BlockVectorType const & solution) const
 {
+  AssertThrow(solution.n_blocks() == 1,
+              dealii::ExcMessage(
+              "Adaptive mesh refinement is only implemented for one transport variable.")); 
+
   mark_cells_kelly_error_estimator(tria,
                                    pde_operator->get_dof_handler(),
                                    pde_operator->get_constraints(),
                                    *pde_operator->get_mapping(),
-                                   solution,
+                                   solution.block(0),
                                    application->get_parameters().degree +
                                      1 /* n_face_quadrature_points */,
                                    application->get_parameters().amr_data);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::setup_after_coarsening_and_refinement()
+Driver<dim, Number>::setup_after_coarsening_and_refinement()
 {
   // Update mapping
   AssertThrow(ale_mapping.get() == 0,
@@ -187,9 +191,9 @@ Driver<dim, n_components, Number>::setup_after_coarsening_and_refinement()
   postprocessor->setup_after_coarsening_and_refinement();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::do_adaptive_refinement()
+Driver<dim, Number>::do_adaptive_refinement()
 {
   limit_coarsening_and_refinement(*grid->triangulation, application->get_parameters().amr_data);
 
@@ -232,9 +236,9 @@ Driver<dim, n_components, Number>::do_adaptive_refinement()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::solve()
+Driver<dim, Number>::solve()
 {
   if(application->get_parameters().problem_type == ProblemType::Unsteady)
   {
@@ -253,8 +257,8 @@ Driver<dim, n_components, Number>::solve()
              time_integrator->get_number_of_time_steps()))
         {
           // AMR is only implemented for implicit timestepping.
-          std::shared_ptr<TimeIntBDF<dim, n_components, Number>> bdf_time_integrator =
-            std::dynamic_pointer_cast<TimeIntBDF<dim, n_components, Number>>(time_integrator);
+          std::shared_ptr<TimeIntBDF<dim, Number>> bdf_time_integrator =
+            std::dynamic_pointer_cast<TimeIntBDF<dim, Number>>(time_integrator);
 
           AssertThrow(bdf_time_integrator.get(),
                       dealii::ExcMessage("Adaptive mesh refinement only implemented"
@@ -300,9 +304,9 @@ Driver<dim, n_components, Number>::solve()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::print_performance_results(double const total_time) const
+Driver<dim, Number>::print_performance_results(double const total_time) const
 {
   this->pcout << std::endl
               << "_________________________________________________________________________________"
@@ -317,8 +321,8 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
   {
     this->pcout << std::endl << "Average number of iterations:" << std::endl;
 
-    std::shared_ptr<TimeIntBDF<dim, n_components, Number>> time_integrator_bdf =
-      std::dynamic_pointer_cast<TimeIntBDF<dim, n_components, Number>>(time_integrator);
+    std::shared_ptr<TimeIntBDF<dim, Number>> time_integrator_bdf =
+      std::dynamic_pointer_cast<TimeIntBDF<dim, Number>>(time_integrator);
     time_integrator_bdf->print_iterations();
   }
 
@@ -335,8 +339,8 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
     }
     else if(application->get_parameters().temporal_discretization == TemporalDiscretization::BDF)
     {
-      std::shared_ptr<TimeIntBDF<dim, n_components, Number>> time_integrator_bdf =
-        std::dynamic_pointer_cast<TimeIntBDF<dim, n_components, Number>>(time_integrator);
+      std::shared_ptr<TimeIntBDF<dim, Number>> time_integrator_bdf =
+        std::dynamic_pointer_cast<TimeIntBDF<dim, Number>>(time_integrator);
       timer_tree.insert({"Convection-diffusion"}, time_integrator_bdf->get_timings());
     }
     else
@@ -381,15 +385,15 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
               << std::endl;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::tuple<unsigned int, dealii::types::global_dof_index, double>
-Driver<dim, n_components, Number>::apply_operator(OperatorType const & operator_type,
+Driver<dim, Number>::apply_operator(OperatorType const & operator_type,
                                     unsigned int const   n_repetitions_inner,
                                     unsigned int const   n_repetitions_outer) const
 {
   pcout << std::endl << "Computing matrix-vector product ..." << std::endl;
 
-  dealii::LinearAlgebra::distributed::Vector<Number> dst, src;
+  dealii::LinearAlgebra::distributed::BlockVector<Number> dst, src;
 
   pde_operator->initialize_dof_vector(src);
   src = 1.0;
@@ -453,17 +457,11 @@ Driver<dim, n_components, Number>::apply_operator(OperatorType const & operator_
     application->get_parameters().degree, dofs, throughput);
 }
 
-template class Driver<2, 1, float>;
-template class Driver<3, 1, float>;
+template class Driver<2, float>;
+template class Driver<3, float>;
 
-template class Driver<2, 1, double>;
-template class Driver<3, 1, double>;
-
-template class Driver<2, 2, float>;
-template class Driver<3, 2, float>;
-
-template class Driver<2, 2, double>;
-template class Driver<3, 2, double>;
+template class Driver<2, double>;
+template class Driver<3, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

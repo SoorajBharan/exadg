@@ -26,14 +26,14 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
-CombinedOperator<dim, n_components, Number>::CombinedOperator() : scaling_factor_mass(1.0)
+template<int dim, typename Number>
+CombinedOperator<dim, Number>::CombinedOperator() : scaling_factor_mass(1.0)
 {
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::initialize(
+CombinedOperator<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const &   matrix_free,
   dealii::AffineConstraints<Number> const & affine_constraints,
   CombinedOperatorData<dim> const &         data)
@@ -49,14 +49,14 @@ CombinedOperator<dim, n_components, Number>::initialize(
 
   if(operator_data.convective_problem)
   {
-    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, n_components, Number>>();
+    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, Number>>();
     convective_kernel->reinit(matrix_free, data.convective_kernel_data, data.quad_index, true);
   }
 
   if(operator_data.diffusive_problem)
   {
-    diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();
-    diffusive_kernel->reinit(matrix_free, data.diffusive_kernel_data, data.dof_index, data.quad_index);
+    diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, Number>>();
+    diffusive_kernel->reinit(matrix_free, data.diffusive_kernel_data, data.dof_index);
   }
 
   // integrator flags
@@ -70,14 +70,14 @@ CombinedOperator<dim, n_components, Number>::initialize(
     this->integrator_flags = this->integrator_flags | diffusive_kernel->get_integrator_flags();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::initialize(
+CombinedOperator<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const &                   matrix_free,
   dealii::AffineConstraints<Number> const &                 affine_constraints,
   CombinedOperatorData<dim> const &                         data,
-  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel_in,
-  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel_in)
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel_in,
+  std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel_in)
 {
   operator_data = data;
 
@@ -103,105 +103,95 @@ CombinedOperator<dim, n_components, Number>::initialize(
     this->integrator_flags = this->integrator_flags | diffusive_kernel->get_integrator_flags();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 CombinedOperatorData<dim> const &
-CombinedOperator<dim, n_components, Number>::get_data() const
+CombinedOperator<dim, Number>::get_data() const
 {
   return operator_data;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::update_after_grid_motion()
+CombinedOperator<dim, Number>::update_after_grid_motion()
 {
   if(operator_data.diffusive_problem)
     diffusive_kernel->calculate_penalty_parameter(*this->matrix_free, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::LinearAlgebra::distributed::Vector<Number> const &
-CombinedOperator<dim, n_components, Number>::get_velocity() const
+CombinedOperator<dim, Number>::get_velocity() const
 {
   return convective_kernel->get_velocity();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::set_velocity_copy(VectorType const & velocity) const
+CombinedOperator<dim, Number>::set_velocity_copy(VectorType const & velocity) const
 {
   if(operator_data.convective_problem)
     convective_kernel->set_velocity_copy(velocity);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::set_velocity_ptr(VectorType const & velocity) const
+CombinedOperator<dim, Number>::set_velocity_ptr(VectorType const & velocity) const
 {
   if(operator_data.convective_problem)
     convective_kernel->set_velocity_ptr(velocity);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 Number
-CombinedOperator<dim, n_components, Number>::get_scaling_factor_mass_operator() const
+CombinedOperator<dim, Number>::get_scaling_factor_mass_operator() const
 {
   return scaling_factor_mass;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::set_scaling_factor_mass_operator(Number const & scaling_factor)
+CombinedOperator<dim, Number>::set_scaling_factor_mass_operator(Number const & scaling_factor)
 {
   scaling_factor_mass = scaling_factor;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::reinit_cell_derived(IntegratorCell &   integrator,
+CombinedOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator,
                                                    unsigned int const cell) const
 {
   (void)integrator;
 
   if(operator_data.convective_problem)
     convective_kernel->reinit_cell(cell);
-  if(operator_data.diffusive_problem)
-    diffusive_kernel->reinit_cell(cell);
-
-  if constexpr (n_components == 2)
-  {
-    if(operator_data.dissipation_implicit || operator_data.production_implicit || operator_data.square_gradient_implicit)
-    {
-      turbulence_source_kernel->reinit_cell(cell);
-    }
-  }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
+CombinedOperator<dim, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
                                                    IntegratorFace &   integrator_p,
                                                    unsigned int const face) const
 {
   if(operator_data.convective_problem)
     convective_kernel->reinit_face(face);
   if(operator_data.diffusive_problem)
-    diffusive_kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index, face);
+    diffusive_kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
+CombinedOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
                                                             unsigned int const face) const
 {
   if(operator_data.convective_problem)
     convective_kernel->reinit_boundary_face(face);
   if(operator_data.diffusive_problem)
-    diffusive_kernel->reinit_boundary_face(integrator_m, operator_data.dof_index, face);
+    diffusive_kernel->reinit_boundary_face(integrator_m, operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
+CombinedOperator<dim, Number>::reinit_face_cell_based_derived(
   IntegratorFace &                 integrator_m,
   IntegratorFace &                 integrator_p,
   unsigned int const               cell,
@@ -217,23 +207,22 @@ CombinedOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
                                              operator_data.dof_index);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & integrator) const
+CombinedOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) const
 {
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
-    simd_value_type value = integrator.get_value(q);
-    gradient_type gradient = integrator.get_gradient(q);
+    vector gradient_flux;
+    scalar value_flux = dealii::make_vectorized_array<Number>(0.0);
 
-    gradient_type gradient_flux = gradient * 0.0;
-    simd_value_type value_flux = value * 0.0;
+    scalar value = dealii::make_vectorized_array<Number>(0.0);
+    if(this->integrator_flags.cell_evaluate & dealii::EvaluationFlags::values)
+      value = integrator.get_value(q);
 
-    // if(this->integrator_flags.cell_evaluate & dealii::EvaluationFlags::values)
-    //   value = integrator.get_value(q);
-    //
-    // if(this->integrator_flags.cell_evaluate & dealii::EvaluationFlags::gradients)
-    //   gradient = integrator.get_gradient(q);
+    vector gradient;
+    if(this->integrator_flags.cell_evaluate & dealii::EvaluationFlags::gradients)
+      gradient = integrator.get_gradient(q);
 
     if(operator_data.unsteady_problem)
     {
@@ -264,50 +253,6 @@ CombinedOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & i
     {
       gradient_flux += diffusive_kernel->get_volume_flux(integrator, q);
     }
-    
-    if constexpr (n_components == 2)
-    {
-      if(operator_data.dissipation_implicit)
-      {
-        auto coefficients = turbulence_source_kernel->get_dissipation_implicit_coefficients(q);
-
-        simd_value_type dissipation_value;
-        dissipation_value[0] = coefficients.Dk_k_coefficient * value[0]
-                             + coefficients.Dk_w_coefficient * value[1];
-        dissipation_value[1] = coefficients.Dw_k_coefficient * value[0]
-                             + coefficients.Dw_w_coefficient * value[1];
-        value_flux += dissipation_value;
-      }
-
-      if(operator_data.production_implicit)
-      {
-        dealii::Tensor<2, n_components, scalar> implicit_coefficients =
-          turbulence_source_kernel->get_production_implicit_coefficient(q);
-
-        simd_value_type production_value;
-        production_value[0] = implicit_coefficients[0][0] * value[0] +
-          implicit_coefficients[0][1] * value[1];
-        production_value[1] = implicit_coefficients[1][0] * value[0] +
-          implicit_coefficients[1][1] * value[1];
-
-        value_flux -= production_value;
-      }
-
-      if(operator_data.square_gradient_implicit)
-      {
-        auto coefficients = turbulence_source_kernel->get_square_gradient_coefficients(q);
-
-        simd_value_type square_gradient_value;
-        square_gradient_value[0] = coefficients.Sk_k_coefficient * value[0]
-                                 + coefficients.Sk_w_coefficient * value[1]
-                                 + scalar_product(coefficients.grad_k_coefficient, gradient[0]);
-        square_gradient_value[1] = coefficients.Sw_k_coefficient * value[0]
-                                 + coefficients.Sw_w_coefficient * value[1]
-                                 + scalar_product(coefficients.grad_w_coefficient, gradient[1]);
-
-        value_flux -= square_gradient_value;
-      }
-    }
 
     if(this->integrator_flags.cell_integrate & dealii::EvaluationFlags::values)
       integrator.submit_value(value_flux, q);
@@ -316,24 +261,24 @@ CombinedOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & i
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & integrator_m,
+CombinedOperator<dim, Number>::do_face_integral(IntegratorFace & integrator_m,
                                                 IntegratorFace & integrator_p) const
 {
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    simd_value_type value_m = integrator_m.get_value(q);
-    simd_value_type value_p = integrator_p.get_value(q);
+    scalar value_m = integrator_m.get_value(q);
+    scalar value_p = integrator_p.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    simd_value_type value_flux_m = value_m * 0.0;
-    simd_value_type value_flux_p = value_p * 0.0;
+    scalar value_flux_m = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_flux_p = dealii::make_vectorized_array<Number>(0.0);
 
     if(operator_data.convective_problem)
     {
-      std::tuple<simd_value_type, simd_value_type> flux = convective_kernel->calculate_flux_interior_and_neighbor(
+      std::tuple<scalar, scalar> flux = convective_kernel->calculate_flux_interior_and_neighbor(
         q, integrator_m, value_m, value_p, normal_m, this->time, true);
 
       value_flux_m += std::get<0>(flux);
@@ -342,15 +287,13 @@ CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & i
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type normal_gradient_m = integrator_m.get_normal_derivative(q);
-      simd_value_type normal_gradient_p = integrator_p.get_normal_derivative(q);
+      scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
+      scalar normal_gradient_p = integrator_p.get_normal_derivative(q);
 
-      simd_value_type value_flux = diffusive_kernel->calculate_value_flux(normal_gradient_m,
+      scalar value_flux = diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                                  normal_gradient_p,
                                                                  value_m,
-                                                                 value_p,
-                                                                 q,
-                                                                 false);
+                                                                 value_p);
 
       value_flux_m += -value_flux;
       value_flux_p += value_flux; // + sign since n⁺ = -n⁻
@@ -361,17 +304,16 @@ CombinedOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & i
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
+      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
-      gradient_flux = diffusive_kernel->calculate_gradient_flux_p(value_m, value_p, q);
       integrator_p.submit_normal_derivative(gradient_flux, q);
     }
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace & integrator_m,
+CombinedOperator<dim, Number>::do_face_int_integral(IntegratorFace & integrator_m,
                                                     IntegratorFace & integrator_p) const
 {
   (void)integrator_p;
@@ -379,12 +321,12 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
     // set value_p to zero
-    simd_value_type value_m = integrator_m.get_value(q);
-    simd_value_type value_p = value_m * 0.0;
+    scalar value_p = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_m = integrator_m.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    simd_value_type value_flux = value_m * 0.0;
+    scalar value_flux = dealii::make_vectorized_array<Number>(0.0);
 
     if(operator_data.convective_problem)
     {
@@ -395,22 +337,20 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace
     if(operator_data.diffusive_problem)
     {
       // set exterior value to zero
-      simd_value_type normal_gradient_m = integrator_m.get_normal_derivative(q);
-      simd_value_type normal_gradient_p = normal_gradient_m * 0.0;
+      scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
+      scalar normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p,
-                                                            q,
-                                                            false);
+                                                            value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
+      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -418,9 +358,9 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace
 
 // TODO can be removed later once matrix-free evaluation allows accessing neighboring data for
 // cell-based face loops
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_face_int_integral_cell_based(IntegratorFace & integrator_m,
+CombinedOperator<dim, Number>::do_face_int_integral_cell_based(IntegratorFace & integrator_m,
                                                                IntegratorFace & integrator_p) const
 {
   (void)integrator_p;
@@ -428,12 +368,12 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral_cell_based(Int
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
     // set value_p to zero
-    simd_value_type value_m = integrator_m.get_value(q);
-    simd_value_type value_p = value_m * 0.0;
+    scalar value_p = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_m = integrator_m.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    simd_value_type value_flux = value_p;
+    scalar value_flux = dealii::make_vectorized_array<Number>(0.0);
 
     if(operator_data.convective_problem)
     {
@@ -452,30 +392,28 @@ CombinedOperator<dim, n_components, Number>::do_face_int_integral_cell_based(Int
     if(operator_data.diffusive_problem)
     {
       // set exterior value to zero
-      simd_value_type normal_gradient_m = integrator_m.get_normal_derivative(q);
-      simd_value_type normal_gradient_p = normal_gradient_m * 0.0;
+      scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
+      scalar normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p,
-                                                            q,
-                                                            false);
+                                                            value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
+      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
+CombinedOperator<dim, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
                                                     IntegratorFace & integrator_p) const
 {
   (void)integrator_m;
@@ -483,13 +421,13 @@ CombinedOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace
   for(unsigned int q = 0; q < integrator_p.n_q_points; ++q)
   {
     // set value_m to zero
-    simd_value_type value_p = integrator_p.get_value(q);
-    simd_value_type value_m = value_p * 0.0;
+    scalar value_m = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_p = integrator_p.get_value(q);
 
     // n⁺ = -n⁻
     vector normal_p = -integrator_p.get_normal_vector(q);
 
-    simd_value_type value_flux = value_m;
+    scalar value_flux = dealii::make_vectorized_array<Number>(0.0);
 
     if(operator_data.convective_problem)
     {
@@ -499,33 +437,31 @@ CombinedOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace
 
     if(operator_data.diffusive_problem)
     {
-      // minus sign to get the correct normal vector n⁺ = -n⁻
-      simd_value_type normal_gradient_p = -integrator_p.get_normal_derivative(q);
       // set gradient_m to zero
-      simd_value_type normal_gradient_m = normal_gradient_p * 0.0;
+      scalar normal_gradient_m = dealii::make_vectorized_array<Number>(0.0);
+      // minus sign to get the correct normal vector n⁺ = -n⁻
+      scalar normal_gradient_p = -integrator_p.get_normal_derivative(q);
 
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_p,
                                                             normal_gradient_m,
                                                             value_p,
-                                                            value_m,
-                                                            q,
-                                                            false);
+                                                            value_m);
     }
 
     integrator_p.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_p(value_p, value_m, q);
+      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_p, value_m);
       // opposite sign since n⁺ = -n⁻
       integrator_p.submit_normal_derivative(-gradient_flux, q);
     }
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-CombinedOperator<dim, n_components, Number>::do_boundary_integral(
+CombinedOperator<dim, Number>::do_boundary_integral(
   IntegratorFace &                   integrator_m,
   OperatorType const &               operator_type,
   dealii::types::boundary_id const & boundary_id) const
@@ -534,8 +470,8 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
 
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    simd_value_type value_m = calculate_interior_value(q, integrator_m, operator_type);
-    simd_value_type value_p = calculate_exterior_value(value_m,
+    scalar value_m = calculate_interior_value(q, integrator_m, operator_type);
+    scalar value_p = calculate_exterior_value(value_m,
                                               q,
                                               integrator_m,
                                               operator_type,
@@ -546,7 +482,7 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    simd_value_type value_flux = value_m * 0.0;
+    scalar value_flux = dealii::make_vectorized_array<Number>(0.0);
 
     if(operator_data.convective_problem)
     {
@@ -559,8 +495,8 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type normal_gradient_m = calculate_interior_normal_gradient(q, integrator_m, operator_type);
-      simd_value_type normal_gradient_p = calculate_exterior_normal_gradient(normal_gradient_m,
+      scalar normal_gradient_m = calculate_interior_normal_gradient(q, integrator_m, operator_type);
+      scalar normal_gradient_p = calculate_exterior_normal_gradient(normal_gradient_m,
                                                                     q,
                                                                     integrator_m,
                                                                     operator_type,
@@ -572,40 +508,24 @@ CombinedOperator<dim, n_components, Number>::do_boundary_integral(
       value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
                                                             normal_gradient_p,
                                                             value_m,
-                                                            value_p,
-                                                            q,
-                                                            true);
+                                                            value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      simd_value_type gradient_flux = diffusive_kernel->calculate_gradient_flux_m(value_m, value_p, q);
+      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
 }
 
-template<int dim, int n_components, typename Number>
-void
-CombinedOperator<dim, n_components, Number>::set_turbulence_source_kernel(
-  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>> turbulence_source_kernel_in)
-{
-  turbulence_source_kernel = turbulence_source_kernel_in;
-}
+template class CombinedOperator<2, float>;
+template class CombinedOperator<2, double>;
 
-template class CombinedOperator<2, 1, float>;
-template class CombinedOperator<2, 1, double>;
-
-template class CombinedOperator<3, 1, float>;
-template class CombinedOperator<3, 1, double>;
-
-template class CombinedOperator<2, 2, float>;
-template class CombinedOperator<2, 2, double>;
-
-template class CombinedOperator<3, 2, float>;
-template class CombinedOperator<3, 2, double>;
+template class CombinedOperator<3, float>;
+template class CombinedOperator<3, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

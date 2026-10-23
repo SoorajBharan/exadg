@@ -27,8 +27,6 @@
 #include <exadg/operators/mapping_flags.h>
 #include "exadg/utilities/lazy_ptr.h"
 
-#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
-
 namespace ExaDG
 {
 namespace ConvDiff
@@ -38,22 +36,17 @@ namespace Operators
 template<int dim>
 struct RHSKernelData
 {
-  RHSKernelData() : rans_model(false)
+  RHSKernelData()
   {
   }
   std::shared_ptr<dealii::Function<dim>> f;
-
-  bool rans_model;
 };
 
-template<int dim, typename Number, int n_components = 1>
+template<int dim, typename Number>
 class RHSKernel
 {
 private:
-  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
-
-  using value_type = typename IntegratorCell::value_type;
-  using gradient_type = typename IntegratorCell::gradient_type;
+  typedef CellIntegrator<dim, 1, Number> IntegratorCell;
 
   typedef dealii::VectorizedArray<Number>   scalar;
 
@@ -87,33 +80,14 @@ public:
    * Volume flux, i.e., the term occurring in the volume integral
    */
   inline DEAL_II_ALWAYS_INLINE //
-    value_type
+    scalar
     get_volume_flux(IntegratorCell const & integrator,
                     unsigned int const     q,
                     Number const &         time) const
   {
-    value_type volume_flux;
     dealii::Point<dim, scalar> q_points = integrator.quadrature_point(q);
 
-    if(data.rans_model)
-    {
-      if constexpr(n_components > 1)
-      {
-        volume_flux = MultiComponentFunctionEvaluator<n_components, dim,  Number>::value(*(data.f), q_points, time);
-      }
-    }
-    else  {
-      if constexpr(n_components == 1)
-      {
-        volume_flux = FunctionEvaluator<0, dim, Number>::value(*(data.f), q_points, time);
-      }
-      else if constexpr(n_components == dim)
-      {
-        volume_flux = FunctionEvaluator<1, dim, Number>::value(*(data.f), q_points, time);
-      }
-    }
-
-    return volume_flux;
+    return FunctionEvaluator<0, dim, Number>::value(*(data.f), q_points, time);
   }
 
 private:
@@ -136,15 +110,15 @@ struct RHSOperatorData
   Operators::RHSKernelData<dim> kernel_data;
 };
 
-template<int dim, typename Number, int n_components = 1>
+template<int dim, typename Number>
 class RHSOperator
 {
 private:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
-  typedef RHSOperator<dim, Number, n_components> This;
+  typedef RHSOperator<dim, Number> This;
 
-  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
+  typedef CellIntegrator<dim, 1, Number> IntegratorCell;
 
   typedef std::pair<unsigned int, unsigned int> Range;
 
@@ -160,7 +134,7 @@ public:
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free,
              RHSOperatorData<dim> const &            data,
-             std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel_in);
+             std::shared_ptr<Operators::RHSKernel<dim, Number>> kernel_in);
 
   /*
    * Evaluate operator and overwrite dst-vector.
@@ -195,7 +169,7 @@ private:
   mutable double time;
 
   // Operators::RHSKernel<dim, Number, n_components> kernel;
-  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel;
+  std::shared_ptr<Operators::RHSKernel<dim, Number>> kernel;
 };
 
 } // namespace ConvDiff

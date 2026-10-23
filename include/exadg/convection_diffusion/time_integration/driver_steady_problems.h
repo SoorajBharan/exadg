@@ -25,6 +25,7 @@
 // deal.II
 #include <deal.II/base/timer.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/utilities/timer_tree.h>
@@ -50,6 +51,7 @@ class DriverSteadyProblems
 {
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 
   typedef Interface::Operator<Number> Operator;
 
@@ -94,8 +96,8 @@ private:
   std::shared_ptr<TimerTree> timer_tree;
 
   // vectors
-  VectorType solution;
-  VectorType rhs_vector;
+  BlockVectorType solution;
+  BlockVectorType rhs_vector;
 
   std::shared_ptr<PostProcessorInterface<Number>> postprocessor;
 };

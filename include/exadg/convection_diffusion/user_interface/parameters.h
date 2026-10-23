@@ -34,6 +34,7 @@
 #include <exadg/solvers_and_preconditioners/multigrid/multigrid_parameters.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/enum_types.h>
 #include <exadg/solvers_and_preconditioners/solvers/enum_types.h>
+#include <exadg/solvers_and_preconditioners/newton/newton_solver_data.h>
 #include <exadg/solvers_and_preconditioners/solvers/solver_data.h>
 #include <exadg/time_integration/enum_types.h>
 #include <exadg/time_integration/restart_data.h>
@@ -104,6 +105,8 @@ public:
 
   // description: see enum declaration
   ScalarType scalar_type;
+
+  unsigned int number_of_transport_variables;
 
   // description: see enum declaration
   ProblemType problem_type;
@@ -305,6 +308,22 @@ public:
   // update preconditioner every ... time step. Only relevant if update preconditioner
   // is set to true.
   unsigned int update_preconditioner_every_time_steps;
+
+  // description: see enum declaration
+  NonlinearSolver nonlinear_solver;
+
+  // Newton solver: max_iter, abs_tol and rel_tol of the residual norm
+  Newton::SolverData newton_solver_data;
+
+  // Newton solver (Bassi et al. 2014, Eq. 43): the preconditioner is updated if
+  // ||dQ^{j+1}|| / ||dQ^j|| >= preconditioner_update_tolerance (slow convergence) or if
+  // preconditioner_update_max_time_steps time steps have passed since the last update.
+  // Only relevant if update_preconditioner is true.
+  double       preconditioner_update_tolerance;
+  unsigned int preconditioner_update_max_time_steps;
+
+  // Newton solver: halve the increment until the residual norm decreases (line search)
+  bool newton_damping;
 
   // Implement block diagonal (block Jacobi) preconditioner in a matrix-free way
   // by solving the block Jacobi problems elementwise using iterative solvers and

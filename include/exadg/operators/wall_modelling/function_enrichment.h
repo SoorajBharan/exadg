@@ -355,6 +355,12 @@ private:
   dealii::DoFHandler<dim>         dof_handler_shadow_pressure;
   dealii::hp::FECollection<dim>   fe_shadow_pressure_collection;
 
+  std::vector<unsigned int> velocity_index_global;
+  std::vector<unsigned int> velocity_index_shadow;
+  unsigned int              n_velocity_index_enriched = 0;
+  std::vector<unsigned int> pressure_index_global;
+  std::vector<unsigned int> pressure_index_shadow;
+
   // CG Wall variables
   std::shared_ptr<dealii::FiniteElement<dim>> fe_cg_scalar;
   dealii::DoFHandler<dim>                     dof_handler_cg_scalar;

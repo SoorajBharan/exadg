@@ -28,11 +28,14 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/mapping_q.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/postprocessor/output_data_base.h>
 #include <exadg/postprocessor/solution_field.h>
 #include <exadg/postprocessor/time_control.h>
+
+#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
 {
@@ -62,6 +65,7 @@ class OutputGenerator
 {
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 
   OutputGenerator(MPI_Comm const & comm);
 
@@ -70,8 +74,14 @@ public:
         dealii::Mapping<dim> const &    mapping_in,
         OutputData const &          output_data_in);
 
+  void  
+  setup(dealii::DoFHandler<dim> const & dof_handler_in,
+        dealii::Mapping<dim> const &    mapping_in,
+        OutputData const &              output_data_in,
+        TurbulenceModelData const &     turbulence_model_data_in);
+
   void
-  evaluate(VectorType const & solution,
+  evaluate(BlockVectorType const & solution,
            std::vector<dealii::SmartPointer<SolutionField<dim, Number>>> const & additional_fields,
            double const time,
            bool const unsteady);
@@ -79,11 +89,16 @@ public:
   TimeControl time_control;
 
 private:
+  std::vector<std::string>
+  get_solution_names(unsigned int const n_blocks) const;
+
   MPI_Comm const mpi_comm;
 
   dealii::SmartPointer<dealii::DoFHandler<dim> const> dof_handler;
   dealii::SmartPointer<dealii::Mapping<dim> const>    mapping;
   OutputData                                          output_data;
+
+  TurbulenceModelData                                 turbulence_model_data;
 };
 
 } // namespace ConvDiff

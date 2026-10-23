@@ -40,7 +40,8 @@ void
 write_output(OutputDataBase const &          output_data,
              dealii::DoFHandler<dim> const & dof_handler,
              dealii::Mapping<dim> const &    mapping,
-             dealii::LinearAlgebra::distributed::Vector<Number> const &              solution_vector,
+             dealii::LinearAlgebra::distributed::BlockVector<Number> const &              solution_vector,
+             std::vector<std::string> const & solution_names,
              std::vector<dealii::SmartPointer<SolutionField<dim, Number>>> const & additional_fields,
              unsigned int const              output_counter,
              MPI_Comm const &                mpi_comm)
@@ -53,10 +54,13 @@ write_output(OutputDataBase const &          output_data,
   dealii::DataOut<dim> data_out;
   data_out.set_flags(flags);
 
-  data_out.add_data_vector(dof_handler,
-                           solution_vector,
-                           "solution");
-  
+  for(unsigned int b = 0; b < solution_vector.n_blocks(); ++b)
+  {
+    data_out.add_data_vector(dof_handler,
+                             solution_vector.block(b),
+                             solution_names[b]);
+  }
+
   for(auto & additional_field : additional_fields)
   {
     if(additional_field->get_type() == SolutionFieldType::scalar)
@@ -150,7 +154,23 @@ OutputGenerator<dim, Number>::setup(dealii::DoFHandler<dim> const & dof_handler_
 
 template<int dim, typename Number>
 void
-OutputGenerator<dim, Number>::evaluate(VectorType const & solution,
+OutputGenerator<dim, Number>::setup(dealii::DoFHandler<dim> const &
+                                    dof_handler_in,
+                                    dealii::Mapping<dim> const &    mapping_in,
+                                    OutputData const &
+                                    output_data_in,
+                                    TurbulenceModelData const &
+                                    turbulence_model_data_in)
+{
+  turbulence_model_data = turbulence_model_data_in;
+
+  setup(dof_handler_in, mapping_in, output_data_in);
+}
+
+
+template<int dim, typename Number>
+void
+OutputGenerator<dim, Number>::evaluate(BlockVectorType const & solution,
                                        std::vector<dealii::SmartPointer<SolutionField<dim, Number>>> const & additional_fields,
                                        double const       time,
                                        bool const         unsteady)
@@ -162,9 +182,52 @@ OutputGenerator<dim, Number>::evaluate(VectorType const & solution,
     *dof_handler,
     *mapping,
     solution,
+    get_solution_names(solution.n_blocks()),
     additional_fields,
     time_control.get_counter(),
     mpi_comm);
+}
+
+template<int dim, typename Number>
+std::vector<std::string>
+OutputGenerator<dim, Number>::get_solution_names(unsigned int const n_blocks) const
+{
+  std::vector<std::string> names(n_blocks);
+
+  if(turbulence_model_data.is_active)
+  {
+    std::vector<std::string> variable_names;
+
+    if(turbulence_model_data.turbulence_model ==
+      TurbulenceEddyViscosityModel::StandardKEpsilon)
+      variable_names = {"tke", "epsilon"};
+    else if(turbulence_model_data.turbulence_model ==
+        TurbulenceEddyViscosityModel::StandardKOmega1988)
+      variable_names = {"tke", "omega"};
+
+    if(variable_names.size() == n_blocks)
+    {
+      for(unsigned int b = 0; b < n_blocks; ++b)
+      {
+        bool const logarithmic =
+          b < turbulence_model_data.positivity_preserving_limiter.size() and
+          turbulence_model_data.positivity_preserving_limiter[b] ==
+          PositivityPreservingLimiter::LogarithmicTransportVariable;
+
+        names[b] = (logarithmic ? "ln_" : "") + variable_names[b];
+      }
+
+      return names;
+    }
+  } 
+
+  for(unsigned int b = 0; b < n_blocks; ++b)
+  {
+    names[b] = (n_blocks == 1) ? "solution" : "solution_" +
+      dealii::Utilities::int_to_string(b);
+  }
+
+  return names;
 }
 
 template class OutputGenerator<2, float>;

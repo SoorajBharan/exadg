@@ -40,8 +40,8 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
-Operator<dim, n_components, Number>::Operator(
+template<int dim, typename Number>
+Operator<dim, Number>::Operator(
   std::shared_ptr<Grid<dim> const>                      grid_in,
   std::shared_ptr<dealii::Mapping<dim> const>           mapping_in,
   std::shared_ptr<MultigridMappings<dim, Number>> const multigrid_mappings_in,
@@ -58,13 +58,20 @@ Operator<dim, n_components, Number>::Operator(
     field_functions(field_functions_in),
     param(param_in),
     field(field_in),
+    n_blocks(param_in.number_of_transport_variables),
     dof_handler(*grid_in->triangulation),
     mpi_comm(mpi_comm_in),
     pcout(std::cout, dealii::Utilities::MPI::this_mpi_process(mpi_comm_in) == 0)
 {
   pcout << std::endl << "Construct convection-diffusion operator ..." << std::endl;
 
-  fe = create_finite_element<dim>(ElementType::Hypercube, true, n_components, param.degree);
+  fe = create_finite_element<dim>(ElementType::Hypercube, true, 1, param.degree);
+  AssertThrow(n_blocks >= 1,
+              dealii::ExcMessage("number_of_transport_variables must be at least 1."));
+
+  boundary_descriptor_block.resize(n_blocks);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    boundary_descriptor_block[b] = get_boundary_descriptor_of_component(*boundary_descriptor, b);
 
   if(needs_own_dof_handler_velocity())
   {
@@ -104,9 +111,9 @@ Operator<dim, n_components, Number>::Operator(
   pcout << std::endl << "... done!" << std::endl;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::initialize_dof_handler_and_constraints()
+Operator<dim, Number>::initialize_dof_handler_and_constraints()
 {
   dof_handler.distribute_dofs(*fe);
 
@@ -123,9 +130,9 @@ Operator<dim, n_components, Number>::initialize_dof_handler_and_constraints()
   affine_constraints.close();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const
+Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const
 {
   // append mapping flags
   if(param.problem_type == ProblemType::Unsteady)
@@ -142,13 +149,19 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
   if(param.convective_problem())
   {
     matrix_free_data.append_mapping_flags(
-      Operators::ConvectiveKernel<dim, n_components, Number>::get_mapping_flags());
+      Operators::ConvectiveKernel<dim, Number>::get_mapping_flags());
   }
 
   if(param.diffusive_problem())
   {
     matrix_free_data.append_mapping_flags(
-      Operators::DiffusiveKernel<dim, n_components, Number>::get_mapping_flags(true, true));
+      Operators::DiffusiveKernel<dim, Number>::get_mapping_flags(true, true));
+  }
+
+  if(param.turbulence_model_data.is_active)
+  { 
+    matrix_free_data.append_mapping_flags(
+      Operators::TurbulenceSourceKernel<dim, Number>::get_mapping_flags());
   }
 
   // mapping flags required for CFL condition
@@ -191,9 +204,9 @@ Operator<dim, n_components, Number>::fill_matrix_free_data(MatrixFreeData<dim, N
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup_operators()
+Operator<dim, Number>::setup_operators()
 {
   // mass operator
   MassOperatorData<dim> mass_operator_data;
@@ -227,29 +240,39 @@ Operator<dim, n_components, Number>::setup_operators()
     convective_kernel_data.numerical_flux_formulation = param.numerical_flux_convective_operator;
     convective_kernel_data.velocity                   = field_functions->velocity;
 
-    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, n_components, Number>>();
+    convective_kernel = std::make_shared<Operators::ConvectiveKernel<dim, Number>>();
     convective_kernel->reinit(*matrix_free,
                               convective_kernel_data,
                               quad_index_convective,
                               false /* is_mg */);
 
-    ConvectiveOperatorData<dim> convective_operator_data;
-    convective_operator_data.dof_index            = get_dof_index();
-    convective_operator_data.quad_index           = quad_index_convective;
-    convective_operator_data.bc                   = boundary_descriptor;
-    convective_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
-    convective_operator_data.implement_block_diagonal_preconditioner_matrix_free =
-      param.implement_block_diagonal_preconditioner_matrix_free;
-    convective_operator_data.kernel_data = convective_kernel_data;
+    convective_operator.resize(n_blocks);
 
-    convective_operator.initialize(*matrix_free,
-                                   affine_constraints,
-                                   convective_operator_data,
-                                   convective_kernel);
+    for(unsigned int b = 0; b < n_blocks; ++b)
+    {
+      ConvectiveOperatorData<dim> convective_operator_data;
+      convective_operator_data.dof_index            = get_dof_index();
+      convective_operator_data.quad_index           = quad_index_convective;
+      convective_operator_data.bc                   = boundary_descriptor_block[b];
+      convective_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
+      convective_operator_data.implement_block_diagonal_preconditioner_matrix_free =
+        param.implement_block_diagonal_preconditioner_matrix_free;
+      convective_operator_data.kernel_data = convective_kernel_data;
+
+      convective_operator[b] = std::make_shared<ConvectiveOperator<dim, Number>>();
+      convective_operator[b]->initialize(*matrix_free,
+                                     affine_constraints,
+                                     convective_operator_data,
+                                     convective_kernel);
+    }
   }
 
   if(param.turbulence_model_data.is_active)
   {
+
+    AssertThrow(not param.use_overintegration,
+                dealii::ExcMessage("Overintegration is not implemented in combination with the turbulence source terms."));
+
     turbulence_model_ptr->diffusivity              = param.diffusivity;
 
     turbulence_model_ptr->initialize(*matrix_free,
@@ -262,69 +285,89 @@ Operator<dim, n_components, Number>::setup_operators()
     turbulence_model_ptr->model_coefficients       = param.turbulence_model_data.turbulence_data_base->get_all_coefficients();
   }
 
-  // diffusive operator
-  Operators::DiffusiveKernelData diffusive_kernel_data;
-
-  if(param.diffusive_problem())
-  {
-    diffusive_kernel_data.IP_factor   = param.IP_factor;
-    diffusive_kernel_data.diffusivity = param.diffusivity;
-
-    if(param.turbulence_model_data.is_active)
-    {
-      diffusive_kernel_data.rans_model = true;
-      diffusive_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
-
-      if(param.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon)
-      {
-        diffusive_kernel_data.inverse_sigma = {
-          1.0 / turbulence_model_ptr->model_coefficients[0], // 1/sigma_k
-          1.0 / turbulence_model_ptr->model_coefficients[4]  // 1/sigma_epsilon
-        };
-      }
-      else if(param.turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
-      {
-        diffusive_kernel_data.inverse_sigma = {
-          turbulence_model_ptr->model_coefficients[4], // sigma*
-          turbulence_model_ptr->model_coefficients[3]  // sigma
-        };
-      }
-    }
-
-    diffusive_kernel = std::make_shared<Operators::DiffusiveKernel<dim, n_components, Number>>();
-    diffusive_kernel->reinit(*matrix_free, diffusive_kernel_data, get_dof_index(), get_quad_index());
-
-    DiffusiveOperatorData<dim> diffusive_operator_data;
-    diffusive_operator_data.dof_index            = get_dof_index();
-    diffusive_operator_data.quad_index           = get_quad_index();
-    diffusive_operator_data.bc                   = boundary_descriptor;
-    diffusive_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
-    diffusive_operator_data.implement_block_diagonal_preconditioner_matrix_free =
-      param.implement_block_diagonal_preconditioner_matrix_free;
-    diffusive_operator_data.kernel_data = diffusive_kernel_data;
-
-    diffusive_operator.initialize(*matrix_free,
-                                  affine_constraints,
-                                  diffusive_operator_data,
-                                  diffusive_kernel);
-  }
-
-  // rhs operator
-  RHSOperatorData<dim> rhs_operator_data;
-  rhs_operator_data.dof_index     = get_dof_index();
-  rhs_operator_data.quad_index    = get_quad_index();
-
-  Operators::RHSKernelData<dim> rhs_kernel_data;
-  rhs_kernel_data.rans_model = param.turbulence_model_data.is_active;
-  rhs_kernel_data.f = field_functions->right_hand_side;
-
-  rhs_kernel = std::make_shared<Operators::RHSKernel<dim, Number, n_components>>();
-  rhs_kernel->reinit(rhs_kernel_data);
-
-  rhs_operator.initialize(*matrix_free, rhs_operator_data, rhs_kernel);
+  std::vector<double> eddy_viscosity_factor(n_blocks, 0.0);
 
   if(param.turbulence_model_data.is_active)
   {
+    std::vector<double> const & coefficients =
+      turbulence_model_ptr->model_coefficients;
+
+    if(param.turbulence_model_data.turbulence_model ==
+      TurbulenceEddyViscosityModel::StandardKEpsilon)
+    {  
+      eddy_viscosity_factor = {1.0 / coefficients[0],  // 1/sigma_k
+        1.0 / coefficients[4]}; // 1/sigma_epsilon
+    }
+    else if(param.turbulence_model_data.turbulence_model ==
+      TurbulenceEddyViscosityModel::StandardKOmega1988)
+    {
+      eddy_viscosity_factor = {coefficients[4],  // sigma*
+        coefficients[3]}; // sigma
+    }
+  }
+
+  // diffusive operator
+  std::vector<Operators::DiffusiveKernelData> diffusive_kernel_data(n_blocks);
+
+  if(param.diffusive_problem())
+  {
+    diffusive_kernel.resize(n_blocks);
+    diffusive_operator.resize(n_blocks);
+
+    for(unsigned int b = 0; b < n_blocks; ++b)
+    {
+      // molecular viscosity only; the turbulent diffusion is part of TurbulenceSourceOperator
+      diffusive_kernel_data[b].IP_factor   = param.IP_factor;
+      diffusive_kernel_data[b].diffusivity = param.diffusivity;
+
+      diffusive_kernel[b] = std::make_shared<Operators::DiffusiveKernel<dim, Number>>();
+      diffusive_kernel[b]->reinit(*matrix_free, diffusive_kernel_data[b], get_dof_index());
+
+
+      DiffusiveOperatorData<dim> diffusive_operator_data;
+      diffusive_operator_data.dof_index            = get_dof_index();
+      diffusive_operator_data.quad_index           = get_quad_index();
+      diffusive_operator_data.bc                   = boundary_descriptor_block[b];
+      diffusive_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
+      diffusive_operator_data.implement_block_diagonal_preconditioner_matrix_free = param.implement_block_diagonal_preconditioner_matrix_free;
+      diffusive_operator_data.kernel_data = diffusive_kernel_data[b];
+
+      diffusive_operator[b] = std::make_shared<DiffusiveOperator<dim, Number>>();
+      diffusive_operator[b]->initialize(*matrix_free,
+                                        affine_constraints,
+                                        diffusive_operator_data,
+                                        diffusive_kernel[b]);
+    }
+  }
+
+  rhs_kernel.resize(n_blocks);
+  rhs_operator.resize(n_blocks);
+
+  for(unsigned int b = 0; b < n_blocks; ++b)
+  {
+    Operators::RHSKernelData<dim> rhs_kernel_data;
+    rhs_kernel_data.f = get_component_function(field_functions->right_hand_side,  b);
+
+    rhs_kernel[b] = std::make_shared<Operators::RHSKernel<dim, Number>>();
+    rhs_kernel[b]->reinit(rhs_kernel_data);
+
+    // rhs operator
+    RHSOperatorData<dim> rhs_operator_data;
+    rhs_operator_data.dof_index     = get_dof_index();
+    rhs_operator_data.quad_index    = get_quad_index();
+
+    rhs_operator[b] = std::make_shared<RHSOperator<dim, Number>>();
+    rhs_operator[b]->initialize(*matrix_free, rhs_operator_data, rhs_kernel[b]);
+  }
+
+  if(param.turbulence_model_data.is_active)
+  {
+    AssertThrow(param.problem_type == ProblemType::Unsteady and
+                  param.temporal_discretization == TemporalDiscretization::BDF,
+                dealii::ExcMessage("Turbulence model: only unsteady problems with BDF time "
+                                   "integration are implemented (no explicit Runge-Kutta, no "
+                                   "steady solver)."));
+
     TurbulenceSourceOperatorData<dim> turbulence_source_operator_data;
     turbulence_source_operator_data.dof_index  = get_dof_index();
     turbulence_source_operator_data.quad_index = get_quad_index();
@@ -332,21 +375,30 @@ Operator<dim, n_components, Number>::setup_operators()
     Operators::TurbulenceSourceKernelData<dim> turbulence_source_kernel_data;
     turbulence_source_kernel_data.dof_index                = get_dof_index();
     turbulence_source_kernel_data.dof_index_velocity       = get_dof_index_velocity();
-    turbulence_source_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
     turbulence_source_kernel_data.turbulence_model_data    = param.turbulence_model_data;
     turbulence_source_kernel_data.diffusivity              = param.diffusivity;
     turbulence_source_kernel_data.k_log                    = param.turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable;
     turbulence_source_kernel_data.omega_log                = param.turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable;
-    turbulence_source_kernel_data.production_implicit = param.treatment_of_production == TreatmentOfProduction::Implicit;
-    turbulence_source_kernel_data.dissipation_implicit = param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
-    turbulence_source_kernel_data.square_gradient_implicit = param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
 
-    turbulence_source_kernel = std::make_shared<Operators::TurbulenceSourceKernel<dim, Number, n_components>>();
-    turbulence_source_kernel->reinit(*matrix_free, turbulence_source_kernel_data, quad_index_convective);
+    turbulence_source_kernel_data.production_implicit =
+      param.treatment_of_production == TreatmentOfProduction::Implicit;
+    turbulence_source_kernel_data.dissipation_implicit =
+      param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
+    turbulence_source_kernel_data.square_gradient_implicit =
+      param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
+    turbulence_source_kernel_data.viscosity_implicit =
+      param.treatment_of_variable_viscosity == TreatmentOfVariableViscosity::Implicit;
+
+    turbulence_source_kernel_data.eddy_viscosity_factor = eddy_viscosity_factor;
+    turbulence_source_kernel_data.IP_factor             = param.IP_factor;
+
+    turbulence_source_kernel_data.bc = boundary_descriptor_block;
+
+    turbulence_source_kernel = std::make_shared<Operators::TurbulenceSourceKernel<dim, Number>>();
     turbulence_source_kernel->turbulence_model_ptr = turbulence_model_ptr;
+    turbulence_source_kernel->reinit(*matrix_free, turbulence_source_kernel_data, get_quad_index());
 
     turbulence_source_operator.initialize(*matrix_free,
-                                          affine_constraints,
                                           turbulence_source_operator_data,
                                           turbulence_source_kernel);
   }
@@ -356,19 +408,19 @@ Operator<dim, n_components, Number>::setup_operators()
      (param.temporal_discretization == TemporalDiscretization::ExplRK and
       param.use_combined_operator == true))
   {
-    CombinedOperatorData<dim> combined_operator_data;
-    combined_operator_data.bc                   = boundary_descriptor;
-    combined_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
-    combined_operator_data.implement_block_diagonal_preconditioner_matrix_free =
-      param.implement_block_diagonal_preconditioner_matrix_free;
-    combined_operator_data.solver_block_diagonal         = param.solver_block_diagonal;
-    combined_operator_data.preconditioner_block_diagonal = param.preconditioner_block_diagonal;
-    combined_operator_data.solver_data_block_diagonal    = param.solver_data_block_diagonal;
-    combined_operator_data.production_implicit    = param.treatment_of_production == TreatmentOfProduction::Implicit;
-    combined_operator_data.dissipation_implicit = param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
-    combined_operator_data.square_gradient_implicit = param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
+    combined_operator.resize(n_blocks);
 
-    // linear system of equations has to be solved: the problem is either steady or
+    for(unsigned int b = 0; b < n_blocks; ++b)
+    {
+      CombinedOperatorData<dim> combined_operator_data;
+      combined_operator_data.bc                   = boundary_descriptor_block[b];
+      combined_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
+      combined_operator_data.implement_block_diagonal_preconditioner_matrix_free =  param.implement_block_diagonal_preconditioner_matrix_free;
+      combined_operator_data.solver_block_diagonal         = param.solver_block_diagonal;
+      combined_operator_data.preconditioner_block_diagonal = param.preconditioner_block_diagonal;
+      combined_operator_data.solver_data_block_diagonal    = param.solver_data_block_diagonal;
+
+      // linear system of equations has to be solved: the problem is either steady or
     // an unsteady problem is solved with BDF time integration (semi-implicit or fully implicit
     // formulation of convective and diffusive terms)
     if(param.problem_type == ProblemType::Steady or
@@ -403,7 +455,7 @@ Operator<dim, n_components, Number>::setup_operators()
     }
 
     combined_operator_data.convective_kernel_data = convective_kernel_data;
-    combined_operator_data.diffusive_kernel_data  = diffusive_kernel_data;
+    combined_operator_data.diffusive_kernel_data  = diffusive_kernel_data[b];
 
     combined_operator_data.dof_index = get_dof_index();
     combined_operator_data.quad_index =
@@ -411,17 +463,16 @@ Operator<dim, n_components, Number>::setup_operators()
         get_quad_index_overintegration() :
         get_quad_index();
 
-    combined_operator.initialize(*matrix_free,
-                                 affine_constraints,
-                                 combined_operator_data,
-                                 convective_kernel,
-                                 diffusive_kernel);
-    if(param.treatment_of_dissipation == TreatmentOfDissipation::Implicit || param.treatment_of_production == TreatmentOfProduction::Implicit || param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit)
-    {
-      combined_operator.set_turbulence_source_kernel(turbulence_source_kernel);
+      combined_operator[b] = std::make_shared<CombinedOperator<dim, Number>>();
+      combined_operator[b]->initialize(*matrix_free,
+                                      affine_constraints,
+                                      combined_operator_data,
+                                       convective_kernel,
+                                       param.diffusive_problem() ? diffusive_kernel[b] : nullptr);
     }
   }
 
+  // modal filter (scalar, acts on all blocks)
   modal_filter.initialize(*matrix_free,
                           get_dof_index(),
                           get_quad_index(),
@@ -429,9 +480,9 @@ Operator<dim, n_components, Number>::setup_operators()
                           param.gradient_threshold);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup()
+Operator<dim, Number>::setup()
 {
   pcout << std::endl << "Setup convection-diffusion operator ..." << std::endl;
 
@@ -440,9 +491,9 @@ Operator<dim, n_components, Number>::setup()
   pcout << std::endl << "... done!" << std::endl;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::do_setup()
+Operator<dim, Number>::do_setup()
 {
   // initialize MatrixFree and MatrixFreeData
   std::shared_ptr<dealii::MatrixFree<dim, Number>> mf =
@@ -469,9 +520,9 @@ Operator<dim, n_components, Number>::do_setup()
   this->setup(mf, mf_data);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
+Operator<dim, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
                              std::shared_ptr<MatrixFreeData<dim, Number> const> matrix_free_data_in,
                              std::string const & dof_index_velocity_external_in)
 {
@@ -490,9 +541,9 @@ Operator<dim, n_components, Number>::setup(std::shared_ptr<dealii::MatrixFree<di
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup_after_coarsening_and_refinement()
+Operator<dim, Number>::setup_after_coarsening_and_refinement()
 {
   initialize_dof_handler_and_constraints();
 
@@ -503,10 +554,11 @@ Operator<dim, n_components, Number>::setup_after_coarsening_and_refinement()
   do_setup();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup_preconditioner()
+Operator<dim, Number>::setup_preconditioner()
 {
+  preconditioner.assign(n_blocks, nullptr);
   if(param.preconditioner == Preconditioner::InverseMassMatrix)
   {
     InverseMassOperatorData inverse_mass_operator_data;
@@ -514,21 +566,24 @@ Operator<dim, n_components, Number>::setup_preconditioner()
     inverse_mass_operator_data.quad_index = get_quad_index();
     inverse_mass_operator_data.parameters = param.inverse_mass_preconditioner;
 
-    preconditioner =
-      std::make_shared<InverseMassPreconditioner<dim, n_components, Number>>(*matrix_free,
-                                                                  inverse_mass_operator_data);
+
+    std::shared_ptr<PreconditionerBase<Number>> const inverse_mass_preconditioner = std::make_shared<InverseMassPreconditioner<dim, 1, Number>>(*matrix_free, inverse_mass_operator_data);
+
+
+    for(unsigned int b = 0; b < n_blocks; ++b)
+    {
+      preconditioner[b] = inverse_mass_preconditioner;
+    }
   }
   else if(param.preconditioner == Preconditioner::PointJacobi)
   {
-    preconditioner =
-      std::make_shared<JacobiPreconditioner<CombinedOperator<dim, n_components, Number>>>(combined_operator,
-                                                                            false);
+    for(unsigned int b = 0; b < n_blocks; ++b)
+      preconditioner[b] = std::make_shared<JacobiPreconditioner<CombinedOperator<dim, Number>>>(*combined_operator[b], false);
   }
   else if(param.preconditioner == Preconditioner::BlockJacobi)
   {
-    preconditioner =
-      std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, n_components, Number>>>(combined_operator,
-                                                                                 false);
+    for(unsigned int b = 0; b < n_blocks; ++b)
+      preconditioner[b] = std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, Number>>>(*combined_operator[b], false);
   }
   else if(param.preconditioner == Preconditioner::Multigrid)
   {
@@ -537,49 +592,47 @@ Operator<dim, n_components, Number>::setup_preconditioner()
       AssertThrow(param.mg_operator_type != MultigridOperatorType::ReactionConvection and
                     param.mg_operator_type != MultigridOperatorType::ReactionConvectionDiffusion,
                   dealii::ExcMessage(
-                    "Invalid solver parameters. The convective term is treated explicitly."));
+                  "Invalid solver parameters. The convective term is treated explicitly."));
+    }
+
+    if(param.mg_operator_type == MultigridOperatorType::ReactionConvection or param.mg_operator_type ==  MultigridOperatorType::ReactionConvectionDiffusion)
+    {
+      if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+      {
+        unsigned int const degree_scalar = dof_handler.get_fe().degree;
+        unsigned int const degree_velocity = matrix_free_data->get_dof_handler(get_dof_name_velocity()).get_fe().degree;
+        AssertThrow(degree_scalar == degree_velocity,
+                    dealii::ExcMessage("When using a multigrid preconditioner for the scalar  convection-diffusion equation, the scalar field and the velocity field must have the same polynomial degree."));
+      }
     }
 
     MultigridData mg_data;
     mg_data = param.multigrid_data;
 
-    typedef MultigridPreconditioner<dim, n_components, Number> Multigrid;
-
-    preconditioner = std::make_shared<Multigrid>(this->mpi_comm);
-    std::shared_ptr<Multigrid> mg_preconditioner =
-      std::dynamic_pointer_cast<Multigrid>(preconditioner);
-
-    if(param.mg_operator_type == MultigridOperatorType::ReactionConvection or
-       param.mg_operator_type == MultigridOperatorType::ReactionConvectionDiffusion)
-    {
-      if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
-      {
-        unsigned int const degree_scalar = dof_handler.get_fe().degree;
-        unsigned int const degree_velocity =
-          matrix_free_data->get_dof_handler(get_dof_name_velocity()).get_fe().degree;
-        AssertThrow(
-          degree_scalar == degree_velocity,
-          dealii::ExcMessage(
-            "When using a multigrid preconditioner for the scalar convection-diffusion equation, "
-            "the scalar field and the velocity field must have the same polynomial degree."));
-      }
-    }
-
-    std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
-      dirichlet_boundary_conditions = combined_operator.get_data().bc->dirichlet_bc;
+    typedef MultigridPreconditioner<dim, Number> Multigrid;
 
     typedef std::map<dealii::types::boundary_id, dealii::ComponentMask> Map_DBC_ComponentMask;
-    Map_DBC_ComponentMask                                               dirichlet_bc_component_mask;
 
-    mg_preconditioner->initialize(mg_data,
-                                  grid,
-                                  multigrid_mappings,
-                                  dof_handler.get_fe(),
-                                  combined_operator,
-                                  param.mg_operator_type,
-                                  param.ale_formulation,
-                                  dirichlet_boundary_conditions,
-                                  dirichlet_bc_component_mask);
+    for(unsigned int b = 0; b < n_blocks; ++b)
+    {
+      std::shared_ptr<Multigrid> mg_preconditioner = std::make_shared<Multigrid>(this->mpi_comm);
+
+      std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> dirichlet_boundary_conditions = boundary_descriptor_block[b]->dirichlet_bc;
+
+      Map_DBC_ComponentMask dirichlet_bc_component_mask;
+
+      mg_preconditioner->initialize(mg_data,
+                                    grid,
+                                    multigrid_mappings,
+                                    dof_handler.get_fe(),
+                                    *combined_operator[b],
+                                    param.mg_operator_type,
+                                    param.ale_formulation,
+                                    dirichlet_boundary_conditions,
+                                    dirichlet_bc_component_mask);
+
+      preconditioner[b] = mg_preconditioner;
+    }
   }
   else
   {
@@ -592,10 +645,11 @@ Operator<dim, n_components, Number>::setup_preconditioner()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::setup_solver()
+Operator<dim, Number>::setup_solver()
 {
+  block_preconditioner.initialize(preconditioner);
   if(param.solver == Solver::CG)
   {
     // initialize solver_data
@@ -608,9 +662,10 @@ Operator<dim, n_components, Number>::setup_solver()
       solver_data.use_preconditioner = true;
 
     // initialize solver
-    iterative_solver = std::make_shared<
-      Krylov::SolverCG<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
-      combined_operator, *preconditioner, solver_data);
+    iterative_solver =
+      std::make_shared<Krylov::SolverCG<This, BlockPreconditioner<Number>,
+      BlockVectorType>>(
+        *this, block_preconditioner, solver_data);
   }
   else if(param.solver == Solver::GMRES)
   {
@@ -625,9 +680,10 @@ Operator<dim, n_components, Number>::setup_solver()
       solver_data.use_preconditioner = true;
 
     // initialize solver
-    iterative_solver = std::make_shared<
-      Krylov::SolverGMRES<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
-      combined_operator, *preconditioner, solver_data, mpi_comm);
+    iterative_solver =
+      std::make_shared<Krylov::SolverGMRES<This, BlockPreconditioner<Number>,
+      BlockVectorType>>(
+        *this, block_preconditioner, solver_data, mpi_comm);
   }
   else if(param.solver == Solver::FGMRES)
   {
@@ -642,9 +698,10 @@ Operator<dim, n_components, Number>::setup_solver()
       solver_data.use_preconditioner = true;
 
     // initialize solver
-    iterative_solver = std::make_shared<
-      Krylov::SolverFGMRES<CombinedOperator<dim, n_components, Number>, PreconditionerBase<Number>, VectorType>>(
-      combined_operator, *preconditioner, solver_data);
+      iterative_solver =
+        std::make_shared<Krylov::SolverFGMRES<This, BlockPreconditioner<Number>,
+      BlockVectorType>>(
+          *this, block_preconditioner, solver_data);
   }
   else
   {
@@ -652,30 +709,33 @@ Operator<dim, n_components, Number>::setup_solver()
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::initialize_dof_vector(VectorType & src) const
+Operator<dim, Number>::initialize_dof_vector(BlockVectorType & src) const
 {
-  matrix_free->initialize_dof_vector(src, get_dof_index());
+  src.reinit(n_blocks);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    matrix_free->initialize_dof_vector(src.block(b), get_dof_index());
+  src.collect_sizes();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::initialize_dof_vector_eddy_viscosity(VectorType & eddy_viscosity) const
+Operator<dim, Number>::initialize_dof_vector_eddy_viscosity(VectorType & eddy_viscosity) const
 {
   matrix_free->initialize_dof_vector(eddy_viscosity, get_dof_index_eddy_viscosity());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::initialize_dof_vector_velocity(VectorType & velocity) const
+Operator<dim, Number>::initialize_dof_vector_velocity(VectorType & velocity) const
 {
   matrix_free->initialize_dof_vector(velocity, get_dof_index_velocity());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::interpolate_velocity(VectorType & velocity, double const time) const
+Operator<dim, Number>::interpolate_velocity(VectorType & velocity, double const time) const
 {
   field_functions->velocity->set_time(time);
 
@@ -692,9 +752,9 @@ Operator<dim, n_components, Number>::interpolate_velocity(VectorType & velocity,
   velocity = vector_double;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::project_velocity(VectorType & velocity, double const time) const
+Operator<dim, Number>::project_velocity(VectorType & velocity, double const time) const
 {
   VelocityProjection<dim, Number> l2_projection;
 
@@ -709,240 +769,272 @@ Operator<dim, n_components, Number>::project_velocity(VectorType & velocity, dou
                       velocity);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::prescribe_initial_conditions(VectorType & src, double const time) const
+Operator<dim, Number>::prescribe_initial_conditions(BlockVectorType & src, double const time) const
 {
   field_functions->initial_solution->set_time(time);
 
   // This is necessary if Number == float
   typedef dealii::LinearAlgebra::distributed::Vector<double> VectorTypeDouble;
 
-  VectorTypeDouble src_double;
-  src_double = src;
+  for(unsigned int b = 0; b < n_blocks; ++b)
+  {
+    std::shared_ptr<dealii::Function<dim>> const initial_solution_b =
+      get_component_function(field_functions->initial_solution, b);
 
-  dealii::VectorTools::interpolate(dof_handler, *(field_functions->initial_solution), src_double);
+    VectorTypeDouble src_double;
+    src_double = src.block(b);
 
-  src = src_double;
+    dealii::VectorTools::interpolate(dof_handler, *initial_solution_b,
+                                     src_double);
+    src.block(b) = src_double;
+  }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::evaluate_explicit_time_int(VectorType &       dst,
-                                                  VectorType const & src,
+Operator<dim, Number>::evaluate_explicit_time_int(BlockVectorType &       dst,
+                                                  BlockVectorType const & src,
                                                   double const       time,
                                                   VectorType const * velocity) const
 {
-  // evaluate each operator separately
-  if(param.use_combined_operator == false)
+  for(unsigned int b = 0; b < n_blocks; ++b)
   {
-    // set dst to zero
-    dst = 0.0;
-
-    // diffusive operator
-    if(param.diffusive_problem())
+    // evaluate each operator separately
+    if(param.use_combined_operator == false)
     {
-      diffusive_operator.set_time(time);
-      diffusive_operator.evaluate_add(dst, src);
-    }
+      // set dst to zero
+      dst.block(b) = 0.0;
 
-    // convective operator
-    if(param.convective_problem())
-    {
-      if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+      // diffusive operator
+      if(param.diffusive_problem())
       {
-        AssertThrow(velocity != nullptr,
-                    dealii::ExcMessage("velocity pointer is not initialized."));
-        convective_operator.set_velocity_ptr(*velocity);
+        diffusive_operator[b]->set_time(time);
+        diffusive_operator[b]->evaluate_add(dst.block(b), src.block(b));
       }
 
-      convective_operator.set_time(time);
-      convective_operator.evaluate_add(dst, src);
-    }
-
-    // shift diffusive and convective term to the rhs of the equation
-    dst *= -1.0;
-
-    if(param.right_hand_side == true)
-    {
-      rhs_operator.evaluate_add(dst, time);
-    }
-
-    if(param.turbulence_model_data.is_active)
-    {
-      AssertThrow(velocity != nullptr,
-                  dealii::ExcMessage("velocity pointer is not initialized."));
-      turbulence_model_ptr->set_velocity_ptr(*velocity);
-
-      turbulence_source_operator.set_velocity_ptr(*velocity);
-      turbulence_source_operator.set_solution_ptr(src);
-      turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-
-      turbulence_source_operator.evaluate_add_source(dst,time);
-    }
-  }
-  else // param.use_combined_operator == true
-  {
-    // no need to set scaling_factor_mass because the mass operator is not evaluated
-    // in case of explicit time integration
-
-    if(param.convective_problem())
-    {
-      if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+      // convective operator
+      if(param.convective_problem())
       {
-        AssertThrow(velocity != nullptr,
-                    dealii::ExcMessage("velocity pointer is not initialized."));
+        if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+        {
+          AssertThrow(velocity != nullptr,
+                      dealii::ExcMessage("velocity pointer is not initialized."));
+          convective_operator[b]->set_velocity_ptr(*velocity);
+        }
 
-        combined_operator.set_velocity_ptr(*velocity);
+        convective_operator[b]->set_time(time);
+        convective_operator[b]->evaluate_add(dst.block(b), src.block(b));
       }
+    } else {
+        if(param.convective_problem())
+        {
+          if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+          {
+            AssertThrow(velocity != nullptr,
+                        dealii::ExcMessage("velocity pointer is not initialized."));
+  
+            combined_operator[b]->set_velocity_ptr(*velocity);
+          }
+        }
+  
+        combined_operator[b]->set_time(time);
+        combined_operator[b]->evaluate(dst.block(b), src.block(b));
     }
 
-    combined_operator.set_time(time);
-    combined_operator.evaluate(dst, src);
+      // shift diffusive and convective term to the rhs of the equation
+      dst.block(b) *= -1.0;
 
-    // shift diffusive and convective term to the rhs of the equation
-    dst *= -1.0;
-
-    if(param.right_hand_side == true)
-    {
-      rhs_operator.evaluate_add(dst, time);
-    }
-
-    if(param.turbulence_model_data.is_active)
-    {
-      AssertThrow(velocity != nullptr,
-                  dealii::ExcMessage("velocity pointer is not initialized."));
-      turbulence_model_ptr->set_velocity_ptr(*velocity);
-
-      turbulence_source_operator.set_velocity_ptr(*velocity);
-      turbulence_source_operator.set_solution_ptr(src);
-      turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-
-      turbulence_source_operator.evaluate_add_source(dst,time);
-    }
+      if(param.right_hand_side == true)
+      {
+        rhs_operator[b]->evaluate_add(dst.block(b), time);
+      }
   }
 
   // apply inverse mass operator
-  inverse_mass_operator.apply(dst, dst);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    inverse_mass_operator.apply(dst.block(b), dst.block(b));
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::evaluate_convective_term(VectorType &       dst,
-                                                VectorType const & src,
+Operator<dim, Number>::evaluate_convective_term(BlockVectorType &       dst,
+                                                BlockVectorType const & src,
                                                 double const       time,
                                                 VectorType const * velocity) const
 {
-  if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+  for(unsigned int b = 0; b < n_blocks; ++b)    
   {
-    AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
+    if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+    {
+      AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
 
-    convective_operator.set_velocity_ptr(*velocity);
+      convective_operator[b]->set_velocity_ptr(*velocity);
+    }
+
+    convective_operator[b]->set_time(time);
+    convective_operator[b]->evaluate(dst.block(b), src.block(b));
   }
-
-  convective_operator.set_time(time);
-  convective_operator.evaluate(dst, src);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::rhs(VectorType & dst,
-                                         VectorType const & src,
-                                         double const time,
-                                         VectorType const * velocity) const
+Operator<dim, Number>::rhs(BlockVectorType & dst,
+                           BlockVectorType const & src,
+                           double const time,
+                           VectorType const * velocity) const
 {
   // no need to set scaling_factor_mass because the mass operator does not contribute to rhs
 
-  if(param.linear_system_including_convective_term_has_to_be_solved())
+  for(unsigned int b = 0; b < n_blocks; ++b)
   {
-    if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+    if(param.linear_system_including_convective_term_has_to_be_solved())
     {
-      AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
+      if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+      {
+        AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
 
-      combined_operator.set_velocity_ptr(*velocity);
+        combined_operator[b]->set_velocity_ptr(*velocity);
+      }
+    }
+
+    combined_operator[b]->set_time(time);
+    combined_operator[b]->rhs(dst.block(b));
+
+    // rhs operator f(t)
+    if(param.right_hand_side == true)
+    {
+      rhs_operator[b]->evaluate_add(dst.block(b), time);
     }
   }
 
-  combined_operator.set_time(time);
-  combined_operator.rhs(dst);
+}
 
-  // rhs operator f(t)
-  if(param.right_hand_side == true)
+template<int dim, typename Number>
+void
+Operator<dim, Number>::rhs_add_turbulence(BlockVectorType &       dst,
+                                          BlockVectorType const & solution_n,
+                                          double const            time_n,
+                                          double const            time,
+                                          VectorType const *      velocity) const
+{
+  AssertThrow(param.turbulence_model_data.is_active,
+              dealii::ExcMessage("Turbulence model is not active."));
+  AssertThrow(velocity != nullptr and velocity->size() > 0,
+              dealii::ExcMessage("Turbulence model: the velocity field is not initialized."));
+
+  turbulence_source_operator.set_velocity_ptr(*velocity);
+
+  // terms treated Explicit, at the previous time step Q^n
+  turbulence_source_operator.evaluate_add_explicit(dst, solution_n, time_n);
+
+  // terms treated Implicit, linearized at Q^n: Newton_Explicit + J(Q^n) Q^n, since the unknown of
+  // the linear system is Q^{n+1} = Q^n + dQ (J(Q^n) Q^{n+1} is applied in vmult())
+  turbulence_source_operator.evaluate_add_newton_explicit(dst, solution_n, time);
+  turbulence_source_operator.apply_add_newton_implicit(dst, solution_n);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::evaluate_add_turbulence_explicit(BlockVectorType &       dst,
+                                                        BlockVectorType const & solution_n,
+                                                        double const            time_n,
+                                                        VectorType const *      velocity) const
+{
+  AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
+
+  turbulence_source_operator.set_velocity_ptr(*velocity);
+  turbulence_source_operator.evaluate_add_explicit(dst, solution_n, time_n);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::evaluate_add_turbulence_newton_explicit(BlockVectorType &       dst,
+                                                               BlockVectorType const & solution,
+                                                               double const            time,
+                                                               VectorType const * velocity) const
+{
+  AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
+
+  turbulence_source_operator.set_velocity_ptr(*velocity);
+  turbulence_source_operator.evaluate_add_newton_explicit(dst, solution, time);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::apply_mass_operator(BlockVectorType & dst,
+                                           BlockVectorType const & src) const
+{
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    mass_operator.apply(dst.block(b), src.block(b));
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::apply_mass_operator_add(BlockVectorType & dst,
+                                               BlockVectorType const & src) const
+{
+  for(unsigned int b = 0; b < n_blocks; ++b) 
+    mass_operator.apply_add(dst.block(b), src.block(b));
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::apply_convective_term(BlockVectorType & dst,
+                                             BlockVectorType const & src) const
+{
+  for(unsigned int b = 0; b < n_blocks; ++b) 
+    convective_operator[b]->apply(dst.block(b), src.block(b));
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::update_convective_term(double const time, VectorType const * velocity) const
+{
+
+  for(unsigned int b = 0; b < n_blocks; ++b)
   {
-    rhs_operator.evaluate_add(dst, time);
-  }
+    if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
+    {
+      AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
 
-  if(param.turbulence_model_data.is_active)
-  {
-    AssertThrow(velocity != nullptr,
-                dealii::ExcMessage("velocity pointer is not initialized."));
-    turbulence_model_ptr->set_velocity_ptr(*velocity);
+      convective_operator[b]->set_velocity_ptr(*velocity);
+    }
 
-    turbulence_source_operator.set_velocity_ptr(*velocity);
-    turbulence_source_operator.set_solution_ptr(src);
-    turbulence_source_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
-
-    turbulence_source_operator.evaluate_add_source(dst,time);
+    convective_operator[b]->set_time(time);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::apply_mass_operator(VectorType & dst, VectorType const & src) const
+Operator<dim, Number>::apply_diffusive_term(BlockVectorType & dst,
+                                            BlockVectorType const & src) const
 {
-  mass_operator.apply(dst, src);
+  for(unsigned int b = 0; b < n_blocks; ++b)  
+    diffusive_operator[b]->apply(dst.block(b), src.block(b));
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::apply_mass_operator_add(VectorType & dst, VectorType const & src) const
+Operator<dim, Number>::apply_conv_diff_operator(BlockVectorType & dst,
+                                                BlockVectorType const & src) const
 {
-  mass_operator.apply_add(dst, src);
+  for(unsigned int b = 0; b < n_blocks; ++b)  
+    combined_operator[b]->apply(dst.block(b), src.block(b));
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::apply_convective_term(VectorType & dst, VectorType const & src) const
-{
-  convective_operator.apply(dst, src);
-}
-
-template<int dim, int n_components, typename Number>
-void
-Operator<dim, n_components, Number>::update_convective_term(double const time, VectorType const * velocity) const
-{
-  if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
-  {
-    AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
-
-    convective_operator.set_velocity_ptr(*velocity);
-  }
-
-  convective_operator.set_time(time);
-}
-
-template<int dim, int n_components, typename Number>
-void
-Operator<dim, n_components, Number>::apply_diffusive_term(VectorType & dst, VectorType const & src) const
-{
-  diffusive_operator.apply(dst, src);
-}
-
-template<int dim, int n_components, typename Number>
-void
-Operator<dim, n_components, Number>::apply_conv_diff_operator(VectorType & dst, VectorType const & src) const
-{
-  combined_operator.apply(dst, src);
-}
-
-template<int dim, int n_components, typename Number>
-void
-Operator<dim, n_components, Number>::update_conv_diff_operator(double const       time,
+Operator<dim, Number>::update_conv_diff_operator(double const       time,
                                                  double const       scaling_factor,
                                                  VectorType const * velocity)
 {
-  combined_operator.set_scaling_factor_mass_operator(scaling_factor);
-  combined_operator.set_time(time);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+  {
+    combined_operator[b]->set_scaling_factor_mass_operator(scaling_factor);
+    combined_operator[b]->set_time(time);
+  }
 
   if(param.linear_system_including_convective_term_has_to_be_solved())
   {
@@ -950,7 +1042,10 @@ Operator<dim, n_components, Number>::update_conv_diff_operator(double const     
     {
       AssertThrow(velocity != nullptr, dealii::ExcMessage("velocity pointer is not initialized."));
 
-      combined_operator.set_velocity_ptr(*velocity);
+      for(unsigned int b = 0; b < n_blocks; ++b)
+      {
+        combined_operator[b]->set_velocity_ptr(*velocity);
+      }
 
       if(param.turbulence_model_data.is_active)
       {
@@ -960,9 +1055,9 @@ Operator<dim, n_components, Number>::update_conv_diff_operator(double const     
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::update_after_grid_motion(bool const update_matrix_free)
+Operator<dim, Number>::update_after_grid_motion(bool const update_matrix_free)
 {
   if(update_matrix_free)
   {
@@ -976,7 +1071,10 @@ Operator<dim, n_components, Number>::update_after_grid_motion(bool const update_
   // of elements
   if(param.diffusive_problem())
   {
-    diffusive_kernel->calculate_penalty_parameter(*matrix_free, get_dof_index());
+    for(auto const & diffusive_kernel_block : diffusive_kernel)
+    {
+      diffusive_kernel_block->calculate_penalty_parameter(*matrix_free, get_dof_index());
+    }
   }
 
   // The inverse mass operator might contain matrix-based components, in which cases it needs to be
@@ -984,27 +1082,27 @@ Operator<dim, n_components, Number>::update_after_grid_motion(bool const update_
   inverse_mass_operator.update();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors)
+Operator<dim, Number>::prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors)
 {
   solution_transfer = std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler);
 
   solution_transfer->prepare_coarsening_and_refinement(vectors);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::interpolate_after_coarsening_and_refinement(
+Operator<dim, Number>::interpolate_after_coarsening_and_refinement(
   std::vector<VectorType *> & vectors)
 {
   solution_transfer->interpolate_after_coarsening_and_refinement(vectors);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::solve(VectorType &       sol,
-                             VectorType const & rhs,
+Operator<dim, Number>::solve(BlockVectorType &       sol,
+                             BlockVectorType const & rhs,
                              bool const         update_preconditioner,
                              double const       scaling_factor,
                              double const       time,
@@ -1019,9 +1117,38 @@ Operator<dim, n_components, Number>::solve(VectorType &       sol,
   return iterations;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
+unsigned int
+Operator<dim, Number>::get_n_blocks() const
+{
+  return n_blocks;
+}
+
+template<int dim, typename Number>
+TurbulenceModelData const &
+Operator<dim, Number>::get_turbulence_model_data() const
+{
+  return param.turbulence_model_data;
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src)
+const
+{
+  // block-diagonal part: operator of each transport variable acting on its own  block
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    combined_operator[b]->vmult(dst.block(b), src.block(b));
+
+
+  // Newton_Implicit part of the turbulence terms treated Implicit
+  if(param.turbulence_model_data.is_active)
+    turbulence_source_operator.apply_add_newton_implicit(dst, src);
+}
+
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_time_step_cfl_global(double const time) const
+Operator<dim, Number>::calculate_time_step_cfl_global(double const time) const
 {
   double max_velocity = 0.0;
   if(param.analytical_velocity_field)
@@ -1047,9 +1174,9 @@ Operator<dim, n_components, Number>::calculate_time_step_cfl_global(double const
                                                     mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_time_step_max_efficiency(
+Operator<dim, Number>::calculate_time_step_max_efficiency(
   unsigned int const order_time_integrator) const
 {
   double const h_min = calculate_minimum_element_length();
@@ -1057,9 +1184,9 @@ Operator<dim, n_components, Number>::calculate_time_step_max_efficiency(
   return ExaDG::calculate_time_step_max_efficiency(h_min, param.degree, order_time_integrator);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_time_step_diffusion() const
+Operator<dim, Number>::calculate_time_step_diffusion() const
 {
   double const h_min = calculate_minimum_element_length();
 
@@ -1069,9 +1196,9 @@ Operator<dim, n_components, Number>::calculate_time_step_diffusion() const
                                                param.exponent_fe_degree_diffusion);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_time_step_cfl_numerical_velocity(VectorType const & velocity) const
+Operator<dim, Number>::calculate_time_step_cfl_numerical_velocity(VectorType const & velocity) const
 {
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
                                                     get_dof_index_velocity(),
@@ -1083,9 +1210,9 @@ Operator<dim, n_components, Number>::calculate_time_step_cfl_numerical_velocity(
                                                     mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_time_step_cfl_analytical_velocity(double const time) const
+Operator<dim, Number>::calculate_time_step_cfl_analytical_velocity(double const time) const
 {
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
                                                     get_dof_index_velocity(),
@@ -1098,9 +1225,9 @@ Operator<dim, n_components, Number>::calculate_time_step_cfl_analytical_velocity
                                                     mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_maximum_velocity(double const time) const
+Operator<dim, Number>::calculate_maximum_velocity(double const time) const
 {
   return calculate_max_velocity(dof_handler.get_triangulation(),
                                 field_functions->velocity,
@@ -1108,109 +1235,109 @@ Operator<dim, n_components, Number>::calculate_maximum_velocity(double const tim
                                 mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 double
-Operator<dim, n_components, Number>::calculate_minimum_element_length() const
+Operator<dim, Number>::calculate_minimum_element_length() const
 {
   return calculate_minimum_vertex_distance(dof_handler.get_triangulation(),
                                            *get_mapping(),
                                            mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
-Operator<dim, n_components, Number>::get_dof_handler() const
+Operator<dim, Number>::get_dof_handler() const
 {
   return dof_handler;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
-Operator<dim, n_components, Number>::get_dof_handler_eddy_viscosity() const
+Operator<dim, Number>::get_dof_handler_eddy_viscosity() const
 {
   return matrix_free_data->get_dof_handler(get_dof_name_eddy_viscosity());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::DoFHandler<dim> const &
-Operator<dim, n_components, Number>::get_dof_handler_velocity() const
+Operator<dim, Number>::get_dof_handler_velocity() const
 {
   return matrix_free_data->get_dof_handler(get_dof_name_velocity());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::types::global_dof_index
-Operator<dim, n_components, Number>::get_number_of_dofs() const
+Operator<dim, Number>::get_number_of_dofs() const
 {
   return dof_handler.n_dofs();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::MatrixFree<dim, Number> const &
-Operator<dim, n_components, Number>::get_matrix_free() const
+Operator<dim, Number>::get_matrix_free() const
 {
   return *matrix_free;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_dof_name() const
+Operator<dim, Number>::get_dof_name() const
 {
   return field + dof_index_std;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_quad_name() const
+Operator<dim, Number>::get_quad_name() const
 {
   return field + quad_index_std;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_quad_name_overintegration() const
+Operator<dim, Number>::get_quad_name_overintegration() const
 {
   return field + quad_index_overintegration;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_quad_name_eddy_velocity() const
+Operator<dim, Number>::get_quad_name_eddy_velocity() const
 {
   return field + quad_index_eddy_velocity;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 bool
-Operator<dim, n_components, Number>::needs_own_dof_handler_velocity() const
+Operator<dim, Number>::needs_own_dof_handler_velocity() const
 {
   return param.analytical_velocity_field and param.store_analytical_velocity_in_dof_vector;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_dof_index() const
+Operator<dim, Number>::get_dof_index() const
 {
   return matrix_free_data->get_dof_index(get_dof_name());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_dof_name_velocity() const
+Operator<dim, Number>::get_dof_name_velocity() const
 {
   if(needs_own_dof_handler_velocity())
   {
     return field + dof_index_velocity;
   }
   else // external velocity field not hosted by the convection-diffusion operator
-  {
+{
     return dof_index_velocity_external;
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_dof_index_velocity() const
+Operator<dim, Number>::get_dof_index_velocity() const
 {
   if(param.get_type_velocity_field() == TypeVelocityField::DoFVector)
     return matrix_free_data->get_dof_index(get_dof_name_velocity());
@@ -1218,45 +1345,45 @@ Operator<dim, n_components, Number>::get_dof_index_velocity() const
     return dealii::numbers::invalid_unsigned_int;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_quad_index() const
+Operator<dim, Number>::get_quad_index() const
 {
   return matrix_free_data->get_quad_index(field + quad_index_std);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_quad_index_overintegration() const
+Operator<dim, Number>::get_quad_index_overintegration() const
 {
   return matrix_free_data->get_quad_index(field + quad_index_overintegration);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_quad_index_eddy_velocity() const
+Operator<dim, Number>::get_quad_index_eddy_velocity() const
 {
   return matrix_free_data->get_quad_index(field + quad_index_eddy_velocity);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::shared_ptr<dealii::Mapping<dim> const>
-Operator<dim, n_components, Number>::get_mapping() const
+Operator<dim, Number>::get_mapping() const
 {
   return mapping;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::AffineConstraints<Number> const &
-Operator<dim, n_components, Number>::get_constraints() const
+Operator<dim, Number>::get_constraints() const
 {
   return affine_constraints;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & src,
-                                                           VectorType const * velocity) const
+Operator<dim, Number>::update_eddy_viscosity(BlockVectorType const & src,
+                                             VectorType const * velocity) const
 {
   AssertThrow(param.diffusive_problem(),
               dealii::ExcMessage("Updating viscosity reasonable for diffusive problem"));
@@ -1268,59 +1395,59 @@ Operator<dim, n_components, Number>::update_eddy_viscosity(VectorType const & sr
       turbulence_model_ptr->set_velocity_ptr(*velocity);
     }
     turbulence_model_ptr->set_viscosity(src);
-
-    diffusive_operator.set_eddy_viscosity_ptr(turbulence_model_ptr->get_eddy_viscosity_ref());
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::get_eddy_viscosity(VectorType & dst) const
+Operator<dim, Number>::get_eddy_viscosity(VectorType & dst) const
 {
-    turbulence_model_ptr->get_eddy_viscosity(dst);
+  turbulence_model_ptr->get_eddy_viscosity(dst);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 std::string
-Operator<dim, n_components, Number>::get_dof_name_eddy_viscosity() const
+Operator<dim, Number>::get_dof_name_eddy_viscosity() const
 {
   return dof_index_eddy_viscosity;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 unsigned int
-Operator<dim, n_components, Number>::get_dof_index_eddy_viscosity() const
+Operator<dim, Number>::get_dof_index_eddy_viscosity() const
 {
   return matrix_free_data->get_dof_index(get_dof_name_eddy_viscosity());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const
+Operator<dim, Number>::get_turbulent_kinetic_energy(VectorType & dst,
+                                                    BlockVectorType const & solution) const
 {
   turbulence_model_ptr->get_turbulent_kinetic_energy(dst, solution);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::update_time_step_size(double const dt,
-                                                           double const time,
-                                                           double const end_time,
-                                                           double const time_step_number) const
+Operator<dim, Number>::update_time_step_size(double const dt,
+                                             double const time,
+                                             double const end_time,
+                                             double const time_step_number) const
 {
   turbulence_source_operator.set_time_step_size(dt, time, end_time, time_step_number);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::apply_modal_filter(VectorType & solution) const
+Operator<dim, Number>::apply_modal_filter(BlockVectorType & solution) const
 {
-  modal_filter.apply_filter(solution);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    modal_filter.apply_filter(solution.block(b));
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Operator<dim, n_components, Number>::enforce_positivity(VectorType & solution) const
+Operator<dim, Number>::enforce_positivity(BlockVectorType & solution) const
 {
   if(param.turbulence_model_data.is_active)
   {
@@ -1328,17 +1455,11 @@ Operator<dim, n_components, Number>::enforce_positivity(VectorType & solution) c
   }
 }
 
-template class Operator<2, 1, float>;
-template class Operator<2, 1, double>;
+template class Operator<2, float>;
+template class Operator<2, double>;
 
-template class Operator<3, 1, float>;
-template class Operator<3, 1, double>;
-
-template class Operator<2, 2, float>;
-template class Operator<2, 2, double>;
-
-template class Operator<3, 2, float>;
-template class Operator<3, 2, double>;
+template class Operator<3, float>;
+template class Operator<3, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

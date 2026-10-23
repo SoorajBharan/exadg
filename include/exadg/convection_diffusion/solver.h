@@ -58,15 +58,14 @@ create_input_file(std::string const & input_file)
   // for the automatic generation of a default input file
   unsigned int const Dim = 2;
   typedef double     Number;
-  unsigned int const N_Components = 1;
-  ConvDiff::get_application<Dim, N_Components, Number>(input_file, MPI_COMM_WORLD)->add_parameters(prm);
+  ConvDiff::get_application<Dim, Number>(input_file, MPI_COMM_WORLD)->add_parameters(prm);
 
   prm.print_parameters(input_file,
                        dealii::ParameterHandler::Short |
-                         dealii::ParameterHandler::KeepDeclarationOrder);
+                       dealii::ParameterHandler::KeepDeclarationOrder);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
 run(std::string const & input_file,
     unsigned int const  degree,
@@ -78,13 +77,13 @@ run(std::string const & input_file,
   dealii::Timer timer;
   timer.restart();
 
-  std::shared_ptr<ConvDiff::ApplicationBase<dim, n_components, Number>> application =
-    ConvDiff::get_application<dim, n_components, Number>(input_file, mpi_comm);
+  std::shared_ptr<ConvDiff::ApplicationBase<dim, Number>> application =
+    ConvDiff::get_application<dim, Number>(input_file, mpi_comm);
 
   application->set_parameters_convergence_study(degree, refine_space, refine_time);
 
-  std::shared_ptr<ConvDiff::Driver<dim, n_components, Number>> driver =
-    std::make_shared<ConvDiff::Driver<dim, n_components, Number>>(mpi_comm, application, is_test, false);
+  std::shared_ptr<ConvDiff::Driver<dim, Number>> driver =
+    std::make_shared<ConvDiff::Driver<dim, Number>>(mpi_comm, application, is_test, false);
 
   driver->setup();
 
@@ -147,52 +146,52 @@ main(int argc, char ** argv)
           refine_time <= temporal.refine_time_max;
           ++refine_time)
       {
-        // run the simulation
-        if(general.dim == 2 and general.precision == "float" and general.n_components == 1)
+
+        if(general.dim == 2 and general.precision == "float")
         {
-          ExaDG::run<2, 1, float>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
+          ExaDG::run<2, float>(
+            input_file, 
+            degree,
+            refine_space,
+            refine_time, 
+            mpi_comm,
+            general.is_test);
         }
-        else if(general.dim == 2 and general.precision == "double" and general.n_components == 2)
+        else if(general.dim == 2 and general.precision == "double")
         {
-          ExaDG::run<2, 2, float>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
+          ExaDG::run<2, double>(
+            input_file,
+            degree,
+            refine_space,
+            refine_time,
+            mpi_comm,
+            general.is_test);
         }
-        else if(general.dim == 2 and general.precision == "double" and general.n_components == 1)
+        else if(general.dim == 3 and general.precision == "float")
         {
-          ExaDG::run<2, 1, double>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
+          ExaDG::run<3, float>(
+            input_file,
+            degree,
+            refine_space,
+            refine_time,
+            mpi_comm,
+            general.is_test);
         }
-        else if(general.dim == 2 and general.precision == "double" and general.n_components == 2)
+        else if(general.dim == 3 and general.precision == "double")
         {
-          ExaDG::run<2, 2, double>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
+          ExaDG::run<3, double>(
+            input_file,
+            degree,
+            refine_space,
+            refine_time,
+            mpi_comm,
+            general.is_test);
         }
-        else if(general.dim == 3 and general.precision == "float" and general.n_components == 1)
-        {
-          ExaDG::run<3, 1, float>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
-        }
-        else if(general.dim == 3 and general.precision == "float" and general.n_components == 2)
-        {
-          ExaDG::run<3, 2, float>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
-        }
-        else if(general.dim == 3 and general.precision == "double" and general.n_components == 1) 
-        {
-          ExaDG::run<3, 1, double>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
-        }
-        else if(general.dim == 3 and general.precision == "double" and general.n_components == 2)
-        {
-          ExaDG::run<3, 2, double>(
-            input_file, degree, refine_space, refine_time, mpi_comm, general.is_test);
-        }
-        else
-        {
+        else {
           AssertThrow(false,
                       dealii::ExcMessage("Only dim = 2|3 and precision=float|double implemented."));
         }
+
       }
     }
   }

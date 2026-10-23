@@ -133,6 +133,44 @@ public:
     return phi_dg.get_normal_derivative(q) + (psi(q) * phi_en.get_normal_derivative(q)) + (grad_psi(q) * get_normal_vector(q) * phi_en.get_value(q));
   }
 
+  // enrichment part psi U_tilde only (polynomial part U_bar excluded)
+  value_type get_value_enrichment(unsigned int q) const
+  {
+    return psi(q) * phi_en.get_value(q);
+  }
+
+  gradient_type get_gradient_enrichment(unsigned int q) const
+  {
+    return psi(q) * phi_en.get_gradient(q) +
+    dealii::outer_product(phi_en.get_value(q), grad_psi(q));
+  }
+
+  // different value fluxes for the two test spaces: value_bar tested with v_bar,
+  // value_tilde tested with psi v_tilde
+  void submit_value_split(value_type const & value_bar,
+                          value_type const & value_tilde,
+                          unsigned int       q)
+  {
+    phi_dg.submit_value(value_bar, q);
+    phi_en.submit_value(psi(q) * value_tilde, q);
+  }
+
+  // as submit_value_and_gradient, with different fluxes for the two test spaces
+  void submit_value_and_gradient_split(value_type const &    value_bar,
+                                       gradient_type const & gradient_bar,
+                                       value_type const &    value_tilde,
+                                       gradient_type const & gradient_tilde,
+                                       unsigned int          q)
+  {
+    phi_dg.submit_value(value_bar, q);
+    phi_dg.submit_gradient(gradient_bar, q);
+
+    phi_en.submit_value(psi(q) * value_tilde + gradient_tilde * grad_psi(q), q);
+    phi_en.submit_gradient(psi(q) * gradient_tilde, q);
+
+    en_gradient_submitted = true;
+  }
+
   // Submit values to BOTH test functions (Galerkin requirement)
   void submit_value(value_type const & value, unsigned int q)
   {

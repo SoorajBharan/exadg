@@ -591,8 +591,6 @@ OperatorDualSplitting<dim, Number>::rhs_ppe_boundary_correction_enriched(
 { 
   AssertThrow(not this->param.ale_formulation,
               dealii::ExcMessage("Enriched pressure Poisson boundary terms: ALE not implemented."));
-  AssertThrow(not this->param.viscosity_is_variable(),
-              dealii::ExcMessage("Enriched pressure Poisson boundary term variable viscosity (turbulence model) not implemented."));
 
   typedef dealii::FEFaceEvaluation<dim, -1, 0, dim, Number>      FaceIntU;
   typedef dealii::FEFaceEvaluation<dim, -1, 0, 1, Number>        FaceIntP;
@@ -613,8 +611,6 @@ OperatorDualSplitting<dim, Number>::rhs_ppe_boundary_correction_enriched(
 
   VectorType correction_p;
   mf_en.initialize_dof_vector(correction_p, dof_p);
-
-  scalar const nu = dealii::make_vectorized_array<Number>(this->param.viscosity);
 
   bool const divergence_formulation = this->param.formulation_convective_term_bc == FormulationConvectiveTerm::DivergenceFormulation;
 
@@ -675,6 +671,8 @@ OperatorDualSplitting<dim, Number>::rhs_ppe_boundary_correction_enriched(
         // psi grad(omega_tilde) + omega_tilde (x) grad(psi)
         tensor const delta_grad = phi_u.get_gradient(q) -
           phi_u.phi_dg.get_gradient(q);
+
+        scalar const nu = this->get_enriched_momentum_operator().get_viscosity_boundary_face(face, q);
         value = -normal * (nu * curl_of_vorticity_from_gradient<dim,
           Number>(delta_grad));
       }

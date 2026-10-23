@@ -41,9 +41,9 @@ struct ConvectiveKernelData
 {
   ConvectiveKernelData()
     : formulation(FormulationConvectiveTerm::DivergenceFormulation),
-    velocity_type(TypeVelocityField::Function),
-    dof_index_velocity(1),
-    numerical_flux_formulation(NumericalFluxConvectiveOperator::Undefined)
+      velocity_type(TypeVelocityField::Function),
+      dof_index_velocity(1),
+      numerical_flux_formulation(NumericalFluxConvectiveOperator::Undefined)
   {
   }
 
@@ -63,7 +63,7 @@ struct ConvectiveKernelData
   NumericalFluxConvectiveOperator numerical_flux_formulation;
 };
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class ConvectiveKernel
 {
 private:
@@ -75,13 +75,10 @@ private:
   typedef dealii::VectorizedArray<Number>                         scalar;
   typedef dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> vector;
 
-  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
-  typedef FaceIntegrator<dim, n_components, Number> IntegratorFace;
+  typedef CellIntegrator<dim, 1, Number> IntegratorCell;
+  typedef FaceIntegrator<dim, 1, Number> IntegratorFace;
 
 public:
-  using value_type = typename  IntegratorCell::value_type;
-  using gradient_type = typename IntegratorCell::gradient_type;
-
   void
   reinit(dealii::MatrixFree<dim, Number> const & matrix_free,
          ConvectiveKernelData<dim> const &       data_in,
@@ -129,7 +126,7 @@ public:
       flags.cell_integrate = dealii::EvaluationFlags::values;
     }
     else
-  {
+    {
       AssertThrow(false, dealii::ExcMessage("Not implemented."));
     }
 
@@ -145,9 +142,9 @@ public:
     MappingFlags flags;
 
     flags.cells = dealii::update_gradients | dealii::update_JxW_values |
-      dealii::update_quadrature_points; // q-points due to analytical velocity field
+                  dealii::update_quadrature_points; // q-points due to analytical velocity field
     flags.inner_faces = dealii::update_JxW_values | dealii::update_quadrature_points |
-      dealii::update_normal_vectors; // q-points due to analytical velocity field
+                        dealii::update_normal_vectors; // q-points due to analytical velocity field
     flags.boundary_faces =
       dealii::update_JxW_values | dealii::update_quadrature_points | dealii::update_normal_vectors;
 
@@ -239,12 +236,12 @@ public:
    * This function calculates the numerical flux using the central flux.
    */
   inline DEAL_II_ALWAYS_INLINE //
-  value_type
-  calculate_central_flux(value_type const & value_m,
-                         value_type const & value_p,
-                         scalar const & normal_velocity) const
+    scalar
+    calculate_central_flux(scalar const & value_m,
+                           scalar const & value_p,
+                           scalar const & normal_velocity) const
   {
-    value_type average_value = 0.5 * (value_m + value_p);
+    scalar average_value = 0.5 * (value_m + value_p);
 
     return normal_velocity * average_value;
   }
@@ -253,11 +250,11 @@ public:
    * The same as above, but with discontinuous velocity field.
    */
   inline DEAL_II_ALWAYS_INLINE //
-  value_type
-  calculate_central_flux(value_type const & value_m,
-                         value_type const & value_p,
-                         scalar const & normal_velocity_m,
-                         scalar const & normal_velocity_p) const
+    scalar
+    calculate_central_flux(scalar const & value_m,
+                           scalar const & value_p,
+                           scalar const & normal_velocity_m,
+                           scalar const & normal_velocity_p) const
   {
     return 0.5 * (normal_velocity_m * value_m + normal_velocity_p * value_p);
   }
@@ -266,13 +263,13 @@ public:
    * This function calculates the numerical flux using the Lax-Friedrichs flux.
    */
   inline DEAL_II_ALWAYS_INLINE //
-  value_type
-  calculate_lax_friedrichs_flux(value_type const & value_m,
-                                value_type const & value_p,
-                                scalar const & normal_velocity) const
+    scalar
+    calculate_lax_friedrichs_flux(scalar const & value_m,
+                                  scalar const & value_p,
+                                  scalar const & normal_velocity) const
   {
-    value_type average_value = 0.5 * (value_m + value_p);
-    value_type jump_value    = value_m - value_p;
+    scalar average_value = 0.5 * (value_m + value_p);
+    scalar jump_value    = value_m - value_p;
     scalar lambda        = std::abs(normal_velocity);
 
     return normal_velocity * average_value + 0.5 * lambda * jump_value;
@@ -282,17 +279,17 @@ public:
    * The same as above, but with discontinuous velocity field.
    */
   inline DEAL_II_ALWAYS_INLINE //
-  value_type
-  calculate_lax_friedrichs_flux(value_type const & value_m,
-                                value_type const & value_p,
-                                scalar const & normal_velocity_m,
-                                scalar const & normal_velocity_p) const
+    scalar
+    calculate_lax_friedrichs_flux(scalar const & value_m,
+                                  scalar const & value_p,
+                                  scalar const & normal_velocity_m,
+                                  scalar const & normal_velocity_p) const
   {
-    value_type jump_value = value_m - value_p;
+    scalar jump_value = value_m - value_p;
     scalar lambda     = std::max(std::abs(normal_velocity_m), std::abs(normal_velocity_p));
 
     return 0.5 * (normal_velocity_m * value_m + normal_velocity_p * value_p) +
-    0.5 * lambda * jump_value;
+           0.5 * lambda * jump_value;
   }
 
   /*
@@ -300,16 +297,16 @@ public:
    * specified parameter. This function handles both analytical and numerical velocity fields.
    */
   inline DEAL_II_ALWAYS_INLINE //
-  value_type
-  calculate_flux(unsigned int const q,
-                 IntegratorFace &   integrator,
-                 value_type const &     value_m,
-                 value_type const &     value_p,
-                 vector const &     normal_m,
-                 Number const &     time,
-                 bool const         exterior_velocity_available) const
+    scalar
+    calculate_flux(unsigned int const q,
+                   IntegratorFace &   integrator,
+                   scalar const &     value_m,
+                   scalar const &     value_p,
+                   vector const &     normal_m,
+                   Number const &     time,
+                   bool const         exterior_velocity_available) const
   {
-    value_type flux = value_m * 0.0;
+    scalar flux = dealii::make_vectorized_array<Number>(0.0);
 
     if(data.velocity_type == TypeVelocityField::Function)
     {
@@ -346,7 +343,7 @@ public:
           flux = calculate_central_flux(value_m, value_p, normal_velocity_m, normal_velocity_p);
         }
         else if(data.numerical_flux_formulation ==
-          NumericalFluxConvectiveOperator::LaxFriedrichsFlux)
+                NumericalFluxConvectiveOperator::LaxFriedrichsFlux)
         {
           flux =
             calculate_lax_friedrichs_flux(value_m, value_p, normal_velocity_m, normal_velocity_p);
@@ -361,18 +358,18 @@ public:
           flux = calculate_central_flux(value_m, value_p, normal_velocity);
         }
         else if(data.numerical_flux_formulation ==
-          NumericalFluxConvectiveOperator::LaxFriedrichsFlux)
+                NumericalFluxConvectiveOperator::LaxFriedrichsFlux)
         {
           flux = calculate_lax_friedrichs_flux(value_m, value_p, normal_velocity);
         }
       }
       else
-    {
+      {
         AssertThrow(false, dealii::ExcMessage("Not implemented."));
       }
     }
     else
-  {
+    {
       AssertThrow(false, dealii::ExcMessage("Not implemented."));
     }
 
@@ -380,11 +377,11 @@ public:
   }
 
   inline DEAL_II_ALWAYS_INLINE //
-  vector
-  calculate_average_velocity(unsigned int const q,
-                             IntegratorFace &   integrator,
-                             Number const &     time,
-                             bool const         exterior_velocity_available) const
+    vector
+    calculate_average_velocity(unsigned int const q,
+                               IntegratorFace &   integrator,
+                               Number const &     time,
+                               bool const         exterior_velocity_available) const
   {
     vector velocity;
 
@@ -403,7 +400,7 @@ public:
       velocity = 0.5 * (velocity_m + velocity_p);
     }
     else
-  {
+    {
       AssertThrow(false, dealii::ExcMessage("Not implemented."));
     }
 
@@ -411,152 +408,128 @@ public:
   }
 
   inline DEAL_II_ALWAYS_INLINE //
-  std::tuple<value_type, value_type>
-  calculate_flux_interior_and_neighbor(unsigned int const q,
-                                       IntegratorFace &   integrator,
-                                       value_type const &     value_m,
-                                       value_type const &     value_p,
-                                       vector const &     normal_m,
-                                       Number const &     time,
-                                       bool const         exterior_velocity_available) const
+    std::tuple<scalar, scalar>
+    calculate_flux_interior_and_neighbor(unsigned int const q,
+                                         IntegratorFace &   integrator,
+                                         scalar const &     value_m,
+                                         scalar const &     value_p,
+                                         vector const &     normal_m,
+                                         Number const &     time,
+                                         bool const         exterior_velocity_available) const
   {
-  value_type fluxM =
-  calculate_flux(q, integrator, value_m, value_p, normal_m, time, exterior_velocity_available);
-  value_type fluxP = -fluxM;
+    scalar fluxM =
+      calculate_flux(q, integrator, value_m, value_p, normal_m, time, exterior_velocity_available);
+    scalar fluxP = -fluxM;
 
-  if(data.formulation == FormulationConvectiveTerm::ConvectiveFormulation)
-  {
-    vector velocity =
-      calculate_average_velocity(q, integrator, time, exterior_velocity_available);
-    scalar normal_velocity = velocity * normal_m;
+    if(data.formulation == FormulationConvectiveTerm::ConvectiveFormulation)
+    {
+      vector velocity =
+        calculate_average_velocity(q, integrator, time, exterior_velocity_available);
+      scalar normal_velocity = velocity * normal_m;
 
-    // second term appears since the strong formulation is implemented (integration by parts
-    // is performed twice)
-    fluxM = fluxM - normal_velocity * value_m;
-    // opposite signs since n⁺ = - n⁻
-    fluxP = fluxP + normal_velocity * value_p;
+      // second term appears since the strong formulation is implemented (integration by parts
+      // is performed twice)
+      fluxM = fluxM - normal_velocity * value_m;
+      // opposite signs since n⁺ = - n⁻
+      fluxP = fluxP + normal_velocity * value_p;
+    }
+
+    return std::make_tuple(fluxM, fluxP);
   }
 
-  return std::make_tuple(fluxM, fluxP);
-}
-
-inline DEAL_II_ALWAYS_INLINE //
-value_type
-calculate_flux_interior(unsigned int const q,
-                        IntegratorFace &   integrator,
-                        value_type const &     value_m,
-                        value_type const &     value_p,
-                        vector const &     normal_m,
-                        Number const &     time,
-                        bool const         exterior_velocity_available) const
-{
-  value_type flux =
-    calculate_flux(q, integrator, value_m, value_p, normal_m, time, exterior_velocity_available);
-
-  if(data.formulation == FormulationConvectiveTerm::ConvectiveFormulation)
+  inline DEAL_II_ALWAYS_INLINE //
+    scalar
+    calculate_flux_interior(unsigned int const q,
+                            IntegratorFace &   integrator,
+                            scalar const &     value_m,
+                            scalar const &     value_p,
+                            vector const &     normal_m,
+                            Number const &     time,
+                            bool const         exterior_velocity_available) const
   {
-    vector velocity =
-      calculate_average_velocity(q, integrator, time, exterior_velocity_available);
-    scalar normal_velocity = velocity * normal_m;
+    scalar flux =
+      calculate_flux(q, integrator, value_m, value_p, normal_m, time, exterior_velocity_available);
 
-    // second term appears since the strong formulation is implemented (integration by parts
-    // is performed twice)
-    flux = flux - normal_velocity * value_m;
+    if(data.formulation == FormulationConvectiveTerm::ConvectiveFormulation)
+    {
+      vector velocity =
+        calculate_average_velocity(q, integrator, time, exterior_velocity_available);
+      scalar normal_velocity = velocity * normal_m;
+
+      // second term appears since the strong formulation is implemented (integration by parts
+      // is performed twice)
+      flux = flux - normal_velocity * value_m;
+    }
+
+    return flux;
   }
 
-  return flux;
-}
 
-
-/*
+  /*
    * Volume flux, i.e., the term occurring in the volume integral
    */
-inline DEAL_II_ALWAYS_INLINE //
-gradient_type
-get_volume_flux_divergence_form(value_type const &     value,
-                                IntegratorCell &   integrator,
-                                unsigned int const q,
-                                Number const &     time) const
-{
-  vector velocity;
+  inline DEAL_II_ALWAYS_INLINE //
+    vector
+    get_volume_flux_divergence_form(scalar const &     value,
+                                    IntegratorCell &   integrator,
+                                    unsigned int const q,
+                                    Number const &     time) const
+  {
+    vector velocity;
 
-  if(data.velocity_type == TypeVelocityField::Function)
-  {
-    velocity = FunctionEvaluator<1, dim, Number>::value(*(data.velocity),
-                                                        integrator.quadrature_point(q),
-                                                        time);
-  }
-  else if(data.velocity_type == TypeVelocityField::DoFVector)
-  {
-    velocity = integrator_velocity->get_value(q);
-  }
-  else
-{
-    AssertThrow(false, dealii::ExcMessage("Not implemented."));
-  }
-
-  if constexpr (n_components == 1)
-  {
-    return -value * velocity;
-  }
-  else
- {
-    gradient_type flux;
-    for(unsigned int c = 0; c < n_components; ++c)
+    if(data.velocity_type == TypeVelocityField::Function)
     {
-      flux[c] = -value[c] * velocity; 
+      velocity = FunctionEvaluator<1, dim, Number>::value(*(data.velocity),
+                                                          integrator.quadrature_point(q),
+                                                          time);
     }
-    return flux;
-  }
-}
-
-inline DEAL_II_ALWAYS_INLINE //
-value_type
-get_volume_flux_convective_form(gradient_type const &     gradient,
-                                IntegratorCell &   integrator,
-                                unsigned int const q,
-                                Number const &     time) const
-{
-  vector velocity;
-
-  if(data.velocity_type == TypeVelocityField::Function)
-  {
-    velocity = FunctionEvaluator<1, dim, Number>::value(*(data.velocity),
-                                                        integrator.quadrature_point(q),
-                                                        time);
-  }
-  else if(data.velocity_type == TypeVelocityField::DoFVector)
-  {
-    velocity = integrator_velocity->get_value(q);
-  }
-  else
-{
-    AssertThrow(false, dealii::ExcMessage("Not implemented."));
-  }
-
-  if constexpr (n_components == 1)
-  {
-    return gradient * velocity;
-  }
-  else
- {
-    value_type flux;
-    for(unsigned int c = 0; c < n_components; ++c)
+    else if(data.velocity_type == TypeVelocityField::DoFVector)
     {
-      flux[c] = dealii::scalar_product(gradient[c], velocity);
+      velocity = integrator_velocity->get_value(q);
     }
-    return flux;
+    else
+    {
+      AssertThrow(false, dealii::ExcMessage("Not implemented."));
+    }
+
+    return (-value * velocity);
   }
-}
+
+  inline DEAL_II_ALWAYS_INLINE //
+    scalar
+    get_volume_flux_convective_form(vector const &     gradient,
+                                    IntegratorCell &   integrator,
+                                    unsigned int const q,
+                                    Number const &     time) const
+  {
+    vector velocity;
+
+    if(data.velocity_type == TypeVelocityField::Function)
+    {
+      velocity = FunctionEvaluator<1, dim, Number>::value(*(data.velocity),
+                                                          integrator.quadrature_point(q),
+                                                          time);
+    }
+    else if(data.velocity_type == TypeVelocityField::DoFVector)
+    {
+      velocity = integrator_velocity->get_value(q);
+    }
+    else
+    {
+      AssertThrow(false, dealii::ExcMessage("Not implemented."));
+    }
+
+    return (velocity * gradient);
+  }
 
 private:
-ConvectiveKernelData<dim> data;
+  ConvectiveKernelData<dim> data;
 
-mutable lazy_ptr<VectorType> velocity;
+  mutable lazy_ptr<VectorType> velocity;
 
-std::shared_ptr<CellIntegratorVelocity> integrator_velocity;
-std::shared_ptr<FaceIntegratorVelocity> integrator_velocity_m;
-std::shared_ptr<FaceIntegratorVelocity> integrator_velocity_p;
+  std::shared_ptr<CellIntegratorVelocity> integrator_velocity;
+  std::shared_ptr<FaceIntegratorVelocity> integrator_velocity_m;
+  std::shared_ptr<FaceIntegratorVelocity> integrator_velocity_p;
 };
 
 } // namespace Operators
@@ -574,11 +547,11 @@ struct ConvectiveOperatorData : public OperatorBaseData
   std::shared_ptr<BoundaryDescriptor<dim> const> bc;
 };
 
-template<int dim, int n_components, typename Number>
-class ConvectiveOperator : public OperatorBase<dim, Number, n_components>
+template<int dim, typename Number>
+class ConvectiveOperator : public OperatorBase<dim, Number, 1>
 {
 private:
-  typedef OperatorBase<dim, Number, n_components> Base;
+  typedef OperatorBase<dim, Number, 1> Base;
 
   typedef typename Base::IntegratorCell IntegratorCell;
   typedef typename Base::IntegratorFace IntegratorFace;
@@ -588,14 +561,12 @@ private:
   typedef dealii::VectorizedArray<Number>                         scalar;
   typedef dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> vector;
 
-  using value_type = typename  IntegratorCell::value_type;
-  using gradient_type = typename IntegratorCell::gradient_type;
 public:
   void
   initialize(dealii::MatrixFree<dim, Number> const &                   matrix_free,
              dealii::AffineConstraints<Number> const &                 affine_constraints,
              ConvectiveOperatorData<dim> const &                       data,
-             std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> kernel);
+             std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel);
 
   dealii::LinearAlgebra::distributed::Vector<Number> const &
   get_velocity() const;
@@ -650,7 +621,7 @@ private:
 
   ConvectiveOperatorData<dim> operator_data;
 
-  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> kernel;
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel;
 };
 } // namespace ConvDiff
 } // namespace ExaDG

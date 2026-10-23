@@ -287,7 +287,17 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
     dealii::Timer timer_viscosity_update;
     timer_viscosity_update.restart();
 
-    pde_operator->update_viscosity(solution_np.block(0));
+    if(enrichment_coupling)
+    {
+      BlockVectorType velocity;
+      initialize_velocity_enriched(velocity);
+      velocity.block(0) = solution_np.block(0);
+      velocity.block(1) = velocity_enrichment_np;
+      pde_operator->update_viscosity_enriched(velocity);
+    } 
+    else {
+      pde_operator->update_viscosity(solution_np.block(0));
+    }
 
     if(this->print_solver_info() and not(this->is_test))
     {

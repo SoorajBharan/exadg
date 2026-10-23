@@ -518,11 +518,6 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
     (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &this->free_dofs_bar : nullptr;
 
   this->enriched_momentum_preconditioner.set_scaling_factor_mass(scaling_factor_mass);
-  // local operator on enriched cells: s M + nu (grad, grad)
-  this->enriched_block_jacobi_preconditioner.update(scaling_factor_mass,
-                                              this->param.viscosity,
-                                              nullptr,
-                                              free_bar);
 
   dealii::ReductionControl control(this->param.solver_data_momentum.max_iter,
                                    this->param.solver_data_momentum.abs_tol,
@@ -542,34 +537,41 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
   if(this->param.solver_momentum == SolverMomentum::CG)
   {
     dealii::SolverCG<BlockVectorType> solver(control);
+#ifdef EXADG_DEBUG
     /*************************************DEBUG*********************************/
     solver.connect_eigenvalues_slot(
       [&](std::vector<double> const & eigenvalues) {
         if(not eigenvalues.empty())
           this->pcout << "  [viscous debug] eigenvalues of P^{-1}A in ["
-                      << *std::min_element(eigenvalues.begin(), eigenvalues.end()) << ", "
-                      << *std::max_element(eigenvalues.begin(), eigenvalues.end()) << "]" << std::endl;
+            << *std::min_element(eigenvalues.begin(), eigenvalues.end()) << ", "
+            << *std::max_element(eigenvalues.begin(), eigenvalues.end()) << "]" << std::endl;
       },
       false);
     /************************************************************************************/
+#endif
     // solver.solve(constrained_operator, s
     // olution, rhs_constrained, enriched_block_jacobi_preconditioner);
+#ifdef EXADG_DEBUG
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_block_jacobi_preconditioner);
+      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_momentum_preconditioner);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
       this->pcout << "  [viscous debug] NO CONVERGENCE: initial residual = " << control.initial_value()
-                  << "   last residual = " << e.last_residual << "   iterations = " << e.last_step
-                  << std::endl;
+        << "   last residual = " << e.last_residual << "   iterations = " << e.last_step
+        << std::endl;
       throw;
     }
     this->pcout << "  [viscous debug] initial residual = " << control.initial_value()
-                << "   final residual = " << control.last_value()
-                << "   iterations = " << control.last_step() << std::endl;
+      << "   final residual = " << control.last_value()
+      << "   iterations = " << control.last_step() << std::endl;
     /************************************************************************************/
+#else
+    solver.solve(constrained_operator, solution, rhs_constrained,
+                 this->enriched_momentum_preconditioner);
+#endif
   }
   else
   {
@@ -577,23 +579,50 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
     data.max_basis_size = this->param.solver_data_momentum.max_krylov_size;
 
     dealii::SolverGMRES<BlockVectorType> solver(control, data);
+
+#ifdef EXADG_DEBUG
+    // Ritz values of P^{-1}A from the GMRES Hessenberg matrix: real parts near 0 indicate
+    // near-singular (enrichment) modes, a large max real part indicates plain stiffness (nu_t)
+    solver.connect_eigenvalues_slot(
+      [&](std::vector<std::complex<double>> const & eigenvalues) {
+        if(eigenvalues.empty())
+          return;
+        double re_min = eigenvalues[0].real(), re_max = eigenvalues[0].real(), im_max = 0.0;
+        for(auto const & e : eigenvalues)
+        {
+          re_min = std::min(re_min, e.real());
+          re_max = std::max(re_max, e.real());
+          im_max = std::max(im_max, std::abs(e.imag()));
+        }
+        this->pcout << "  [viscous debug] Ritz values of P^{-1}A: Re in [" << re_min << ", " << re_max
+          << "]   max |Im| = " << im_max << std::endl;
+      },
+      false);
+#endif
+
     // solver.solve(constrained_operator, solution, rhs_constrained, enriched_block_jacobi_preconditioner);
+
+#ifdef EXADG_DEBUG
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_block_jacobi_preconditioner);
+      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_momentum_preconditioner);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
       this->pcout << "  [viscous debug] NO CONVERGENCE: initial residual = " << control.initial_value()
-                  << "   last residual = " << e.last_residual << "   iterations = " << e.last_step
-                  << std::endl;
+        << "   last residual = " << e.last_residual << "   iterations = " << e.last_step
+        << std::endl;
       throw;
     }
     this->pcout << "  [viscous debug] initial residual = " << control.initial_value()
-                << "   final residual = " << control.last_value()
-                << "   iterations = " << control.last_step() << std::endl;
+      << "   final residual = " << control.last_value()
+      << "   iterations = " << control.last_step() << std::endl;
     /************************************************************************************/
+#else
+    solver.solve(constrained_operator, solution, rhs_constrained,
+                 this->enriched_momentum_preconditioner);
+#endif
   }
 
   return control.last_step();

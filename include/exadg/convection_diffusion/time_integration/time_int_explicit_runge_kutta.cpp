@@ -67,7 +67,7 @@ TimeIntExplRK<Number>::set_velocities_and_times(
 
 template<typename Number>
 void
-TimeIntExplRK<Number>::extrapolate_solution(VectorType & vector)
+TimeIntExplRK<Number>::extrapolate_solution(BlockVectorType & vector)
 {
   vector.equ(1.0, this->solution_n);
 }
@@ -269,60 +269,60 @@ TimeIntExplRK<Number>::initialize_time_integrator()
   if(param.time_integrator_rk == TimeIntegratorRK::ExplRK1Stage1)
   {
     rk_time_integrator =
-      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, BlockVectorType>>(
         1, expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK2Stage2)
   {
     rk_time_integrator =
-      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, BlockVectorType>>(
         2, expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK3Stage3)
   {
     rk_time_integrator =
-      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, BlockVectorType>>(
         3, expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK4Stage4)
   {
     rk_time_integrator =
-      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<ExplicitRungeKuttaTimeIntegrator<OperatorExplRK<Number>, BlockVectorType>>(
         4, expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK3Stage4Reg2C)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRK3Stage4Reg2C<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<LowStorageRK3Stage4Reg2C<OperatorExplRK<Number>, BlockVectorType>>(
         expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK4Stage5Reg2C)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRK4Stage5Reg2C<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<LowStorageRK4Stage5Reg2C<OperatorExplRK<Number>, BlockVectorType>>(
         expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK4Stage5Reg3C)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRK4Stage5Reg3C<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<LowStorageRK4Stage5Reg3C<OperatorExplRK<Number>, BlockVectorType>>(
         expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK5Stage9Reg2S)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRK5Stage9Reg2S<OperatorExplRK<Number>, VectorType>>(
+      std::make_shared<LowStorageRK5Stage9Reg2S<OperatorExplRK<Number>, BlockVectorType>>(
         expl_rk_operator);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK3Stage7Reg2)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRKTD<OperatorExplRK<Number>, VectorType>>(expl_rk_operator, 3, 7);
+      std::make_shared<LowStorageRKTD<OperatorExplRK<Number>, BlockVectorType>>(expl_rk_operator, 3, 7);
   }
   else if(param.time_integrator_rk == TimeIntegratorRK::ExplRK4Stage8Reg2)
   {
     rk_time_integrator =
-      std::make_shared<LowStorageRKTD<OperatorExplRK<Number>, VectorType>>(expl_rk_operator, 4, 8);
+      std::make_shared<LowStorageRKTD<OperatorExplRK<Number>, BlockVectorType>>(expl_rk_operator, 4, 8);
   }
   else
   {

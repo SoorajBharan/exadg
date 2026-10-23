@@ -27,8 +27,8 @@
 #include <deal.II/lac/la_parallel_vector.h>
 
 // ExaDG
-#include <exadg/time_integration/explicit_runge_kutta.h>
-#include <exadg/time_integration/time_int_explicit_runge_kutta_base.h>
+#include <exadg/convection_diffusion/time_integration/explicit_runge_kutta.h>
+#include <exadg/convection_diffusion/time_integration/time_int_explicit_runge_kutta_base.h>
 
 namespace ExaDG
 {
@@ -53,7 +53,8 @@ template<typename Number>
 class TimeIntExplRK : public TimeIntExplRKBase<Number>
 {
 public:
-  typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::Vector<Number>      VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 
   TimeIntExplRK(std::shared_ptr<Interface::Operator<Number>>    operator_in,
                 std::shared_ptr<PostProcessorInterface<Number>> postprocessor_in,
@@ -66,7 +67,7 @@ public:
                            std::vector<double> const &             times_in);
 
   void
-  extrapolate_solution(VectorType & vector);
+  extrapolate_solution(BlockVectorType & vector);
 
 private:
   void
@@ -97,7 +98,7 @@ private:
 
   std::shared_ptr<OperatorExplRK<Number>> expl_rk_operator;
 
-  std::shared_ptr<ExplicitTimeIntegrator<OperatorExplRK<Number>, VectorType>> rk_time_integrator;
+  std::shared_ptr<ExplicitTimeIntegrator<OperatorExplRK<Number>, BlockVectorType>> rk_time_integrator;
 
   Parameters const & param;
 

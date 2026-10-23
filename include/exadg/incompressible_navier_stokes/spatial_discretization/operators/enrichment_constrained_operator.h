@@ -17,6 +17,7 @@
 #include <deal.II/lac/la_parallel_block_vector.h>
 
 #include <exadg/operators/wall_modelling/coupler.h>
+#include <exadg/utilities/section_profile.h>
 
 namespace ExaDG
 {
@@ -63,20 +64,32 @@ public:
   void
   vmult(BlockVectorType & dst, BlockVectorType const & src) const
   {
+#ifdef EXADG_PROFILE
+    auto t_prof = SectionProfile::Clock::now();
+#endif
     if(tmp.n_blocks() != src.n_blocks() or tmp.size() != src.size())
       tmp.reinit(src);
 
     // E X
     tmp = src;
     constrain(tmp);
+#ifdef EXADG_PROFILE
+    SectionProfile::lap("constr vmult 1 copy + constrain src", t_prof);
+#endif
 
     // E K E X
     op.vmult(dst, tmp);
+#ifdef EXADG_PROFILE
+    t_prof = SectionProfile::Clock::now();
+#endif
     constrain(dst);
 
     // + (I - E) X = X - E X
     dst += src;
     dst -= tmp;
+#ifdef EXADG_PROFILE
+    SectionProfile::lap("constr vmult 2 constrain dst + (I-E)X", t_prof);
+#endif
   }
 
 private:

@@ -29,9 +29,9 @@ namespace ExaDG
 {
 namespace FTI
 {
-template<int dim, int n_components, typename Number>
-Driver<dim, n_components, Number>::Driver(MPI_Comm const &                              comm,
-                            std::shared_ptr<ApplicationBase<dim, n_components, Number>> app,
+template<int dim, typename Number>
+Driver<dim, Number>::Driver(MPI_Comm const &                              comm,
+                            std::shared_ptr<ApplicationBase<dim, Number>> app,
                             bool const                                    is_test)
   : mpi_comm(comm),
     pcout(std::cout, dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0),
@@ -45,9 +45,9 @@ Driver<dim, n_components, Number>::Driver(MPI_Comm const &                      
   print_general_info<Number>(pcout, mpi_comm, is_test);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::setup()
+Driver<dim, Number>::setup()
 {
   dealii::Timer timer;
   timer.restart();
@@ -154,7 +154,7 @@ Driver<dim, n_components, Number>::setup()
   // initialize convection-diffusion operator
   for(unsigned int i = 0; i < n_scalars; ++i)
   {
-    scalar_operator[i] = std::make_shared<ConvDiff::Operator<dim, n_components, Number>>(
+    scalar_operator[i] = std::make_shared<ConvDiff::Operator<dim, Number>>(
       grid,
       dynamic_mapping,
       ale ? ale_multigrid_mappings : multigrid_mappings,
@@ -190,15 +190,40 @@ Driver<dim, n_components, Number>::setup()
         "Parameter use_cell_based_face_loops should be the same for fluid and scalar transport."));
   }
   
-  // 1. Detect if RANS is active before setting up the fluid operator
-  for(unsigned int i = 0; i < application->scalars.size(); ++i)
+  // Find the RANS scalar (the scalar with an active turbulence model, all its variables, e.g. k
+  // and omega, are the blocks of one BlockVector). It has to be known before the fluid operator
+  // is set up. Only one RANS scalar is allowed.
+  for(unsigned int i = 0; i < n_scalars; ++i)
   {
     if(application->scalars[i]->get_parameters().turbulence_model_data.is_active)
     {
-      rans_enabled = true;
+      AssertThrow(not rans_enabled,
+                  dealii::ExcMessage("Only one scalar can solve the turbulence model."));
+
+      rans_enabled      = true;
       rans_scalar_index = i;
-      break;
     }
+  }
+
+  if(application->fluid->get_parameters().boussinesq_term)
+  {
+    // scalar 0 is the temperature: a single transport variable, not the RANS scalar
+    AssertThrow(n_scalars > 0,
+                dealii::ExcMessage("Boussinesq term: the temperature (scalar 0) is missing."));
+    AssertThrow(not(rans_enabled and rans_scalar_index == 0),
+                dealii::ExcMessage("Boussinesq term: scalar 0 is the temperature, the "
+                                   "turbulence model has to be solved by another scalar."));
+    AssertThrow(application->scalars[0]->get_parameters().number_of_transport_variables == 1,
+                dealii::ExcMessage("Boussinesq term: the temperature (scalar 0) has to be a "
+                                   "single transport variable."));
+  }
+
+  if(rans_enabled)
+  {
+    AssertThrow(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
+                  ConvDiff::TemporalDiscretization::BDF,
+                dealii::ExcMessage("Turbulence model: use TemporalDiscretization::BDF for the "
+                                   "RANS scalar."));
   }
 
   // setup Navier-Stokes operator
@@ -245,6 +270,16 @@ Driver<dim, n_components, Number>::setup()
     // assume that the first scalar quantity with index 0 is the active scalar coupled to the
     // incompressible Navier-Stokes equations via the Boussinesq term
     scalar_operator[0]->initialize_dof_vector(temperature);
+  }
+
+  // Initialize DoF-vectors of the RANS -> fluid coupling (eddy viscosity and turbulent kinetic
+  // energy, both live on the eddy viscosity DoFHandler of the RANS scalar)
+  if(rans_enabled)
+  {
+    scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(eddy_viscosity);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      turbulent_kinetic_energy);
   }
 
   // setup postprocessor
@@ -310,7 +345,7 @@ Driver<dim, n_components, Number>::setup()
   {
     // initialize time integrator
     scalar_time_integrator[i] =
-      ConvDiff::create_time_integrator<dim, n_components, Number>(scalar_operator[i],
+      ConvDiff::create_time_integrator<dim, Number>(scalar_operator[i],
                                                     helpers_ale,
                                                     scalar_postprocessor[i],
                                                     application->scalars[i]->get_parameters(),
@@ -329,13 +364,6 @@ Driver<dim, n_components, Number>::setup()
     scalar_time_integrator[i]->setup(
       application->scalars[i]->get_parameters().restarted_simulation);
 
-    if(application->scalars[i]->get_parameters().turbulence_model_data.is_active)
-    {
-      rans_enabled = true;
-      rans_scalar_index = i;
-      break;
-    }
-
     AssertThrow(application->scalars[i]->get_parameters().analytical_velocity_field == false,
                 dealii::ExcMessage(
                   "An analytical velocity field can not be used for this coupled solver."));
@@ -350,9 +378,9 @@ Driver<dim, n_components, Number>::setup()
   timer_tree.insert({"Flow + transport", "Setup"}, timer.wall_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::set_start_time() const
+Driver<dim, Number>::set_start_time() const
 {
   double time = std::numeric_limits<double>::max();
 
@@ -378,9 +406,9 @@ Driver<dim, n_components, Number>::set_start_time() const
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::synchronize_time_step_size() const
+Driver<dim, Number>::synchronize_time_step_size() const
 {
   double const EPSILON = 1.e-10;
 
@@ -448,9 +476,9 @@ Driver<dim, n_components, Number>::synchronize_time_step_size() const
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::communicate_scalar_to_fluid() const
+Driver<dim, Number>::communicate_scalar_to_fluid() const
 {
   // We need to communicate between fluid solver and scalar transport solver, i.e., ask the
   // scalar transport solver (scalar 0 by definition) for the temperature and hand it over to the
@@ -469,8 +497,8 @@ Driver<dim, n_components, Number>::communicate_scalar_to_fluid() const
     else if(application->scalars[0]->get_parameters().temporal_discretization ==
             ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[0]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[0]);
       time_int_scalar->extrapolate_solution(temperature);
     }
     else
@@ -478,13 +506,13 @@ Driver<dim, n_components, Number>::communicate_scalar_to_fluid() const
       AssertThrow(false, dealii::ExcMessage("Not implemented."));
     }
 
-    fluid_operator->set_temperature(temperature);
+    fluid_operator->set_temperature(temperature.block(0));
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
+Driver<dim, Number>::communicate_fluid_to_all_scalars() const
 {
   // We need to communicate between fluid solver and scalar transport solver, i.e., ask the
   // fluid solver for the velocity field and hand it over to all scalar transport solvers.
@@ -526,8 +554,8 @@ Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
     else if(application->scalars[i]->get_parameters().temporal_discretization ==
             ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_scalar =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
       time_int_scalar->set_velocities_and_times(velocities, times);
     }
     else
@@ -537,48 +565,38 @@ Driver<dim, n_components, Number>::communicate_fluid_to_all_scalars() const
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::communicate_eddy_viscosity_to_fluid() const
+Driver<dim, Number>::communicate_eddy_viscosity_to_fluid() const
 {
-if(rans_enabled) 
+  // We need to communicate between the RANS scalar and the fluid solver: the RANS solution
+  // (all blocks, e.g. k and omega) is extrapolated to t_{n+1}, the time of the fluid solve. From
+  // it, the eddy viscosity and the turbulent kinetic energy are computed and handed over to the
+  // fluid solver. Nothing else of the turbulence model is needed by the fluid solver.
+  if(rans_enabled)
   {
-    VectorType rans_solution_extrapolated;
-    scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
+    // BDF only (checked in setup())
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_scalar =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(
+        scalar_time_integrator[rans_scalar_index]);
+    time_int_scalar->extrapolate_solution(rans_solution_extrapolated);
 
-    if(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
-       ConvDiff::TemporalDiscretization::ExplRK)
-    {
-      std::shared_ptr<ConvDiff::TimeIntExplRK<Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntExplRK<Number>>(scalar_time_integrator[rans_scalar_index]);
-      time_int_scalar->extrapolate_solution(rans_solution_extrapolated);
-    }
-    else if(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
-            ConvDiff::TemporalDiscretization::BDF)
-    {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_scalar =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[rans_scalar_index]);
-      time_int_scalar->extrapolate_solution(rans_solution_extrapolated);
-    }
-
+    // The stored nodal eddy viscosity of the RANS scalar is only used for this coupling and
+    // postprocessing. The RANS time integrator recomputes it from Q^n in its own time step.
     scalar_operator[rans_scalar_index]->update_eddy_viscosity(rans_solution_extrapolated);
-
-    VectorType eddy_viscosity;
-    matrix_free->initialize_dof_vector(eddy_viscosity, scalar_operator[rans_scalar_index]->get_dof_index_eddy_viscosity());
     scalar_operator[rans_scalar_index]->get_eddy_viscosity(eddy_viscosity);
 
-    VectorType tke;
-    matrix_free->initialize_dof_vector(tke, scalar_operator[rans_scalar_index]->get_dof_index_eddy_viscosity());
-    scalar_operator[rans_scalar_index]->get_turbulent_kinetic_energy(tke, rans_solution_extrapolated);
+    scalar_operator[rans_scalar_index]->get_turbulent_kinetic_energy(turbulent_kinetic_energy,
+                                                                     rans_solution_extrapolated);
 
     fluid_operator->set_eddy_viscosity(eddy_viscosity);
-    fluid_operator->set_turbulent_kinetic_energy(tke);
+    fluid_operator->set_turbulent_kinetic_energy(turbulent_kinetic_energy);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::ale_update() const
+Driver<dim, Number>::ale_update() const
 {
   dealii::Timer timer;
   timer.restart();
@@ -598,8 +616,8 @@ Driver<dim, n_components, Number>::ale_update() const
   fluid_time_integrator->ale_update();
   for(unsigned int i = 0; i < application->scalars.size(); ++i)
   {
-    std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_int_bdf =
-      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_bdf =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
     time_int_bdf->ale_update();
   }
   timer_tree.insert({"Flow + transport", "ALE", "Update all time integrators"},
@@ -608,9 +626,9 @@ Driver<dim, n_components, Number>::ale_update() const
   timer_tree.insert({"Flow + transport", "ALE"}, timer.wall_time());
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::solve() const
+Driver<dim, Number>::solve() const
 {
   set_start_time();
 
@@ -693,9 +711,9 @@ Driver<dim, n_components, Number>::solve() const
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-Driver<dim, n_components, Number>::print_performance_results(double const total_time) const
+Driver<dim, Number>::print_performance_results(double const total_time) const
 {
   this->pcout << std::endl
               << "_________________________________________________________________________________"
@@ -732,8 +750,8 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
     if(application->scalars[i]->get_parameters().temporal_discretization ==
        ConvDiff::TemporalDiscretization::BDF)
     {
-      std::shared_ptr<ConvDiff::TimeIntBDF<dim, n_components, Number>> time_integrator_bdf =
-        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, n_components, Number>>(scalar_time_integrator[i]);
+      std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_integrator_bdf =
+        std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
       time_integrator_bdf->print_iterations();
     }
     else if(application->scalars[i]->get_parameters().temporal_discretization ==
@@ -782,7 +800,8 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
 
   for(unsigned int i = 0; i < application->scalars.size(); ++i)
   {
-    DoFs += this->scalar_operator[i]->get_number_of_dofs();
+    DoFs += this->scalar_operator[i]->get_number_of_dofs() *
+            this->scalar_operator[i]->get_n_blocks();
   }
 
   unsigned int const N_mpi_processes = dealii::Utilities::MPI::n_mpi_processes(mpi_comm);
@@ -801,17 +820,11 @@ Driver<dim, n_components, Number>::print_performance_results(double const total_
               << std::endl;
 }
 
-template class Driver<2, 1, float>;
-template class Driver<3, 1, float>;
+template class Driver<2, float>;
+template class Driver<3, float>;
 
-template class Driver<2, 1, double>;
-template class Driver<3, 1, double>;
-
-template class Driver<2, 2, float>;
-template class Driver<3, 2, float>;
-
-template class Driver<2, 2, double>;
-template class Driver<3, 2, double>;
+template class Driver<2, double>;
+template class Driver<3, double>;
 
 } // namespace FTI
 } // namespace ExaDG

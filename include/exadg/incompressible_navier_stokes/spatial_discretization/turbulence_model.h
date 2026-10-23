@@ -108,6 +108,22 @@ public:
   void
   get_eddy_viscosity(VectorType & dst) const;
 
+  /**
+   *  This function adds the turbulent eddy-viscosity to the laminar viscosity
+   *  by using one of the implemented models.
+   */
+  void
+  add_turbulent_viscosity(scalar &       viscosity,
+                          scalar const & filter_width,
+                          tensor const & velocity_gradient,
+                          double const & model_constant) const;
+
+  TurbulenceModelData const &
+  get_turbulence_model_data() const
+  {
+    return turbulence_model_data;
+  }
+
   unsigned int dof_index_scalar;
 private:
   void
@@ -145,16 +161,6 @@ private:
                                            VectorType &,
                                            VectorType const & src,
                                            Range const &      face_range) const;
-
-  /**
-   *  This function adds the turbulent eddy-viscosity to the laminar viscosity
-   *  by using one of the implemented models.
-   */
-  void
-  add_turbulent_viscosity(scalar &       viscosity,
-                          scalar const & filter_width,
-                          tensor const & velocity_gradient,
-                          double const & model_constant) const;
 
   /**
    *  Smagorinsky model (1963):

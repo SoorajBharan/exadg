@@ -98,7 +98,9 @@ public:
   }
 
 private:
-  // dst_bar == nullptr: U_bar rows are not written (they come from ProjectionOperator)
+  // One pass with u_h = U_bar + psi U_tilde: dst_tilde gets the psi v_tilde rows  of u_h,
+  // *dst_bar (not nullptr) the v_bar rows of psi U_tilde only (K_bar_tilde   U_tilde);
+  // K_bar_bar U_bar is produced by ProjectionOperator.
   void
   cell_loop(VectorType const & src_bar,
             VectorType const & src_tilde,
@@ -124,6 +126,8 @@ private:
   // per cell batch of matrix_free_en (incl. ghost batches)
   dealii::AlignedVector<scalar> tau_divergence;
   dealii::AlignedVector<scalar> tau_continuity;
+  mutable VectorType u_bar;
+  mutable VectorType correction_bar;
 };
 
 } // namespace IncNS

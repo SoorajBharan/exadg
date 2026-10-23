@@ -585,6 +585,17 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
 
     AssertThrow(enrichment_quadrature_points > 0,
                 dealii::ExcMessage("enrichment_quadrature_points must be positive."));
+    if(viscosity_is_variable())
+    {
+      AssertThrow(not generalized_newtonian_model_data.is_active,
+                  dealii::ExcMessage("Wall enrichment: generalized Newtonian model not implemented."));
+      AssertThrow(not turbulence_model_data.rans_model,
+                  dealii::ExcMessage("Wall enrichment: RANS eddy viscosity not implemented yet."));
+      AssertThrow(treatment_of_variable_viscosity == TreatmentOfVariableViscosity::Explicit,
+                  dealii::ExcMessage("Wall enrichment: only the explicit treatment of the variable viscosity is implemented."));
+      AssertThrow(wall_shear_stress_computation ==  WallShearStressComputation::VelocityGradient,
+                  dealii::ExcMessage("Wall enrichment with variable viscosity requires WallShearStressComputation::VelocityGradient."));
+    }
   }
 }
 

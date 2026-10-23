@@ -748,7 +748,7 @@ OperatorCoupled<dim, Number>::setup_pressure_convection_diffusion_operator()
   operator_data.convective_kernel_data = convective_kernel_data;
   operator_data.diffusive_kernel_data  = diffusive_kernel_data;
 
-  pressure_conv_diff_operator = std::make_shared<ConvDiff::CombinedOperator<dim, 1, Number>>();
+  pressure_conv_diff_operator = std::make_shared<ConvDiff::CombinedOperator<dim, Number>>();
   pressure_conv_diff_operator->initialize(this->get_matrix_free(),
                                           this->get_constraint_p(),
                                           operator_data);
@@ -1270,25 +1270,19 @@ void
 OperatorCoupled<dim, Number>::setup_wall_enrichment_coupled()
 {
   AssertThrow(this->unsteady_problem_has_to_be_solved(),
-              dealii::ExcMessage("Coupled solver with wall enrichment: only unsteady problems "
-                                 "are implemented."));
+              dealii::ExcMessage("Coupled solver with wall enrichment: only unsteady problems are implemented."));
   AssertThrow(not this->param.ale_formulation,
               dealii::ExcMessage("Coupled solver with wall enrichment: ALE not implemented."));
-  AssertThrow(this->param.viscous_problem() and not this->param.viscosity_is_variable(),
-              dealii::ExcMessage("Coupled solver with wall enrichment: only a constant viscosity "
-                                 "is implemented."));
+
+  AssertThrow(this->param.viscous_problem(),
+              dealii::ExcMessage("Coupled solver with wall enrichment: viscous problem required."));
   AssertThrow(this->param.apply_penalty_terms_in_postprocessing_step or
                 (not this->param.use_divergence_penalty and not this->param.use_continuity_penalty),
-              dealii::ExcMessage("Coupled solver with wall enrichment: penalty terms inside the "
-                                 "coupled system are not implemented (use "
-                                 "apply_penalty_terms_in_postprocessing_step)."));
+              dealii::ExcMessage("Coupled solver with wall enrichment: penalty terms inside the coupled system are not implemented (use apply_penalty_terms_in_postprocessing_step)."));
   AssertThrow(not(this->param.use_continuity_penalty and
                   this->param.continuity_penalty_use_boundary_data),
-              dealii::ExcMessage("Coupled solver with wall enrichment: continuity penalty with "
-                                 "boundary data is not implemented."));
-  AssertThrow(this->param.preconditioner_coupled != PreconditionerCoupled::None or
-                this->param.solver_coupled == SolverCoupled::GMRES or
-                this->param.solver_coupled == SolverCoupled::FGMRES,
+              dealii::ExcMessage("Coupled solver with wall enrichment: continuity penalty with boundary data is not implemented."));
+  AssertThrow(this->param.preconditioner_coupled != PreconditionerCoupled::None or this->param.solver_coupled == SolverCoupled::GMRES or this->param.solver_coupled == SolverCoupled::FGMRES,
               dealii::ExcMessage("Coupled solver with wall enrichment: unsupported solver."));
 
   // mass + viscous operator for the U_bar rows: same data and kernels as momentum_operator,

@@ -31,15 +31,15 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
-LinePlotCalculator<dim, n_components, Number>::LinePlotCalculator(MPI_Comm const & comm)
+template<int dim, typename Number>
+LinePlotCalculator<dim, Number>::LinePlotCalculator(MPI_Comm const & comm)
   : mpi_comm(comm), clear_files(true)
 {
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-LinePlotCalculator<dim, n_components, Number>::setup(dealii::DoFHandler<dim> const & dof_handler_in,
+LinePlotCalculator<dim, Number>::setup(dealii::DoFHandler<dim> const & dof_handler_in,
                                                      dealii::DoFHandler<dim> const & dof_handler_eddy_viscosity_in,
                                                      dealii::Mapping<dim> const &    mapping_in,
                                                      LinePlotData<dim> const &       line_plot_data_in)
@@ -55,10 +55,11 @@ LinePlotCalculator<dim, n_components, Number>::setup(dealii::DoFHandler<dim> con
     create_directories(line_plot_data_in.directory, mpi_comm);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-LinePlotCalculator<dim, n_components, Number>::evaluate(VectorType const & solution,
-                                                        VectorType const & eddy_viscosity) const
+LinePlotCalculator<dim, Number>::evaluate(
+  BlockVectorType const & solution,
+  VectorType const & eddy_viscosity) const
 {
   // precision
   unsigned int const precision = data.precision;
@@ -88,15 +89,21 @@ LinePlotCalculator<dim, n_components, Number>::evaluate(VectorType const & solut
     {
       if((*quantity)->type == QuantityType::RANSTransportVariables)
       {
-        std::vector<dealii::Tensor<1, n_components, Number>> solution_vector(n_points);
+        unsigned int const n_blocks = solution.n_blocks();
 
-        // calculate velocity for all points along line
+        std::vector<std::vector<Number>> solution_vector(n_points,
+                                                         std::vector<Number>(n_blocks));
+
         for(unsigned int i = 0; i < n_points; ++i)
         {
-          dealii::Tensor<1, n_components, Number> sol;
-          evaluate_vectorial_quantity_in_point(
-            sol, *dof_handler, *mapping, solution, points[i], mpi_comm);
-          solution_vector[i] = sol;
+          for(unsigned int b = 0; b < n_blocks; ++b)
+          {
+            Number value;
+            evaluate_scalar_quantity_in_point(
+              value, *dof_handler, *mapping, solution.block(b), points[i],
+              mpi_comm);    
+            solution_vector[i][b] = value;
+          }
         }
 
         // write output to file
@@ -118,9 +125,11 @@ LinePlotCalculator<dim, n_components, Number>::evaluate(VectorType const & solut
           for(unsigned int d = 0; d < dim; ++d)
             f << std::setw(precision + 8) << std::left
               << "x_" + dealii::Utilities::int_to_string(d + 1);
-          for(unsigned int c = 0; c < n_components; ++c)
+
+          for(unsigned int b = 0; b < n_blocks; ++b)
             f << std::setw(precision + 8) << std::left
-              << "scalar_" + dealii::Utilities::int_to_string(c + 1);
+              << "scalar_" + dealii::Utilities::int_to_string(b + 1);
+
           f << std::endl;
 
           // loop over all points
@@ -131,8 +140,10 @@ LinePlotCalculator<dim, n_components, Number>::evaluate(VectorType const & solut
             // write data
             for(unsigned int d = 0; d < dim; ++d)
               f << std::setw(precision + 8) << std::left << points[i][d];
-            for(unsigned int c = 0; c < n_components; ++c)
-              f << std::setw(precision + 8) << std::left << solution_vector[i][c];
+
+            for(unsigned int b = 0; b < n_blocks; ++b)
+              f << std::setw(precision + 8) << std::left << solution_vector[i][b];
+
             f << std::endl;
           }
           f.close();
@@ -190,15 +201,10 @@ LinePlotCalculator<dim, n_components, Number>::evaluate(VectorType const & solut
     } // loop over quantities
   }   // loop over lines
 }
-template class LinePlotCalculator<2, 1, float>;
-template class LinePlotCalculator<2, 1, double>;
-template class LinePlotCalculator<3, 1, float>;
-template class LinePlotCalculator<3, 1, double>;
-
-template class LinePlotCalculator<2, 2, float>;
-template class LinePlotCalculator<2, 2, double>;
-template class LinePlotCalculator<3, 2, float>;
-template class LinePlotCalculator<3, 2, double>;
+template class LinePlotCalculator<2, float>;
+template class LinePlotCalculator<2, double>;
+template class LinePlotCalculator<3, float>;
+template class LinePlotCalculator<3, double>;
 
 } // namespace IncNS
 } // namespace ExaDG

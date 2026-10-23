@@ -25,6 +25,7 @@
 // deal.II
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/convection_diffusion/postprocessor/line_plot_data.h>
@@ -42,11 +43,12 @@ namespace ConvDiff
  *
  *   - no statistical averaging, instantaneous quantities are calculated
  */
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class LinePlotCalculator
 {
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 
   LinePlotCalculator(MPI_Comm const & comm);
 
@@ -57,7 +59,7 @@ public:
         LinePlotData<dim> const &       line_plot_data_in);
 
   void
-  evaluate(VectorType const & solution,
+  evaluate(BlockVectorType const & solution,
            VectorType const & eddy_viscosity) const;
 
   TimeControl time_control;

@@ -30,6 +30,17 @@
 #include <exadg/time_integration/resolution_parameters.h>
 #include <exadg/utilities/general_parameters.h>
 
+// deal.II
+#include <deal.II/base/multithread_info.h>
+
+// system
+#include <dlfcn.h>
+
+// C++
+#include <cstdint>
+#include <iostream>
+#include <string>
+
 // application
 #include <exadg/incompressible_navier_stokes/user_interface/declare_get_application.h>
 
@@ -88,6 +99,33 @@ run(std::string const & input_file,
     driver->print_performance_results(timer.wall_time());
 }
 
+inline void
+limit_blas_threads_to_deal_ii_threads(MPI_Comm const & mpi_comm)
+{
+  int const n_threads = static_cast<int>(dealii::MultithreadInfo::n_threads());
+
+  std::string library = "none found, unchanged";
+
+  if(auto const openblas_set = reinterpret_cast<void (*)(int)>(dlsym(RTLD_DEFAULT, "openblas_set_num_threads")))
+  {
+    openblas_set(n_threads);
+    library = "OpenBLAS";
+  }
+  else if(auto const mkl_set = reinterpret_cast<void (*)(int)>(dlsym(RTLD_DEFAULT, "MKL_Set_Num_Threads")))
+  {
+    mkl_set(n_threads);
+    library = "Intel MKL";
+  }
+  else if(auto const blis_set = reinterpret_cast<void (*)(std::int64_t)>(dlsym(RTLD_DEFAULT, "bli_thread_set_num_threads")))
+  {
+    blis_set(n_threads);
+    library = "BLIS";
+  }
+
+  if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    std::cout << std::endl << "BLAS/LAPACK threads per MPI rank: " << n_threads << " (" << library << ")" << std::endl;
+}
+
 } // namespace ExaDG
 
 //#define USE_SUB_COMMUNICATOR
@@ -96,6 +134,8 @@ int
 main(int argc, char ** argv)
 {
   dealii::Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
+
+  ExaDG::limit_blas_threads_to_deal_ii_threads(MPI_COMM_WORLD);
 
   MPI_Comm mpi_comm(MPI_COMM_WORLD);
 

@@ -31,48 +31,6 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template <int dim, int n_components, typename Number>
-struct BCEvaluator
-{
-using value_type = typename FaceIntegrator<dim, n_components, Number>::value_type;
-
-  static value_type
-  evaluate(dealii::Function<dim> const & function,
-           dealii::Point<dim, dealii::VectorizedArray<Number>> const & q_points,
-           double const time)
-  {
-    const_cast<dealii::Function<dim>&>(function).set_time(time);
-
-    value_type result;
-    for(unsigned int c = 0; c < n_components; ++c)
-    {
-      for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
-      {
-        dealii::Point<dim> p;
-        for(unsigned int d = 0; d < dim; ++d)
-          p[d] = q_points[d][v];
-
-        result[c][v] = function.value(p, c);
-      }
-    }
-    return result;
-  }
-};
-
-// Fast specialization for single-component scalar systems
-template <int dim, typename Number>
-struct BCEvaluator<dim, 1, Number>
-{
-  using value_type = typename FaceIntegrator<dim, 1, Number>::value_type;
-
-  static value_type
-  evaluate(dealii::Function<dim> const & function,
-           dealii::Point<dim, dealii::VectorizedArray<Number>> const & q_points,
-           double const time)
-  {
-    return FunctionEvaluator<0, dim, Number>::value(const_cast<dealii::Function<dim>&>(function), q_points, time);
-  }
-};
 /*
  *  The following two functions calculate the interior_value/exterior_value
  *  depending on the operator type, the type of the boundary face
@@ -88,15 +46,14 @@ struct BCEvaluator<dim, 1, Number>
  *  | inhomogeneous operator  | phi⁻ = 0, phi⁺ = 2g  | phi⁻ = 0, phi⁺ = 0 |
  *  +-------------------------+----------------------+--------------------+
  */
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 inline DEAL_II_ALWAYS_INLINE //
-  typename FaceIntegrator<dim, n_components, Number>::value_type
+dealii::VectorizedArray<Number>
   calculate_interior_value(unsigned int const                     q,
-                           FaceIntegrator<dim, n_components, Number> const & integrator,
+                           FaceIntegrator<dim, 1, Number> const & integrator,
                            OperatorType const &                   operator_type)
 {
-  using value_type = typename FaceIntegrator<dim, n_components, Number>::value_type;
-  value_type value_m{};
+  dealii::VectorizedArray<Number> value_m = dealii::make_vectorized_array<Number>(0.0);
 
   if(operator_type == OperatorType::full or operator_type == OperatorType::homogeneous)
   {
@@ -114,20 +71,19 @@ inline DEAL_II_ALWAYS_INLINE //
   return value_m;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 inline DEAL_II_ALWAYS_INLINE //
-  typename FaceIntegrator<dim, n_components, Number>::value_type
-  calculate_exterior_value(typename FaceIntegrator<dim, n_components, Number>::value_type const &        value_m,
+dealii::VectorizedArray<Number>
+  calculate_exterior_value(dealii::VectorizedArray<Number> const &        value_m,
                            unsigned int const                             q,
-                           FaceIntegrator<dim, n_components, Number> const &         integrator,
+                           FaceIntegrator<dim, 1, Number> const &         integrator,
                            OperatorType const &                           operator_type,
                            BoundaryType const &                           boundary_type,
                            dealii::types::boundary_id const               boundary_id,
                            std::shared_ptr<BoundaryDescriptor<dim> const> boundary_descriptor,
                            double const &                                 time)
 {
-  using value_type = typename FaceIntegrator<dim, n_components, Number>::value_type;
-  value_type value_p{};
+  dealii::VectorizedArray<Number> value_p = dealii::make_vectorized_array<Number>(0.0);
 
   if(boundary_type == BoundaryType::Dirichlet)
   {
@@ -136,8 +92,7 @@ inline DEAL_II_ALWAYS_INLINE //
       auto bc       = boundary_descriptor->dirichlet_bc.find(boundary_id)->second;
       auto q_points = integrator.quadrature_point(q);
 
-      // auto g = FunctionEvaluator<(n_components > 1 ? 1 : 0), dim, Number>::value(*bc, q_points, time);
-      auto g = BCEvaluator<dim, n_components, Number>::evaluate(*bc, q_points, time);
+      auto g = FunctionEvaluator<0, dim, Number>::value(*bc, q_points, time);
 
       value_p = -value_m + g * 2.0;
     }
@@ -153,29 +108,6 @@ inline DEAL_II_ALWAYS_INLINE //
   else if(boundary_type == BoundaryType::Neumann)
   {
     value_p = value_m;
-  }
-  else if(boundary_type == BoundaryType::Mixed)
-  {
-    auto const & mixed_data = boundary_descriptor->mixed_bc.find(boundary_id)->second;
-    auto q_points = integrator.quadrature_point(q);
-
-    // Evaluate the n-component function once for all components
-    auto g_mixed = BCEvaluator<dim, n_components, Number>::evaluate(*(mixed_data.function), q_points, time);
-
-    for(unsigned int c = 0; c < n_components; ++c)
-    {
-      if(mixed_data.component_bc_type[c] == BoundaryType::Dirichlet)
-      {
-        if(operator_type == OperatorType::full || operator_type == OperatorType::inhomogeneous)
-          value_p[c] = -value_m[c] + g_mixed[c] * 2.0;
-        else if(operator_type == OperatorType::homogeneous)
-          value_p[c] = -value_m[c];
-      }
-      else if(mixed_data.component_bc_type[c] == BoundaryType::Neumann)
-      {
-        value_p[c] = value_m[c];
-      }
-    }
   }
   else
   {
@@ -212,17 +144,14 @@ inline DEAL_II_ALWAYS_INLINE //
    *  +-------------------------+-----------------------------------------------+------------------------------------------------------+
    */
 // clang-format on
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 inline DEAL_II_ALWAYS_INLINE //
-  typename FaceIntegrator<dim, n_components, Number>::value_type
+dealii::VectorizedArray<Number>
   calculate_interior_normal_gradient(unsigned int const                     q,
-                                     FaceIntegrator<dim, n_components, Number> const & integrator,
+                                     FaceIntegrator<dim, 1, Number> const & integrator,
                                      OperatorType const &                   operator_type)
 {
-  using value_type = typename FaceIntegrator<dim, n_components, Number>::value_type;
-  value_type value_p{};
-
-  value_type normal_gradient_m = value_p;
+  dealii::VectorizedArray<Number> normal_gradient_m = dealii::make_vectorized_array<Number>(0.0);
 
   if(operator_type == OperatorType::full or operator_type == OperatorType::homogeneous)
   {
@@ -240,21 +169,20 @@ inline DEAL_II_ALWAYS_INLINE //
   return normal_gradient_m;
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 inline DEAL_II_ALWAYS_INLINE //
-  typename FaceIntegrator<dim, n_components, Number>::value_type
+dealii::VectorizedArray<Number>
   calculate_exterior_normal_gradient(
-    typename FaceIntegrator<dim, n_components, Number>::value_type const &        normal_gradient_m,
+    dealii::VectorizedArray<Number> const &        normal_gradient_m,
     unsigned int const                             q,
-    FaceIntegrator<dim, n_components, Number> const &         integrator,
+    FaceIntegrator<dim, 1, Number> const &         integrator,
     OperatorType const &                           operator_type,
     BoundaryType const &                           boundary_type,
     dealii::types::boundary_id const               boundary_id,
     std::shared_ptr<BoundaryDescriptor<dim> const> boundary_descriptor,
     double const &                                 time)
 {
-  using value_type = typename FaceIntegrator<dim, n_components, Number>::value_type;
-  value_type normal_gradient_p{};
+  dealii::VectorizedArray<Number> normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
   if(boundary_type == BoundaryType::Dirichlet)
   {
@@ -267,8 +195,7 @@ inline DEAL_II_ALWAYS_INLINE //
       auto bc       = boundary_descriptor->neumann_bc.find(boundary_id)->second;
       auto q_points = integrator.quadrature_point(q);
 
-      // auto h = FunctionEvaluator<(n_components > 1 ? 1 : 0), dim, Number>::value(*bc, q_points, time);
-      auto h = BCEvaluator<dim, n_components, Number>::evaluate(*bc, q_points, time);
+      auto h = FunctionEvaluator<0, dim, Number>::value(*bc, q_points, time);
 
       normal_gradient_p = -normal_gradient_m + h * 2.0;
     }
@@ -279,29 +206,6 @@ inline DEAL_II_ALWAYS_INLINE //
     else
     {
       AssertThrow(false, dealii::ExcMessage("Specified OperatorType is not implemented!"));
-    }
-  }
-  else if(boundary_type == BoundaryType::Mixed)
-  {
-    auto const & mixed_data = boundary_descriptor->mixed_bc.find(boundary_id)->second;
-    auto q_points = integrator.quadrature_point(q);
-
-    // Evaluate the n-component function once for all components
-    auto h_mixed = BCEvaluator<dim, n_components, Number>::evaluate(*(mixed_data.function), q_points, time);
-
-    for(unsigned int c = 0; c < n_components; ++c)
-    {
-      if(mixed_data.component_bc_type[c] == BoundaryType::Dirichlet)
-      {
-        normal_gradient_p[c] = normal_gradient_m[c];
-      }
-      else if(mixed_data.component_bc_type[c] == BoundaryType::Neumann)
-      {
-        if(operator_type == OperatorType::full || operator_type == OperatorType::inhomogeneous)
-          normal_gradient_p[c] = -normal_gradient_m[c] + h_mixed[c] * 2.0;
-        else if(operator_type == OperatorType::homogeneous)
-          normal_gradient_p[c] = -normal_gradient_m[c];
-      }
     }
   }
   else

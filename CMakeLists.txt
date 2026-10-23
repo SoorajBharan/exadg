@@ -120,7 +120,9 @@ SET(TARGET_SRC
      include/exadg/convection_diffusion/spatial_discretization/turbulence_model.cpp
      include/exadg/convection_diffusion/preconditioners/multigrid_preconditioner.cpp
      include/exadg/convection_diffusion/time_integration/time_int_bdf.cpp
+     include/exadg/convection_diffusion/time_integration/time_int_bdf_newton.cpp
      include/exadg/convection_diffusion/time_integration/time_int_explicit_runge_kutta.cpp
+     include/exadg/convection_diffusion/time_integration/time_int_explicit_runge_kutta_base.cpp
      include/exadg/convection_diffusion/time_integration/driver_steady_problems.cpp
      include/exadg/convection_diffusion/postprocessor/postprocessor.cpp
      include/exadg/convection_diffusion/postprocessor/output_generator.cpp
@@ -253,6 +255,17 @@ IF(${EXADG_WITH_LIKWID})
     TARGET_INCLUDE_DIRECTORIES(exadg PUBLIC ${LIKWID_INCLUDE})
     TARGET_LINK_LIBRARIES(exadg ${LIKWID})
 ENDIF()
+
+OPTION(EXADG_DEBUG "Enable debug output" OFF)
+IF(${EXADG_DEBUG})
+  TARGET_COMPILE_DEFINITIONS(exadg PUBLIC EXADG_DEBUG)
+ENDIF()
+
+
+  OPTION(EXADG_PROFILE "Print a per-step cost profile of the dual-splitting time integrator" OFF)
+  IF(${EXADG_PROFILE})
+    TARGET_COMPILE_DEFINITIONS(exadg PUBLIC EXADG_PROFILE)
+  ENDIF()
 
 # preCICE
 OPTION(EXADG_WITH_PRECICE "Use preCICE" OFF})

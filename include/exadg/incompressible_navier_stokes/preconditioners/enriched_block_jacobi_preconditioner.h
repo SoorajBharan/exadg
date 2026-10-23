@@ -38,7 +38,7 @@ class SpatialOperatorBase;
  *
  *   non-enriched cells: (1/s) M^{-1}
  *   enriched cells:     exact inverse of the local cell operator
- *                         A_K = s M_K + nu (grad u_h, grad v)_K + tau_K (div u_h, div v)_K
+ *                         A_K = s M_K + nu(x) (grad u_h, grad v)_K + tau_K (div u_h, div v)_K
  *                       on the local (U_bar, U_tilde) DoFs (face terms not included).
  *
  * Captures the stiff terms with grad(psi) cell by cell. SPD -> usable with CG.
@@ -57,7 +57,12 @@ public:
   typedef FEEnrichedEvaluation<dim, Number, CellIntegratorU> EnrichedCellIntegrator;
 
   EnrichedBlockJacobiPreconditioner()
-    : spatial_operator(nullptr), mass_factor(1.0), viscosity(0.0), n_local(0)
+    : spatial_operator(nullptr),
+    mass_factor(1.0),
+    viscosity(0.0),
+    n_local(0),
+    n_calls(0),
+    n_modes_dropped_at_update(dealii::numbers::invalid_unsigned_int)
   {
   }
 
@@ -69,7 +74,8 @@ public:
 
   // Assemble and invert the local operators. Call before every solve (psi changes every step).
   //   mass_factor_in    : s
-  //   viscosity_in      : nu (0 for the penalty step)
+  //   viscosity_in      : > 0: viscous term with nu(x) of the enriched viscous operator
+  //                       (constant or turbulence model), 0: no viscous term (penalty step)
   //   tau_divergence_in : per cell batch of matrix_free_en, ALREADY multiplied by dt (nullptr: none)
   void
   update(double const                          mass_factor_in,
@@ -102,7 +108,6 @@ public:
     n_local                    = n_bar + n_tilde;
 
     scalar const s  = dealii::make_vectorized_array<Number>(mass_factor);
-    scalar const nu = dealii::make_vectorized_array<Number>(viscosity);
     scalar const zero = dealii::make_vectorized_array<Number>(0.0);
     scalar const one  = dealii::make_vectorized_array<Number>(1.0);
 
@@ -136,6 +141,11 @@ public:
 
       std::vector<scalar> A(n_local * n_local, zero);
 
+      std::vector<scalar> nu_cell(phi.n_q_points, zero);
+      if(viscosity > 0.0)
+        for(unsigned int q = 0; q < phi.n_q_points; ++q)
+          nu_cell[q] = spatial_operator->get_enriched_momentum_operator().get_viscosity_cell(cell, q);
+
       // column j = local operator applied to unit DoF j
       for(unsigned int j = 0; j < n_local; ++j)
       {
@@ -153,7 +163,7 @@ public:
         for(unsigned int q = 0; q < phi.n_q_points; ++q)
         {
           vector const value_flux    = s * phi.get_value(q);
-          tensor       gradient_flux = nu * phi.get_gradient(q);
+          tensor       gradient_flux = nu_cell[q] * phi.get_gradient(q);
           if(tau_divergence_in != nullptr)
           {
             scalar const divergence = tau * phi.get_divergence(q);
@@ -250,6 +260,34 @@ public:
 
       local_inverse[cell] = invert(A, n_local);
     }
+  }
+
+  // Calls update() only every n_every-th time, or when the number of removed enrichment modes
+  // changed since the last assembly. Otherwise the local inverses on the enriched cells are
+  // reused and only the mass factor of the non-enriched cells is updated.
+  // All ranks take the same branch (n_calls and the mode count are global), which is required
+  // because update() contains collective MPI operations.
+  void
+  update_lazy(unsigned int const                    n_every,
+              double const                          mass_factor_in,
+              double const                          viscosity_in,
+              dealii::AlignedVector<scalar> const * tau_divergence_in,
+              VectorType const *                    free_bar = nullptr)
+  {
+    AssertThrow(n_every > 0, dealii::ExcMessage("n_every must be positive."));
+
+    unsigned int const n_dropped = spatial_operator->get_wall_dg_coupler()->get_n_modes_dropped();
+
+    if(n_calls % n_every == 0 or n_dropped != n_modes_dropped_at_update)
+    {
+      update(mass_factor_in, viscosity_in, tau_divergence_in, free_bar);
+      n_modes_dropped_at_update = n_dropped;
+    }
+    else {
+      mass_factor = mass_factor_in;
+    }
+
+    ++n_calls;
   }
 
   void
@@ -355,6 +393,8 @@ private:
   double                                   mass_factor;
   double                                   viscosity;
   unsigned int                             n_local;
+  unsigned int                             n_calls;
+  unsigned int                             n_modes_dropped_at_update;
 
   // per cell batch of matrix_free_en (empty for non-enriched batches), row-major n_local x n_local
   std::vector<std::vector<scalar>> local_inverse;

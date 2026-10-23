@@ -26,6 +26,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/mapping_q.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/matrix_free/matrix_free.h>
 
 // ExaDG
@@ -36,7 +37,7 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class Operator;
 
 template<typename Number>
@@ -44,22 +45,24 @@ class PostProcessorInterface
 {
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 
   virtual ~PostProcessorInterface()
   {
   }
 
   virtual void
-  do_postprocessing(VectorType const &     solution,
+  do_postprocessing(BlockVectorType const &     solution,
                     double const           time             = 0.0,
                     types::time_step const time_step_number = numbers::steady_timestep) = 0;
 };
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class PostProcessorBase : public PostProcessorInterface<Number>
 {
 protected:
   typedef typename PostProcessorInterface<Number>::VectorType VectorType;
+  typedef typename PostProcessorInterface<Number>::BlockVectorType BlockVectorType;
 
 public:
   virtual ~PostProcessorBase()
@@ -67,7 +70,7 @@ public:
   }
 
   virtual void
-  setup(Operator<dim, n_components, Number> const & pde_operator) = 0;
+  setup(Operator<dim, Number> const & pde_operator) = 0;
 
   /*
    * In the derived classes, one might need to take some actions after coarsening and refinement.

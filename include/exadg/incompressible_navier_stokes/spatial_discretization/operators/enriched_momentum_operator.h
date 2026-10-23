@@ -31,6 +31,9 @@
 #include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 #include <exadg/operators/wall_modelling/function_enrichment.h>
 
+#include <exadg/incompressible_navier_stokes/spatial_discretization/turbulence_model.h>
+#include <exadg/operators/variable_coefficients.h>
+
 namespace ExaDG
 {
 namespace IncNS
@@ -96,9 +99,31 @@ public:
   void
   rhs_add_boundary_data(VectorType & dst_bar, VectorType & dst_tilde, double const time) const;
 
+  void
+  initialize_variable_viscosity(dealii::Mapping<dim> const & mapping);
+
+  void
+  update_viscosity(VectorType const & velocity_total,
+                   TurbulenceModel<dim, Number> const & turbulence_model) const;
+
+  scalar
+  get_viscosity_cell(unsigned int const cell,
+                     unsigned int const q) const;
+
+  scalar
+  get_viscosity_boundary_face(unsigned int const face,
+                              unsigned int const q) const;
+
+  VectorType const &
+  get_cell_viscosity() const
+  {
+    return cell_viscosity;
+  }
+
 private:
-  // dst_bar == nullptr: U_bar rows are not written (used in the U_bar-only pass,
-  // where those rows are already produced by MomentumOperator).
+  // One pass with u_h = U_bar + psi U_tilde: dst_tilde gets the psi v_tilde rows  of u_h,
+  // *dst_bar (not nullptr) the v_bar rows of psi U_tilde only (K_bar_tilde   U_tilde);
+  // K_bar_bar U_bar is produced by MomentumOperator.
   void
   cell_loop(VectorType const & src_bar,
             VectorType const & src_tilde,
@@ -119,7 +144,14 @@ private:
 
   template<typename IntegratorM, typename IntegratorP>
   void
-  inner_face_flux(IntegratorM & phi_m, IntegratorP & phi_p, scalar const & tau) const;
+  inner_face_flux(IntegratorM & phi_m,
+                  IntegratorP & phi_p,
+                  scalar const & tau,
+                  unsigned int const face) const;
+
+  scalar
+  get_viscosity_interior_face(unsigned int const face,
+                              unsigned int const q) const;
 
   // overloads: plain side (halo) and enriched side
   void
@@ -177,6 +209,13 @@ private:
   Number                        penalty_factor;
 
   bool enrichment_aware_penalty;
+  bool viscosity_is_variable;
+  double                               viscosity;
+  mutable VariableCoefficients<scalar> viscosity_coefficients;
+
+  dealii::AlignedVector<scalar> filter_width;
+
+  mutable VectorType cell_viscosity;
 };
 
 } // namespace IncNS

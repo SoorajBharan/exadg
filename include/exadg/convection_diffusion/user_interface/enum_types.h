@@ -166,6 +166,19 @@ enum class TreatmentOfSourceTerm
 };
 
 /*
+ * Solution of the nonlinear system of the implicit BDF time step:
+ *
+ *   LinearlyImplicit: one linear solve per time step, linearized at the previous time step
+ *   Newton:           Newton iteration for the increment (Bassi et al. 2014, Eqs. 42-43)
+ */
+enum class NonlinearSolver
+{
+  Undefined,
+  LinearlyImplicit,
+  Newton
+};
+
+/*
  *  Temporal discretization method for OIF splitting:
  *
  *    Explicit Runge-Kutta methods

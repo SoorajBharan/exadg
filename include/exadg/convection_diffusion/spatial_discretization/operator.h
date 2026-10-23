@@ -43,16 +43,24 @@
 #include <exadg/operators/modal_filter.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 
+#include <exadg/convection_diffusion/user_interface/component_function.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
+#include <exadg/utilities/timer_tree.h>
+#include <exadg/convection_diffusion/preconditioners/block_preconditioner.h>
+
 namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class Operator : public dealii::Subscriptor, public Interface::Operator<Number>
 {
 private:
+  typedef Operator<dim, Number> This;
+
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
 public:
   /*
    * Constructor.
@@ -99,7 +107,7 @@ public:
    * Initialization of dof-vector.
    */
   void
-  initialize_dof_vector(VectorType & src) const final;
+  initialize_dof_vector(BlockVectorType & src) const final;
 
   void
   initialize_dof_vector_eddy_viscosity(VectorType & src) const;
@@ -126,7 +134,7 @@ public:
    * Prescribe initial conditions using a specified analytical function.
    */
   void
-  prescribe_initial_conditions(VectorType & src, double const evaluation_time) const final;
+  prescribe_initial_conditions(BlockVectorType & src, double const evaluation_time) const final;
 
   /*
    * This function is used in case of explicit time integration:
@@ -136,8 +144,8 @@ public:
    * finally applies the inverse mass operator.
    */
   void
-  evaluate_explicit_time_int(VectorType &       dst,
-                             VectorType const & src,
+  evaluate_explicit_time_int(BlockVectorType &       dst,
+                             BlockVectorType const & src,
                              double const       evaluation_time,
                              VectorType const * velocity = nullptr) const final;
 
@@ -146,8 +154,8 @@ public:
    * for the convective term.
    */
   void
-  evaluate_convective_term(VectorType &       dst,
-                           VectorType const & src,
+  evaluate_convective_term(BlockVectorType &       dst,
+                           BlockVectorType const & src,
                            double const       evaluation_time,
                            VectorType const * velocity = nullptr) const;
 
@@ -162,31 +170,68 @@ public:
    * side of the equations.
    */
   void
-  rhs(VectorType &       dst,
-      VectorType const & src,
+  rhs(BlockVectorType &       dst,
+      BlockVectorType const & src,
       double const       evaluation_time = 0.0,
       VectorType const * velocity        = nullptr) const final;
+
+  /*
+   * Turbulence terms of the linear system of the BDF time step for Q^{n+1} (linearly implicit,
+   * linearized at the previous time step Q^n): dst += Explicit(Q^n) + Newton_Explicit(Q^n) +
+   * J(Q^n) Q^n. time_n: time of the Dirichlet values of the explicit turbulent diffusion, time:
+   * t^{n+1}. J(Q^n) Q^{n+1} is applied in vmult().
+   */
+  void
+  rhs_add_turbulence(BlockVectorType &       dst,
+                     BlockVectorType const & solution_n,
+                     double const            time_n,
+                     double const            time,
+                     VectorType const *      velocity) const;
+
+  /*
+   * Newton solver: dst += right-hand side of the turbulence terms treated Explicit, at the previous
+   * time step solution_n. Call once per time step, before evaluate_add_turbulence_newton_explicit().
+   */
+  void
+  evaluate_add_turbulence_explicit(BlockVectorType &       dst,
+                                   BlockVectorType const & solution_n,
+                                   double const            time_n,
+                                   VectorType const *      velocity) const;
+
+  /*
+   * Newton solver: dst += right-hand side of the Newton_Explicit part of the turbulence terms
+   * treated Implicit, at solution (the Newton iterate). solution becomes the linearization point of
+   * vmult().
+   */
+  void
+  evaluate_add_turbulence_newton_explicit(BlockVectorType &       dst,
+                                          BlockVectorType const & solution,
+                                          double const            time,
+                                          VectorType const *      velocity) const;
 
   /*
    * This function applies the mass operator to the src-vector and writes the result to the
    * dst-vector.
    */
   void
-  apply_mass_operator(VectorType & dst, VectorType const & src) const;
+  apply_mass_operator(BlockVectorType & dst,
+                      BlockVectorType const & src) const;
 
   /*
    * This function applies the mass operator to the src-vector and adds the result to the
    * dst-vector.
    */
   void
-  apply_mass_operator_add(VectorType & dst, VectorType const & src) const;
+  apply_mass_operator_add(BlockVectorType & dst,
+                          BlockVectorType const & src) const;
 
   /*
    * This function applies the convective operator to the src-vector and writes the result to the
    * dst-vector. It is needed for throughput measurements of the matrix-free implementation.
    */
   void
-  apply_convective_term(VectorType & dst, VectorType const & src) const;
+  apply_convective_term(BlockVectorType & dst,
+                        BlockVectorType const & src) const;
 
   void
   update_convective_term(double const evaluation_time, VectorType const * velocity = nullptr) const;
@@ -196,7 +241,8 @@ public:
    * dst-vector. It is needed for throughput measurements of the matrix-free implementation.
    */
   void
-  apply_diffusive_term(VectorType & dst, VectorType const & src) const;
+  apply_diffusive_term(BlockVectorType & dst,
+                       BlockVectorType const & src) const;
 
   /*
    * This function applies the combined mass-convection-diffusion operator to the src-vector
@@ -204,7 +250,8 @@ public:
    * matrix-free implementation.
    */
   void
-  apply_conv_diff_operator(VectorType & dst, VectorType const & src) const;
+  apply_conv_diff_operator(BlockVectorType & dst,
+                           BlockVectorType const & src) const;
 
   void
   update_conv_diff_operator(double const       evaluation_time,
@@ -232,12 +279,22 @@ public:
    * operators).
    */
   unsigned int
-  solve(VectorType &       sol,
-        VectorType const & rhs,
+  solve(BlockVectorType &       sol,
+        BlockVectorType const & rhs,
         bool const         update_preconditioner,
         double const       scaling_factor = -1.0,
         double const       time           = -1.0,
         VectorType const * velocity       = nullptr) final;
+
+
+  unsigned int
+  get_n_blocks() const;
+
+  TurbulenceModelData const &
+  get_turbulence_model_data() const;
+
+  void
+  vmult(BlockVectorType & dst, BlockVectorType const & src) const;
 
   /*
    * Calculate time step size according to maximum efficiency criterion
@@ -302,7 +359,7 @@ public:
   get_constraints() const;
 
   void
-  update_eddy_viscosity(VectorType const & src,
+  update_eddy_viscosity(BlockVectorType const & src,
                         VectorType const * velocity = nullptr) const;
 
   void
@@ -318,7 +375,7 @@ public:
   get_dof_index_eddy_viscosity() const;
 
   void
-  get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
+  get_turbulent_kinetic_energy(VectorType & dst, BlockVectorType const & solution) const;
 
   void
   update_time_step_size(double const dt,
@@ -327,10 +384,10 @@ public:
                         double const time_step_number) const;
 
   void
-  apply_modal_filter(VectorType & solution) const;
+  apply_modal_filter(BlockVectorType & solution) const;
 
   void
-  enforce_positivity(VectorType & solution) const;
+  enforce_positivity(BlockVectorType & solution) const;
 
 private:
   void
@@ -422,12 +479,16 @@ private:
   std::shared_ptr<BoundaryDescriptor<dim> const> boundary_descriptor;
   std::shared_ptr<FieldFunctions<dim> const>     field_functions;
 
+  std::vector<std::shared_ptr<BoundaryDescriptor<dim> const>> boundary_descriptor_block;
+
   /*
    * List of parameters.
    */
   Parameters const & param;
 
   std::string const field;
+
+  unsigned int n_blocks;
 
   /*
    * Basic finite element ingredients.
@@ -476,28 +537,33 @@ private:
   /*
    * Basic operators.
    */
-  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> convective_kernel;
-  std::shared_ptr<Operators::DiffusiveKernel<dim, n_components, Number>>  diffusive_kernel;
-  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>>  rhs_kernel;
-  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number, n_components>>  turbulence_source_kernel;
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> convective_kernel;
+  std::vector<std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>>  diffusive_kernel;
+  std::vector<std::shared_ptr<Operators::RHSKernel<dim, Number>>>  rhs_kernel;
 
-  MassOperator<dim, n_components, Number>        mass_operator;
-  InverseMassOperator<dim, n_components, Number> inverse_mass_operator;
-  ConvectiveOperator<dim, n_components, Number>     convective_operator;
-  DiffusiveOperator<dim, n_components, Number>      diffusive_operator;
-  RHSOperator<dim, Number, n_components>            rhs_operator;
-  TurbulenceSourceOperator<dim, Number, n_components>            turbulence_source_operator;
+  std::vector<std::shared_ptr<ConvectiveOperator<dim, Number>>>     convective_operator;
+  std::vector<std::shared_ptr<DiffusiveOperator<dim, Number>>>      diffusive_operator;
+  std::vector<std::shared_ptr<RHSOperator<dim, Number>>>            rhs_operator;
+
+  MassOperator<dim, 1, Number>        mass_operator;
+  InverseMassOperator<dim, 1, Number> inverse_mass_operator;
+
+  std::shared_ptr<Operators::TurbulenceSourceKernel<dim, Number>>  turbulence_source_kernel;
+  TurbulenceSourceOperator<dim, Number>            turbulence_source_operator;
 
   /*
    * Combined operator.
    */
-  CombinedOperator<dim, n_components, Number> combined_operator;
+  std::vector<std::shared_ptr<CombinedOperator<dim, Number>>> combined_operator;
 
   /*
    * Solvers and preconditioners
    */
-  std::shared_ptr<PreconditionerBase<Number>>     preconditioner;
-  std::shared_ptr<Krylov::SolverBase<VectorType>> iterative_solver;
+  std::vector<std::shared_ptr<PreconditionerBase<Number>>>     preconditioner;
+
+  BlockPreconditioner<Number> block_preconditioner;
+
+  std::shared_ptr<Krylov::SolverBase<BlockVectorType>> iterative_solver;
 
   /*
    * MPI
@@ -512,12 +578,12 @@ private:
   /*
    * Turbulence models.
    */
-  std::shared_ptr<TurbulenceModel<dim, n_components, Number>> turbulence_model_ptr = std::make_shared<TurbulenceModel<dim, n_components, Number>>();
+  std::shared_ptr<TurbulenceModel<dim, Number>> turbulence_model_ptr = std::make_shared<TurbulenceModel<dim, Number>>();
 
   /*
    * Modal Filter
    */
-  ModalFilter<dim, n_components, Number> modal_filter;
+  ModalFilter<dim, 1, Number> modal_filter;
 };
 
 } // namespace ConvDiff

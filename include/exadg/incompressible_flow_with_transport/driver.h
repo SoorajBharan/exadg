@@ -51,12 +51,12 @@ namespace ExaDG
 {
 namespace FTI
 {
-template<int dim, int n_components, typename Number = double>
+template<int dim, typename Number = double>
 class Driver
 {
 public:
   Driver(MPI_Comm const &                              mpi_comm,
-         std::shared_ptr<ApplicationBase<dim, n_components, Number>> application,
+         std::shared_ptr<ApplicationBase<dim, Number>> application,
          bool const                                    is_test);
 
   void
@@ -69,7 +69,8 @@ public:
   print_performance_results(double const total_time) const;
 
 private:
-  using VectorType = dealii::LinearAlgebra::distributed::Vector<Number>;
+  using VectorType      = dealii::LinearAlgebra::distributed::Vector<Number>;
+  using BlockVectorType = dealii::LinearAlgebra::distributed::BlockVector<Number>;
 
   void
   ale_update() const;
@@ -80,6 +81,7 @@ private:
   void
   communicate_fluid_to_all_scalars() const;
 
+  // RANS scalar -> fluid: eddy viscosity and turbulent kinetic energy
   void
   communicate_eddy_viscosity_to_fluid() const;
 
@@ -99,7 +101,7 @@ private:
   bool const is_test;
 
   // application
-  std::shared_ptr<ApplicationBase<dim, n_components, Number>> application;
+  std::shared_ptr<ApplicationBase<dim, Number>> application;
 
   std::shared_ptr<Grid<dim>> grid;
 
@@ -138,13 +140,14 @@ private:
 
   // SCALAR TRANSPORT
 
-  std::vector<std::shared_ptr<ConvDiff::Operator<dim, n_components, Number>>> scalar_operator;
+  std::vector<std::shared_ptr<ConvDiff::Operator<dim, Number>>> scalar_operator;
 
-  std::vector<std::shared_ptr<ConvDiff::PostProcessorBase<dim, n_components, Number>>> scalar_postprocessor;
+  std::vector<std::shared_ptr<ConvDiff::PostProcessorBase<dim, Number>>> scalar_postprocessor;
 
   std::vector<std::shared_ptr<TimeIntBase>> scalar_time_integrator;
 
-  mutable dealii::LinearAlgebra::distributed::Vector<Number> temperature;
+  // temperature (scalar 0, one block) for the Boussinesq term
+  mutable BlockVectorType temperature;
 
   /*
    * Computation time (wall clock time).
@@ -153,8 +156,14 @@ private:
 
   mutable unsigned int N_time_steps;
 
-  bool rans_enabled;
+  // RANS: index of the scalar that solves the turbulence model (all blocks, e.g. k and omega)
+  bool         rans_enabled;
   unsigned int rans_scalar_index;
+
+  // RANS solution extrapolated to t_{n+1}, and the two fields sent to the fluid
+  mutable BlockVectorType rans_solution_extrapolated;
+  mutable VectorType      eddy_viscosity;
+  mutable VectorType      turbulent_kinetic_energy;
 };
 
 } // namespace FTI

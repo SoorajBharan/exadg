@@ -519,6 +519,15 @@ public:
   void
   update_viscosity(VectorType const & velocity) const;
 
+  void
+  update_viscosity_enriched(BlockVectorType const & velocity) const;
+
+  EnrichedMomentumOperator<dim, Number> const &
+  get_enriched_momentum_operator() const;
+
+  void
+  apply_wall_layer_viscosity_to_kernel() const;
+
   /*
    * Projection step.
    */
@@ -638,6 +647,9 @@ protected:
 
   // block-Jacobi preconditioner (exact local inverse on enriched cells)
   EnrichedBlockJacobiPreconditioner<dim, Number> enriched_block_jacobi_preconditioner;
+
+  // penalty step: own object, so that the viscous and the penalty local inverses are both kept
+  EnrichedBlockJacobiPreconditioner<dim, Number> enriched_block_jacobi_preconditioner_projection;
 
   // penalty step operator for the wall-enriched velocity
   EnrichedProjectionOperator<dim, Number> enriched_projection_operator;

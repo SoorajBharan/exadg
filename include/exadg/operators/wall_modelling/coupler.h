@@ -17,6 +17,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/lapack_full_matrix.h>
+#include <memory>
 #include <exadg/operators/wall_modelling/function_enrichment.h>
 
 namespace ExaDG
@@ -88,11 +89,18 @@ public:
                              VectorType const & src,
                              bool const         complement) const;
 
+  unsigned int
+  get_n_modes_dropped() const
+  {
+    return n_modes_dropped_last;
+  }
+
   struct SchurData {
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_tilde; 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> schur_inverse;
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar_inverse;
-    std::vector<std::vector<dealii::VectorizedArray<Number>>> M_bar_bar;
+
+    std::shared_ptr<std::vector<std::vector<dealii::VectorizedArray<Number>>>const> M_bar_bar_inverse;
+    std::shared_ptr<std::vector<std::vector<dealii::VectorizedArray<Number>>>const> M_bar_bar;
 
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde;
     std::vector<std::vector<dealii::VectorizedArray<Number>>> M_tilde_tilde_inverse;

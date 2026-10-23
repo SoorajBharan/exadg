@@ -30,11 +30,12 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components>
+template<int dim>
 class Solution : public dealii::Function<dim>
 {
 public:
-  Solution(double const diffusivity) : dealii::Function<dim>(n_components, 0.0), diffusivity(diffusivity)
+  Solution(unsigned int const n_components, double const diffusivity)
+    : dealii::Function<dim>(n_components, 0.0), diffusivity(diffusivity)
   {
   }
 
@@ -55,12 +56,12 @@ private:
   double const diffusivity;
 };
 
-template<int dim, int n_components, typename Number>
-class Application : public ApplicationBase<dim, n_components, Number>
+template<int dim, typename Number>
+class Application : public ApplicationBase<dim, Number>
 {
 public:
   Application(std::string input_file, MPI_Comm const & comm)
-    : ApplicationBase<dim, n_components, Number>(input_file, comm)
+    : ApplicationBase<dim, Number>(input_file, comm)
   {
   }
 
@@ -73,6 +74,9 @@ private:
     this->param.equation_type             = EquationType::ConvectionDiffusion;
     this->param.right_hand_side           = false;
     this->param.analytical_velocity_field = true;
+
+    // two transport variables (two blocks of the BlockVector) solving the same equation
+    this->param.number_of_transport_variables = n_variables;
 
     // PHYSICAL QUANTITIES
     this->param.start_time  = start_time;
@@ -186,22 +190,22 @@ private:
     typedef typename std::pair<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
       pair;
 
-    this->boundary_descriptor->dirichlet_bc.insert(pair(0, new Solution<dim, n_components>(diffusivity)));
+    this->boundary_descriptor->dirichlet_bc.insert(pair(0, new Solution<dim>(n_variables, diffusivity)));
     this->boundary_descriptor->neumann_bc.insert(
-      pair(1, new dealii::Functions::ZeroFunction<dim>(n_components)));
+      pair(1, new dealii::Functions::ZeroFunction<dim>(n_variables)));
   }
 
   void
   set_field_functions() final
   {
-    this->field_functions->initial_solution.reset(new dealii::Functions::ZeroFunction<dim>(n_components));
-    this->field_functions->right_hand_side.reset(new dealii::Functions::ZeroFunction<dim>(n_components));
+    this->field_functions->initial_solution.reset(new dealii::Functions::ZeroFunction<dim>(n_variables));
+    this->field_functions->right_hand_side.reset(new dealii::Functions::ZeroFunction<dim>(n_variables));
     std::vector<double> velocity = std::vector<double>(dim, 0.0);
     velocity[0]                  = 1.0;
     this->field_functions->velocity.reset(new dealii::Functions::ConstantFunction<dim>(velocity));
   }
 
-  std::shared_ptr<PostProcessorBase<dim, n_components, Number>>
+  std::shared_ptr<PostProcessorBase<dim, Number>>
   create_postprocessor() final
   {
     PostProcessorData<dim> pp_data;
@@ -215,13 +219,15 @@ private:
     pp_data.error_data.time_control_data.is_active        = true;
     pp_data.error_data.time_control_data.start_time       = start_time;
     pp_data.error_data.time_control_data.trigger_interval = (end_time - start_time) / 20.0;
-    pp_data.error_data.analytical_solution.reset(new Solution<dim, n_components>(diffusivity));
+    pp_data.error_data.analytical_solution.reset(new Solution<dim>(n_variables, diffusivity));
 
-    std::shared_ptr<PostProcessorBase<dim, n_components, Number>> pp;
-    pp.reset(new PostProcessor<dim, n_components, Number>(pp_data, this->mpi_comm));
+    std::shared_ptr<PostProcessorBase<dim, Number>> pp;
+    pp.reset(new PostProcessor<dim, Number>(pp_data, this->mpi_comm));
 
     return pp;
   }
+
+  unsigned int const n_variables = 2;
 
   double const left = -1.0, right = 1.0;
 

@@ -25,17 +25,17 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, typename Number, int n_components>
-RHSOperator<dim, Number, n_components>::RHSOperator() : matrix_free(nullptr), time(0.0)
+template<int dim, typename Number>
+RHSOperator<dim, Number>::RHSOperator() : matrix_free(nullptr), time(0.0)
 {
 }
 
-template<int dim, typename Number, int n_components>
+template<int dim, typename Number>
 void
-RHSOperator<dim, Number, n_components>::initialize(
+RHSOperator<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const & matrix_free_in,
   RHSOperatorData<dim> const &            data_in,
-  std::shared_ptr<Operators::RHSKernel<dim, Number, n_components>> kernel_in)
+  std::shared_ptr<Operators::RHSKernel<dim, Number>> kernel_in)
 {
   this->matrix_free = &matrix_free_in;
   this->data        = data_in;
@@ -43,18 +43,18 @@ RHSOperator<dim, Number, n_components>::initialize(
   this->kernel = kernel_in;
 }
 
-template<int dim, typename Number, int n_components>
+template<int dim, typename Number>
 void
-RHSOperator<dim, Number, n_components>::evaluate(VectorType & dst,
+RHSOperator<dim, Number>::evaluate(VectorType & dst,
                                                  double const evaluation_time) const
 {
   dst = 0;
   evaluate_add(dst, evaluation_time);
 }
 
-template<int dim, typename Number, int n_components>
+template<int dim, typename Number>
 void
-RHSOperator<dim, Number, n_components>::evaluate_add(VectorType & dst,
+RHSOperator<dim, Number>::evaluate_add(VectorType & dst,
                                                      double const evaluation_time) const
 {
   this->time = evaluation_time;
@@ -63,9 +63,9 @@ RHSOperator<dim, Number, n_components>::evaluate_add(VectorType & dst,
   matrix_free->cell_loop(&This::cell_loop, this, dst, src);
 }
 
-template<int dim, typename Number, int n_components>
+template<int dim, typename Number>
 void
-RHSOperator<dim, Number, n_components>::do_cell_integral(IntegratorCell & integrator) const
+RHSOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) const
 {
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
@@ -75,9 +75,9 @@ RHSOperator<dim, Number, n_components>::do_cell_integral(IntegratorCell & integr
   integrator.integrate(dealii::EvaluationFlags::values);
 }
 
-template<int dim, typename Number, int n_components>
+template<int dim, typename Number>
 void
-RHSOperator<dim, Number, n_components>::cell_loop(
+RHSOperator<dim, Number>::cell_loop(
   dealii::MatrixFree<dim, Number> const & matrix_free,
   VectorType &                            dst,
   VectorType const &                      src,
@@ -97,15 +97,10 @@ RHSOperator<dim, Number, n_components>::cell_loop(
   }
 }
 
-template class RHSOperator<2, float, 1>;
-template class RHSOperator<2, double, 1>;
-template class RHSOperator<3, float, 1>;
-template class RHSOperator<3, double, 1>;
-
-template class RHSOperator<2, float, 2>;
-template class RHSOperator<2, double, 2>;
-template class RHSOperator<3, float, 2>;
-template class RHSOperator<3, double, 2>;
+template class RHSOperator<2, float>;
+template class RHSOperator<2, double>;
+template class RHSOperator<3, float>;
+template class RHSOperator<3, double>;
 
 } // namespace ConvDiff
 } // namespace ExaDG

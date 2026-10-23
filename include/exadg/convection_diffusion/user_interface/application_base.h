@@ -39,7 +39,7 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class ApplicationBase
 {
 public:
@@ -117,7 +117,7 @@ public:
     return mesh_motion;
   }
 
-  virtual std::shared_ptr<PostProcessorBase<dim, n_components, Number>>
+  virtual std::shared_ptr<PostProcessorBase<dim, Number>>
   create_postprocessor() = 0;
 
   Parameters const &

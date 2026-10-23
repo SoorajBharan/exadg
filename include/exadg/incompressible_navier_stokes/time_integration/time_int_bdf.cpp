@@ -132,10 +132,15 @@ TimeIntBDF<dim, Number>::setup_derived()
     }
   }
 
-  // Compute friction velocity for wall function enrichment
+
   if(this->param.wall_enrichment_enabled)
-  {
-    this->operator_base->update_wall_enrichment_vectors(get_velocity(0));
+  { 
+    if(this->param.restarted_simulation)
+      AssertThrow(this->param.temporal_discretization ==
+                  TemporalDiscretization::BDFDualSplittingScheme,
+                  dealii::ExcMessage("Restart with wall enrichment is only implemented for the dual-splitting scheme."));
+    else
+      this->operator_base->update_wall_enrichment_vectors(get_velocity(0));
   }
 }
 

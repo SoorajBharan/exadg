@@ -31,6 +31,7 @@ namespace ConvDiff
 Parameters::Parameters()
   : // MATHEMATICAL MODEL
     scalar_type(ScalarType::Scalar),
+    number_of_transport_variables(1),
     problem_type(ProblemType::Undefined),
     equation_type(EquationType::Undefined),
     analytical_velocity_field(true),
@@ -82,6 +83,11 @@ Parameters::Parameters()
     preconditioner(Preconditioner::Undefined),
     update_preconditioner(false),
     update_preconditioner_every_time_steps(1),
+    nonlinear_solver(NonlinearSolver::LinearlyImplicit),
+    newton_solver_data(Newton::SolverData(100, 1.e-12, 1.e-4)),
+    preconditioner_update_tolerance(0.2),
+    preconditioner_update_max_time_steps(10),
+    newton_damping(false),
     implement_block_diagonal_preconditioner_matrix_free(false),
     solver_block_diagonal(Elementwise::Solver::Undefined),
     preconditioner_block_diagonal(Elementwise::Preconditioner::InverseMassMatrix),
@@ -95,7 +101,13 @@ Parameters::Parameters()
     use_combined_operator(true),
     store_analytical_velocity_in_dof_vector(false),
     use_overintegration(false),
-    treatment_of_variable_viscosity(TreatmentOfVariableViscosity::Undefined)
+    treatment_of_variable_viscosity(TreatmentOfVariableViscosity::Undefined),
+    treatment_of_production(TreatmentOfProduction::Undefined),
+    treatment_of_dissipation(TreatmentOfDissipation::Undefined),
+    treatment_of_square_gradient(TreatmentOfSquareGradient::Undefined),
+    modal_filter_is_active(false),
+    gradient_threshold(0.0),
+    cut_off_degree(0)
 {
 }
 
@@ -105,6 +117,13 @@ Parameters::check() const
   // MATHEMATICAL MODEL
   AssertThrow(problem_type != ProblemType::Undefined,
               dealii::ExcMessage("parameter must be defined"));
+
+  AssertThrow(number_of_transport_variables >= 1,
+              dealii::ExcMessage("number_of_transport_variables must be at least 1."));   
+
+  if(turbulence_model_data.is_active)
+    AssertThrow(number_of_transport_variables == 2,
+                dealii::ExcMessage("The turbulence models are two-equation models: set number_of_transport_variables = 2."));
 
   AssertThrow(equation_type != EquationType::Undefined,
               dealii::ExcMessage("parameter must be defined"));
@@ -350,6 +369,30 @@ Parameters::check() const
   {
     AssertThrow(treatment_of_variable_viscosity != TreatmentOfVariableViscosity::Undefined,
                 dealii::ExcMessage("Parameter must be defined."));
+    AssertThrow(treatment_of_production != TreatmentOfProduction::Undefined,
+                dealii::ExcMessage("Parameter treatment_of_production must be defined."));
+    AssertThrow(treatment_of_dissipation != TreatmentOfDissipation::Undefined,
+                dealii::ExcMessage("Parameter treatment_of_dissipation must be defined."));
+    AssertThrow(treatment_of_square_gradient != TreatmentOfSquareGradient::Undefined,
+                dealii::ExcMessage("Parameter treatment_of_square_gradient must be defined."));
+    AssertThrow(turbulence_model_data.positivity_preserving_limiter.size() ==
+                  number_of_transport_variables,
+                dealii::ExcMessage("Turbulence model: specify one positivity_preserving_limiter "
+                                   "per transport variable."));
+    AssertThrow(turbulence_model_data.turbulence_data_base != nullptr,
+                dealii::ExcMessage("Turbulence model: call "
+                                   "initialize_and_set_turbulence_coefficients()."));
+  }
+
+  // NONLINEAR SOLVER
+  AssertThrow(nonlinear_solver != NonlinearSolver::Undefined,
+              dealii::ExcMessage("Parameter must be defined."));
+
+  if(nonlinear_solver == NonlinearSolver::Newton)
+  {
+    AssertThrow(problem_type == ProblemType::Unsteady and
+                  temporal_discretization == TemporalDiscretization::BDF,
+                dealii::ExcMessage("The Newton solver is only implemented for BDF time stepping."));
   }
 
   // NUMERICAL PARAMETERS
@@ -457,6 +500,7 @@ Parameters::print_parameters_mathematical_model(dealii::ConditionalOStream const
   pcout << std::endl << "Mathematical model:" << std::endl;
 
   print_parameter(pcout, "Scalar type", scalar_type);
+  print_parameter(pcout, "Number of transport variables", number_of_transport_variables);
   print_parameter(pcout, "Problem type", problem_type);
   print_parameter(pcout, "Equation type", equation_type);
   print_parameter(pcout, "Right-hand side", right_hand_side);
@@ -593,6 +637,18 @@ Parameters::print_parameters_solver(dealii::ConditionalOStream const & pcout) co
 
     if(update_preconditioner)
       print_parameter(pcout, "Update every time steps", update_preconditioner_every_time_steps);
+  }
+
+  print_parameter(pcout, "Nonlinear solver", nonlinear_solver);
+
+  if(nonlinear_solver == NonlinearSolver::Newton)
+  {
+    newton_solver_data.print(pcout);
+    print_parameter(pcout, "Preconditioner update tolerance", preconditioner_update_tolerance);
+    print_parameter(pcout,
+                    "Preconditioner update max time steps",
+                    preconditioner_update_max_time_steps);
+    print_parameter(pcout, "Newton damping", newton_damping);
   }
 
   print_parameter(pcout,

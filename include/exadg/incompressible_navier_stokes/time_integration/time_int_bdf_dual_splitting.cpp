@@ -27,6 +27,7 @@
 #include <exadg/time_integration/push_back_vectors.h>
 #include <exadg/time_integration/time_step_calculation.h>
 #include <exadg/utilities/print_solver_results.h>
+#include <exadg/utilities/section_profile.h>
 
 namespace ExaDG
 {
@@ -86,7 +87,7 @@ TimeIntBDFDualSplitting<dim, Number>::setup_derived()
   }
 
   // wall enrichment: initial convective history (U_tilde = 0 at the start -> standard form)
-  if(this->param.wall_enrichment_enabled and this->param.convective_problem())
+  if(this->param.wall_enrichment_enabled and this->param.convective_problem() and this->param.restarted_simulation == false)
   {
     compute_convective_history_entry(convective_history[0], velocity[0], this->get_time(), false);
 
@@ -97,6 +98,31 @@ TimeIntBDFDualSplitting<dim, Number>::setup_derived()
                                          this->get_previous_time(i),
                                          false);
   }
+
+#ifdef EXADG_PROFILE
+  // load balance of the enriched work: locally owned cells per active_fe_index   on each rank
+  if(this->param.wall_enrichment_enabled)
+  {
+    auto const & mf_en = *pde_operator->get_function_enrichment()->get_matrix_free();
+
+    std::array<double, 3> n_cells = {{0.0, 0.0, 0.0}};
+    for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+    {
+      unsigned int const fe_index = mf_en.get_cell_iterator(cell, 0)->active_fe_index();
+      if(fe_index < 3)
+        n_cells[fe_index] += mf_en.n_active_entries_per_cell_batch(cell);
+    }
+
+    std::array<std::string, 3> const names = {{"standard (fe 0)", "enriched (fe 1)", "halo (fe 2)"}};
+    this->pcout << std::endl
+      << "Locally owned cells per rank (min / avg / max, rank of max):" << std::endl;
+    for(unsigned int i = 0; i < 3; ++i)
+    {
+      auto const r = dealii::Utilities::MPI::min_max_avg(n_cells[i], this->mpi_comm);
+      this->pcout << "  " << names[i] << ": " << r.min << " / " << r.avg << " / " << r.max << ", rank " << r.max_index << std::endl;
+    }
+  }
+#endif
 }
 
 template<int dim, typename Number>
@@ -109,6 +135,34 @@ TimeIntBDFDualSplitting<dim, Number>::read_restart_vectors(boost::archive::binar
   {
     ia >> velocity_dbc[i];
   }
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    // must be in sync with write_restart_vectors()
+    for(unsigned int i = 0; i < velocity.size(); i++)
+      ia >> velocity[i].block(1);
+
+    if(this->param.convective_problem())
+      for(unsigned int i = 0; i < convective_history.size(); i++)
+      {
+        ia >> convective_history[i].block(0);
+        ia >> convective_history[i].block(1);
+      }
+
+    auto const & fe = pde_operator->get_function_enrichment();
+    ia >> fe->friction_velocity;
+    ia >> fe->wall_shear_stress;
+    fe->friction_velocity.update_ghost_values();
+    fe->wall_shear_stress.update_ghost_values();
+
+    fe->enrichment_velocity = velocity[0].block(1);
+    fe->enrichment_velocity.update_ghost_values();
+
+    // psi of the space the restored solution is expressed in; called twice so that
+    // psi_old == psi and the first project_enrichment_history() is the identity
+    fe->update_enrichment_function();
+    fe->update_enrichment_function();
+  } 
 }
 
 template<int dim, typename Number>
@@ -122,6 +176,24 @@ TimeIntBDFDualSplitting<dim, Number>::write_restart_vectors(
   {
     oa << velocity_dbc[i];
   }
+
+  if(this->param.wall_enrichment_enabled)
+  {
+    // enriched state: U_tilde of all levels, convective history (both blocks) wall shear stress
+    for(unsigned int i = 0; i < velocity.size(); i++)
+      oa << velocity[i].block(1);
+
+    if(this->param.convective_problem())
+      for(unsigned int i = 0; i < convective_history.size(); i++)
+      {
+        oa << convective_history[i].block(0);
+        oa << convective_history[i].block(1);
+      } 
+
+    auto const & fe = pde_operator->get_function_enrichment();
+    oa << fe->friction_velocity;
+    oa << fe->wall_shear_stress;
+  } 
 }
 
 template<int dim, typename Number>
@@ -361,10 +433,28 @@ template<int dim, typename Number>
 void
 TimeIntBDFDualSplitting<dim, Number>::do_timestep_solve()
 {
+#ifdef EXADG_PROFILE
+  // one profile cycle: start of this do_timestep_solve() to the start of the next one, i.e.
+  // including prepare_vectors_for_next_timestep(), CFL, restart, postprocessing   and output
+  StepProfile & profile = step_profile();
+  if(profile.cycle_running)
+  {
+    profile.add("full step", profile.cycle_timer);
+    ++profile.n_steps;
+    if(this->print_solver_info() and not(this->is_test))
+      profile.print_and_reset(this->pcout, this->mpi_comm);
+  }
+  profile.start(profile.cycle_timer, this->mpi_comm);
+  profile.cycle_running = true;
+
+  dealii::Timer timer_profile;
+#endif
   // pre-computations
   pde_operator->interpolate_velocity_dirichlet_bc(velocity_dbc_np, this->get_next_time());
 
-  enrichment_coupling = this->param.wall_enrichment_enabled and this->get_time_step_number() > 1;
+  enrichment_coupling = this->param.wall_enrichment_enabled and
+    (this->get_time_step_number() > 1 or
+    this->param.restarted_simulation);
   // if(this->param.wall_enrichment_enabled and this->get_time() >= t_start_enrichment)
   // {
   //   double const y_plus_max = pde_operator->get_function_enrichment()->get_max_y_plus();
@@ -372,7 +462,15 @@ TimeIntBDFDualSplitting<dim, Number>::do_timestep_solve()
   // }
   if(this->param.wall_enrichment_enabled and enrichment_coupling)
   {
+#ifdef EXADG_PROFILE
+    profile.start(timer_profile, this->mpi_comm);
+#endif
     pde_operator->precompute_schur_matrices();
+
+#ifdef EXADG_PROFILE
+    profile.add("Schur precompute", timer_profile);
+    profile.start(timer_profile, this->mpi_comm);
+#endif
 
     for(unsigned int i = 0; i < velocity.size(); ++i)
       pde_operator->project_enrichment_history(velocity[i]);
@@ -380,41 +478,82 @@ TimeIntBDFDualSplitting<dim, Number>::do_timestep_solve()
     // the convective history lives in velocity space as well (w_i = M^{-1} c_i)
     for(unsigned int i = 0; i < convective_history.size(); ++i)
       pde_operator->project_enrichment_history(convective_history[i]);
+#ifdef EXADG_PROFILE
+    profile.add("history projection", timer_profile);
+#endif
   }
 
   // perform the sub-steps of the dual-splitting method
+#ifdef EXADG_PROFILE
+  profile.start(timer_profile, this->mpi_comm);
+#endif
   convective_step();
+#ifdef EXADG_PROFILE
+  profile.add("convective step", timer_profile);
+#endif
   debug_norms("convective");
 
+#ifdef EXADG_PROFILE
+  profile.start(timer_profile, this->mpi_comm);
+#endif
   pressure_step();
+#ifdef EXADG_PROFILE
+  profile.add("pressure step", timer_profile);
+  profile.start(timer_profile, this->mpi_comm);
+#endif
 
   if(this->param.wall_enrichment_enabled and enrichment_coupling)
     projection_step_enriched();
   else
     projection_step();
+#ifdef EXADG_PROFILE
+  profile.add("projection step", timer_profile);
+#endif
   debug_norms("projection");
 
+#ifdef EXADG_PROFILE
+  profile.start(timer_profile, this->mpi_comm);
+#endif
   if(this->param.wall_enrichment_enabled and enrichment_coupling)
     viscous_step_enriched();
   else
     viscous_step();
+#ifdef EXADG_PROFILE
+  profile.add("viscous step (incl. nu)", timer_profile);
+#endif
   debug_norms("viscous");
 
   if(this->param.apply_penalty_terms_in_postprocessing_step)
   {
+#ifdef EXADG_PROFILE
+    profile.start(timer_profile, this->mpi_comm);
+#endif
     if(this->param.wall_enrichment_enabled and enrichment_coupling)
       penalty_step_enriched();
     else
       penalty_step();
+#ifdef EXADG_PROFILE
+    profile.add("penalty step", timer_profile);
+#endif
   }
   debug_norms("penalty");
 
+#ifdef EXADG_PROFILE
+  profile.start(timer_profile, this->mpi_comm);
+#endif
   if(this->param.wall_enrichment_enabled)
     pde_operator->compute_total_velocity(this->velocity_total, velocity_np);
+#ifdef EXADG_PROFILE
+  profile.add("total velocity", timer_profile);
+  profile.start(timer_profile, this->mpi_comm);
+#endif
 
   // evaluate convective term once the final solution at time
   // t_{n+1} is known
   evaluate_convective_term();
+#ifdef EXADG_PROFILE
+  profile.add("convective term (end)", timer_profile);
+#endif
 }
 
 template<int dim, typename Number>
@@ -542,14 +681,15 @@ TimeIntBDFDualSplitting<dim, Number>::evaluate_convective_term()
                                          velocity_np,
                                          this->get_next_time(),
                                          enrichment_coupling);
-  
-  /*************************************DEBUG*********************************/
-          this->pcout << "  [convective debug] |M^{-1} c(u_h)|: U_bar = "
-                      << convective_history_np.block(0).l2_norm()
-                      << "   U_tilde = " <<
-  convective_history_np.block(1).l2_norm() << std::endl;
+#ifdef EXADG_DEBUG
+        /*************************************DEBUG*********************************/
+        this->pcout << "  [convective debug] |M^{-1} c(u_h)|: U_bar = "
+          << convective_history_np.block(0).l2_norm()
+          << "   U_tilde = " <<
+          convective_history_np.block(1).l2_norm() << std::endl;
 
-  /****************************************************************************/
+        /****************************************************************************/
+#endif
       }
       else
       {
@@ -1107,6 +1247,20 @@ TimeIntBDFDualSplitting<dim, Number>::viscous_step_enriched()
       velocity_np.add(this->extra.get_beta(i), velocity[i]);
   }
 
+  if(this->param.viscosity_is_variable())
+  {
+    dealii::Timer timer_viscosity_update;
+    timer_viscosity_update.restart();
+
+    pde_operator->update_viscosity_enriched(velocity_np);
+
+    if(this->print_solver_info() and not(this->is_test))
+    {
+      this->pcout << std::endl << "Update of variable viscosity (enriched):";
+      print_wall_time(this->pcout, timer_viscosity_update.wall_time());
+    }
+  }
+
   // rhs = gamma0/dt * M * velocity_rhs  (both blocks)
   BlockVectorType rhs(velocity_np);
   pde_operator->apply_mass_operator(rhs, velocity_rhs);
@@ -1213,6 +1367,11 @@ TimeIntBDFDualSplitting<dim, Number>::prepare_vectors_for_next_timestep()
 
   if(this->param.wall_enrichment_enabled )
   {
+#ifdef EXADG_PROFILE
+    StepProfile & profile = step_profile();
+    dealii::Timer timer_profile;
+    profile.start(timer_profile, this->mpi_comm);
+#endif
     auto const & fe = this->pde_operator->get_function_enrichment();   // NEW
     fe->enrichment_velocity = velocity[0].block(1);                    // NEW
     fe->enrichment_velocity.update_ghost_values();
@@ -1231,12 +1390,17 @@ TimeIntBDFDualSplitting<dim, Number>::prepare_vectors_for_next_timestep()
       this->pde_operator->update_wall_enrichment_vectors(get_velocity(0));
     }
     residual_available = false;
+#ifdef EXADG_PROFILE
+    profile.add("u_tau + psi update", timer_profile);
+#endif
+#ifdef EXADG_DEBUG
     /**************************************DEBUG*********************************************/
     // DEBUG: largest friction velocity after the update
     this->pcout << "  [u_tau debug] max u_tau = "
-                << this->pde_operator->get_function_enrichment()->friction_velocity.linfty_norm()
-                << std::endl;
+      << this->pde_operator->get_function_enrichment()->friction_velocity.linfty_norm()
+      << std::endl;
     /*********************************************************************************************/
+#endif
   }
 }
 
@@ -1395,6 +1559,7 @@ template<int dim, typename Number>
 void
 TimeIntBDFDualSplitting<dim, Number>::debug_norms(std::string const & label) const
 {
+#ifdef EXADG_DEBUG
   if(not this->param.wall_enrichment_enabled)
     return;
 
@@ -1403,8 +1568,11 @@ TimeIntBDFDualSplitting<dim, Number>::debug_norms(std::string const & label) con
   pde_operator->compute_total_velocity(u_total, velocity_np);
 
   this->pcout << "  [norms after " << label << "]  |U_bar| = " << velocity_np.block(0).linfty_norm()
-              << "   |U_tilde| = " << velocity_np.block(1).linfty_norm()
-              << "   |u_h| = " << u_total.linfty_norm() << std::endl;
+    << "   |U_tilde| = " << velocity_np.block(1).linfty_norm()
+    << "   |u_h| = " << u_total.linfty_norm() << std::endl;
+#else
+  (void)label;
+#endif
 }
 
 template<int dim, typename Number>

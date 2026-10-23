@@ -23,6 +23,9 @@
 #define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_TURBULENCE_MODEL_H_
 
 // deal.II
+#include <deal.II/base/aligned_vector.h>
+#include <deal.II/base/array_view.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/lac/la_parallel_vector.h>
 
 // ExaDG
@@ -41,18 +44,19 @@ namespace ConvDiff
 /*
  *  Base class for variable viscosity models.
  */
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class TurbulenceModel : public dealii::Subscriptor
 {
 private:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+  typedef TurbulenceModel<dim, Number> This;
 
   typedef std::pair<unsigned int, unsigned int> Range;
 
-  typedef CellIntegrator<dim, n_components, Number> IntegratorCell;
-  typedef FaceIntegrator<dim, n_components, Number> IntegratorFace;
-
-  typedef CellIntegrator<dim, 1, Number> IntegratorCellScalar;
+  typedef CellIntegrator<dim, 1, Number> IntegratorCell;
+  typedef FaceIntegrator<dim, 1, Number> IntegratorFace;
 
   typedef dealii::VectorizedArray<Number> scalar;
 public:
@@ -66,9 +70,6 @@ public:
    */
   virtual ~TurbulenceModel(){};
 
-  /*
-   * Initialization function of base class.
-   */
   void
   initialize(dealii::MatrixFree<dim, Number> const & matrix_free_in,
              TurbulenceModelData const &             turbulence_model_data_in,
@@ -76,28 +77,40 @@ public:
              unsigned int const                      dof_index_viscosity_in,
              unsigned int const                      dof_index_velocity_in,
              unsigned int const                      quad_index_in,
-             unsigned int const                      quad_index_eddy_velocity_in);
+             unsigned int const                      quad_index_eddy_velocity_in,
+             bool const                              compute_derivative_in = false);
 
-  /**
-   * Function for *setting* the eddy viscosity
-   */
   void
-  set_viscosity(VectorType const & solution);
+  set_viscosity(BlockVectorType const & solution);
 
   void
   get_eddy_viscosity(VectorType & dst) const;
 
-  dealii::LinearAlgebra::distributed::Vector<Number> const &
+  VectorType const &
   get_eddy_viscosity_ref() const;
 
+  BlockVectorType const &
+  get_eddy_viscosity_derivative_ref() const;
+
+  unsigned int
+  get_n_variables() const;
+
   void
-  get_turbulent_kinetic_energy(VectorType & dst, VectorType const & solution) const;
+  get_physical_variables(dealii::ArrayView<scalar const> const & transported_values,
+                         dealii::ArrayView<scalar> const &       solution,
+                         dealii::ArrayView<scalar> const &       solution_derivative) const;
+
+  scalar
+  compute_realizability_alpha(dealii::Tensor<2, dim, scalar> const & grad_u) const;
+
+  void
+  get_turbulent_kinetic_energy(VectorType & dst, BlockVectorType const & solution) const;
 
   void
   set_velocity_ptr(VectorType const & velocity_in);
 
   void
-  enforce_positivity(VectorType & solution) const;
+  enforce_positivity(BlockVectorType & solution) const;
 
   double       diffusivity;
   unsigned int quad_index;
@@ -105,54 +118,51 @@ public:
 
   std::vector<double> model_coefficients;
 
+  // pointwise eddy viscosity and its derivative w.r.t. the transport variables (also used by the
+  // TurbulenceSourceKernel at the quadrature points)
+  void
+  evaluate_eddy_viscosity(dealii::ArrayView<scalar const> const & solution,
+                          dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
+                          scalar &                                viscosity,
+                          dealii::ArrayView<scalar> const &       viscosity_derivative) const;
+
 private:
   void
-  cell_loop(dealii::MatrixFree<dim, Number> const & data,
-            VectorType &,
-            VectorType const & src,
-            Range const &      cell_range);
-
-  template<typename DataType>
-  void
-  evaluate_eddy_viscosity(DataType const & solution_values,
-                          dealii::Tensor<2, dim, scalar> const & velocity_gradient,
-                          scalar & viscosity) const;
+  cell_loop(dealii::MatrixFree<dim, Number> const & matrix_free,
+            VectorType &                            dst,
+            BlockVectorType const &                 src,
+            Range const &                           cell_range);
 
   void
-  standard_k_epsilon_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
-                           scalar & viscosity) const;
+  standard_k_epsilon_model(dealii::ArrayView<scalar const> const & solution,
+                           scalar &                                viscosity,
+                           dealii::ArrayView<scalar> const &       viscosity_derivative) const;
 
   void
-  standard_k_omega_1988_model(dealii::Tensor<1, n_components, scalar> const & solution_values,
-                              dealii::Tensor<2, dim, scalar> const & velocity_gradient,
-                           scalar & viscosity) const;
-
-  typename TurbulenceModel<dim, n_components, Number>::scalar
-  compute_realizability_alpha(dealii::Tensor<2, dim, scalar> const & grad_u) const;
-
-  typename TurbulenceModel<dim, n_components, Number>::scalar
-  compute_omega_r(dealii::Tensor<2, dim, scalar> const & grad_u, 
-                  scalar const & tilde_omega) const;
-
-  typename TurbulenceModel<dim, n_components, Number>::scalar
-  compute_ln_omega_r(dealii::Tensor<2, dim, scalar> const & grad_u, 
-                     scalar const & tilde_omega) const;
+  standard_k_omega_1988_model(dealii::ArrayView<scalar const> const & solution,
+                              dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
+                              scalar &                                viscosity,
+                              dealii::ArrayView<scalar> const &       viscosity_derivative) const;
 
   void
-  cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & data,
-                        VectorType &,
-                        VectorType const & src,
-                        Range const &      cell_range) const;
+  cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & matrix_free,
+                        VectorType &                            dst,
+                        BlockVectorType const &                 src,
+                        Range const &                           cell_range) const;
 
   void
   cell_loop_enforce_positivity(dealii::MatrixFree<dim, Number> const & matrix_free,
-                               VectorType & dst,
-                               VectorType const & src,
-                               Range const & cell_range) const;
+                               BlockVectorType &                       dst,
+                               BlockVectorType const &                 src,
+                               Range const &                           cell_range) const;
 
   TurbulenceModelData                                   turbulence_model_data;
 
+  unsigned int n_variables;
+
   VectorType eddy_viscosity;
+  BlockVectorType eddy_viscosity_derivative;
+  bool compute_derivative;
   VectorType effective_viscosity;
   InverseMassOperator<dim, 1, Number> inverse_mass_viscosity;
 

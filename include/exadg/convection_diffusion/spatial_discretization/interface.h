@@ -24,6 +24,7 @@
 
 // deal.II
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/time_integration/interpolate.h>
@@ -40,6 +41,8 @@ class Operator
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
   Operator()
   {
   }
@@ -50,22 +53,22 @@ public:
 
   // explicit time integration: evaluate operator
   virtual void
-  evaluate_explicit_time_int(VectorType &       dst,
-                             VectorType const & src,
+  evaluate_explicit_time_int(BlockVectorType &       dst,
+                             BlockVectorType const & src,
                              double const       evaluation_time,
                              VectorType const * velocity = nullptr) const = 0;
 
   // implicit time integration: calculate right-hand side of linear system of equations
   virtual void
-  rhs(VectorType &       dst,
-      VectorType const & src,
+  rhs(BlockVectorType &       dst,
+      BlockVectorType const & src,
       double const       evaluation_time = 0.0,
       VectorType const * velocity        = nullptr) const = 0;
 
   // implicit time integration: solve linear system of equations
   virtual unsigned int
-  solve(VectorType &       sol,
-        VectorType const & rhs,
+  solve(BlockVectorType &       sol,
+        BlockVectorType const & rhs,
         bool const         update_preconditioner,
         double const       scaling_factor  = -1.0,
         double const       evaluation_time = -1.0,
@@ -73,7 +76,7 @@ public:
 
   // time integration: initialize dof vector
   virtual void
-  initialize_dof_vector(VectorType & src) const = 0;
+  initialize_dof_vector(BlockVectorType & src) const = 0;
 
   virtual void
   initialize_dof_vector_velocity(VectorType & src) const = 0;
@@ -83,7 +86,7 @@ public:
 
   // time integration: prescribe initial conditions
   virtual void
-  prescribe_initial_conditions(VectorType & src, double const evaluation_time) const = 0;
+  prescribe_initial_conditions(BlockVectorType & src, double const evaluation_time) const = 0;
 
   // time step calculation: max efficiency
   virtual double
@@ -112,6 +115,8 @@ class OperatorExplRK
 public:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
+  typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
   OperatorExplRK(std::shared_ptr<ConvDiff::Interface::Operator<Number>> operator_in,
                  bool const                                             numerical_velocity_field_in)
     : pde_operator(operator_in), numerical_velocity_field(numerical_velocity_field_in)
@@ -129,7 +134,9 @@ public:
   }
 
   void
-  evaluate(VectorType & dst, VectorType const & src, double const evaluation_time) const
+  evaluate(BlockVectorType & dst,
+           BlockVectorType const & src,
+           double const evaluation_time) const
   {
     if(numerical_velocity_field)
     {
@@ -144,7 +151,7 @@ public:
   }
 
   void
-  initialize_dof_vector(VectorType & src) const
+  initialize_dof_vector(BlockVectorType & src) const
   {
     pde_operator->initialize_dof_vector(src);
   }

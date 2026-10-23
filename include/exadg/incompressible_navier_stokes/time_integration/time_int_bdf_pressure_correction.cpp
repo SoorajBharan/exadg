@@ -650,6 +650,16 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step_enriched()
      * viscous term. Block mass matrix M with the current \psi.
      */
   double const mass_factor = this->get_scaling_factor_time_derivative_term(); // gamma_0 / dt
+  if(this->param.viscosity_is_variable())
+  {
+    BlockVectorType velocity_extrapolated(velocity_np);
+    velocity_extrapolated = 0.0;
+    for(unsigned int i = 0; i < velocity.size(); ++i)
+      velocity_extrapolated.add(this->extra.get_beta(i), velocity[i]);
+
+    pde_operator->update_viscosity_enriched(velocity_extrapolated);
+  }
+
 
   // (1) velocity-space part: \sum_i \alpha_i/\Delta t u^{n-i} - \sum_i \beta_i w^{n-i}
   BlockVectorType u_rhs(velocity_np);

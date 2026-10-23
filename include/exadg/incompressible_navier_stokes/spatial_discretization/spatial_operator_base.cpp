@@ -38,6 +38,7 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/inverse_mass_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
 #include <exadg/utilities/exceptions.h>
+#include <exadg/utilities/section_profile.h>
 
 namespace ExaDG
 {
@@ -1605,6 +1606,9 @@ unsigned int
 SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(BlockVectorType &       dst,
                                                               BlockVectorType const & src) const
 {
+#ifdef EXADG_PROFILE
+  auto t_prof = SectionProfile::Clock::now();
+#endif
   dst.block(0).zero_out_ghost_values();
   dst.block(1).zero_out_ghost_values();
   AssertThrow(param.wall_enrichment_enabled,
@@ -1618,11 +1622,17 @@ SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(BlockVectorType & 
   function_enrichment->copy_global_dg_to_wall_layout(src.block(0),
                                                      function_enrichment->shadow_velocity_residual);
   VectorType src_tilde(src.block(1));
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("inv mass 1 copy global->wall + src_tilde", t_prof);
+#endif
 
   // (2) Whole domain, U_bar only: plain inverse mass.
   //     Correct on non-enriched cells; overwritten on enriched cells in step (4).
   inverse_mass_velocity.apply(dst.block(0), src.block(0));
 
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("inv mass 2 ExaDG inverse mass", t_prof);
+#endif
   // (3) Enriched cells: exact 2x2 inverse via Schur complement (Eq. 6.16-6.17).
   function_enrichment->shadow_velocity = 0.0;
   dst.block(1)                         = 0.0;
@@ -1631,10 +1641,16 @@ SpatialOperatorBase<dim, Number>::apply_inverse_mass_operator(BlockVectorType & 
                                             function_enrichment->shadow_velocity_residual, // R_bar  (in)
                                             dst.block(1),                                  // U_tilde(out)
                                             src_tilde);                                    // R_tilde(in)
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("inv mass 3 Schur block inverse (enriched)", t_prof);
+#endif
 
   // (4) Overwrite enriched cells of block(0) with the coupled result.
   function_enrichment->copy_wall_layout_to_global_dg(function_enrichment->shadow_velocity,
                                                      dst.block(0));
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("inv mass 4 copy wall->global", t_prof);
+#endif
 
   return 0;
 }
@@ -1738,6 +1754,142 @@ SpatialOperatorBase<dim, Number>::update_viscosity(VectorType const & velocity) 
   // viscosity has been computed
   if(param.turbulence_model_data.is_active)
     turbulence_model.add_viscosity(velocity);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::update_viscosity_enriched(BlockVectorType const
+                                                            & velocity) const
+{
+  AssertThrow(param.wall_enrichment_enabled and param.viscosity_is_variable(),
+              dealii::ExcMessage("update_viscosity_enriched(): wall enrichment and variable viscosity required."));
+
+  // u_total = M^{-1}(M_bb U_bar + M_bt U_tilde)
+  VectorType velocity_total;
+  initialize_vector_velocity(velocity_total);
+  compute_total_velocity(velocity_total, velocity);
+
+  update_viscosity(velocity_total);
+  enriched_momentum_operator.update_viscosity(velocity_total, turbulence_model);
+
+  // U_bar-U_bar block (ExaDG's viscous kernel): the same cell-wise constant nu_K on the wall layer
+  apply_wall_layer_viscosity_to_kernel();
+
+#ifdef EXADG_DEBUG
+  /*************************************DEBUG*********************************/
+  // max of nu/nu_molecular: whole domain (viscous kernel, quadrature of  matrix_free) and
+  // enriched layer (EnrichedMomentumOperator, quadrature of matrix_free_en)
+  {
+    double nu_max_domain = 0.0, nu_max_enriched = 0.0;
+
+    unsigned int const n_q =  matrix_free->get_n_q_points(get_quad_index_velocity_standard());
+    for(unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
+      for(unsigned int q = 0; q < n_q; ++q)
+        for(unsigned int v = 0; v <
+          matrix_free->n_active_entries_per_cell_batch(cell); ++v)
+          nu_max_domain = std::max(nu_max_domain, double(viscous_kernel->get_viscosity_cell(cell, q)[v]));
+
+    auto const &       mf_en  = *function_enrichment->get_matrix_free();
+    unsigned int const n_q_en =
+      mf_en.get_n_q_points(function_enrichment->get_quad_index());
+    for(unsigned int cell = 0; cell < mf_en.n_cell_batches(); ++cell)
+    {
+      if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
+        continue;
+      for(unsigned int q = 0; q < n_q_en; ++q)
+        for(unsigned int v = 0; v < mf_en.n_active_entries_per_cell_batch(cell);++v)
+          nu_max_enriched =
+            std::max(nu_max_enriched,
+                     double(enriched_momentum_operator.get_viscosity_cell(cell, q)[v]));
+    }
+
+    nu_max_domain   = dealii::Utilities::MPI::max(nu_max_domain, mpi_comm);
+    nu_max_enriched = dealii::Utilities::MPI::max(nu_max_enriched, mpi_comm);
+    pcout << "  [viscosity debug] max nu/nu_mol: domain = " << nu_max_domain /
+      param.viscosity
+      << "   enriched layer = " << nu_max_enriched / param.viscosity <<
+      std::endl;
+  }
+  /****************************************************************************/
+#endif
+}
+
+template<int dim, typename Number>
+EnrichedMomentumOperator<dim, Number> const &
+SpatialOperatorBase<dim, Number>::get_enriched_momentum_operator() const
+{
+  return enriched_momentum_operator;
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::apply_wall_layer_viscosity_to_kernel() const
+{
+  // nu_K (component 0) and marker (component 1) in the global DG layout: enriched and halo
+  // cells (locally owned), ghost values for the face neighbours on other processes
+  VectorType nu_field;
+  initialize_vector_velocity(nu_field);
+  function_enrichment->add_wall_layout_to_global_dg(enriched_momentum_operator.get_cell_viscosity(),
+                                                    nu_field);
+  nu_field.update_ghost_values();
+
+  unsigned int const dof  = get_dof_index_velocity();
+  unsigned int const quad = viscous_kernel->get_quad_index();
+
+  // replace nu in the SIMD lanes whose cell carries the marker
+  auto const replace = [](scalar & nu, vector const & value) {
+    for(unsigned int l = 0; l < scalar::size(); ++l)
+      if(value[1][l] > 0.5)
+        nu[l] = value[0][l];
+  };
+
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> phi(*matrix_free, dof, quad);
+  for(unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
+  {
+    phi.reinit(cell);
+    phi.gather_evaluate(nu_field, dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < phi.n_q_points; ++q)
+    {
+      scalar nu = viscous_kernel->get_viscosity_cell(cell, q);
+      replace(nu, phi.get_value(q));
+      viscous_kernel->set_coefficient_cell(cell, q, nu);
+    }
+  }
+
+  FaceIntegratorU phi_m(*matrix_free, true, dof, quad);
+  FaceIntegratorU phi_p(*matrix_free, false, dof, quad);
+  for(unsigned int face = 0; face < matrix_free->n_inner_face_batches(); ++face)
+  {
+    phi_m.reinit(face);
+    phi_p.reinit(face);
+    phi_m.gather_evaluate(nu_field, dealii::EvaluationFlags::values);
+    phi_p.gather_evaluate(nu_field, dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
+    {
+      scalar nu_m = viscous_kernel->get_coefficient_face(face, q);
+      scalar nu_p = viscous_kernel->get_coefficient_face_neighbor(face, q);
+      replace(nu_m, phi_m.get_value(q));
+      replace(nu_p, phi_p.get_value(q));
+      viscous_kernel->set_coefficient_face(face, q, nu_m);
+      viscous_kernel->set_coefficient_face_neighbor(face, q, nu_p);
+    }
+  }
+
+  unsigned int const b_begin = matrix_free->n_inner_face_batches();
+  unsigned int const b_end   = b_begin + matrix_free->n_boundary_face_batches();
+  for(unsigned int face = b_begin; face < b_end; ++face)
+  {
+    phi_m.reinit(face);
+    phi_m.gather_evaluate(nu_field, dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < phi_m.n_q_points; ++q)
+    {
+      scalar nu = viscous_kernel->get_coefficient_face(face, q);
+      replace(nu, phi_m.get_value(q));
+      viscous_kernel->set_coefficient_face(face, q, nu);
+    }
+  }
+
+  nu_field.zero_out_ghost_values();
 }
 
 template<int dim, typename Number>
@@ -2498,6 +2650,10 @@ SpatialOperatorBase<dim, Number>::setup_wall_enrichment_solvers(
   // mass + viscous operator for (U_bar, U_tilde); the viscous wall condition is weak (Nitsche,
   // penalty scaled by wall_penalty_factor_viscous) or strong (fixed U_bar DoFs, E_bar)
   enriched_momentum_operator.initialize(momentum_operator_mass_viscous, function_enrichment);
+  if(param.viscosity_is_variable())
+  {
+    enriched_momentum_operator.initialize_variable_viscosity(*get_mapping());
+  }
   enriched_momentum_operator.set_enrichment_aware_penalty(param.use_enrichment_aware_penalty);
   enriched_momentum_operator.set_wall_penalty_factor(
     param.wall_bc_viscous == WallBoundaryConditionViscous::Weak ? param.wall_penalty_factor_viscous :
@@ -2508,6 +2664,7 @@ SpatialOperatorBase<dim, Number>::setup_wall_enrichment_solvers(
 
   enriched_momentum_preconditioner.initialize(*this);
   enriched_block_jacobi_preconditioner.initialize(*this);
+  enriched_block_jacobi_preconditioner_projection.initialize(*this);
 
   // penalty step operator (requires ExaDG's projection operator for the U_bar-U_bar block)
   if(param.use_divergence_penalty or param.use_continuity_penalty)
@@ -2591,9 +2748,11 @@ SpatialOperatorBase<dim, Number>::setup_strong_wall_dofs()
     phi.set_dof_values_plain(free_dofs_bar);
   }
 
+#ifdef EXADG_DEBUG
   double const n_fixed = double(free_dofs_bar.size()) - free_dofs_bar.l1_norm();
   this->pcout << "  [strong wall BC] fixed U_bar DoFs: " << n_fixed << " of "
-              << free_dofs_bar.size() << std::endl;
+    << free_dofs_bar.size() << std::endl;
+#endif
 }
 
 template<int dim, typename Number>
@@ -2626,14 +2785,6 @@ SpatialOperatorBase<dim, Number>::solve_projection_enriched(BlockVectorType &   
   // operator = M + dt (D + C) ~ M  ->  block inverse mass is a good preconditioner
   enriched_momentum_preconditioner.set_scaling_factor_mass(1.0);
 
-  // local operator on enriched cells: M + dt tau_D (div, div)
-  dealii::AlignedVector<dealii::VectorizedArray<Number>> const tau_divergence_times_dt =
-    enriched_projection_operator.get_tau_divergence_times_dt();
-  enriched_block_jacobi_preconditioner.update(
-    1.0,
-    0.0,
-    enriched_projection_operator.divergence_penalty_used() ? &tau_divergence_times_dt : nullptr);
-
   // The enriched block system is far worse conditioned than ExaDG's projection operator
   // (small Schur complement), so a relative tolerance of 1e-12 is not reachable in double
   // precision. Use at most the tolerance of the momentum step.
@@ -2655,6 +2806,7 @@ SpatialOperatorBase<dim, Number>::solve_projection_enriched(BlockVectorType &   
   EnrichmentConstrainedOperator<dim, Number, EnrichedProjectionOperator<dim, Number>> const
     constrained_operator(enriched_projection_operator, coupler);                     // K_c
 
+#ifdef EXADG_DEBUG
   /************************************DEBUG************************************/
   // ---- DEBUG 1: symmetry  x.(A y) == y.(A x) -------------------------------------
   {
@@ -2669,24 +2821,28 @@ SpatialOperatorBase<dim, Number>::solve_projection_enriched(BlockVectorType &   
     constrained_operator.vmult(Ay, y);
     double const xAy = x * Ay, yAx = y * Ax;
     this->pcout << "  [penalty debug] x.Ay = " << xAy << "  y.Ax = " << yAx
-                << "  rel. asymmetry = " << std::abs(xAy - yAx) / std::abs(xAy) << std::endl;
+      << "  rel. asymmetry = " << std::abs(xAy - yAx) / std::abs(xAy) << std::endl;
   }
 
   // ---- DEBUG 2: convergence, without aborting the run ------------------------------
   dealii::SolverCG<BlockVectorType> solver(control);
   try
   {
-    solver.solve(constrained_operator, dst, rhs_constrained, enriched_block_jacobi_preconditioner);
+    solver.solve(constrained_operator, dst, rhs_constrained, enriched_momentum_preconditioner);
   }
   catch(dealii::SolverControl::NoConvergence const &)
   {
     this->pcout << "  [penalty debug] NOT converged" << std::endl;
   }
   this->pcout << "  [penalty debug] initial residual = " << control.initial_value()
-              << "   final residual = " << control.last_value()
-              << "   reduction = " << control.last_value() / control.initial_value()
-              << "   iterations = " << control.last_step() << std::endl;
+    << "   final residual = " << control.last_value()
+    << "   reduction = " << control.last_value() / control.initial_value()
+    << "   iterations = " << control.last_step() << std::endl;
   /*****************************************************************************/
+#else
+  dealii::SolverCG<BlockVectorType> solver(control);
+  solver.solve(constrained_operator, dst, rhs_constrained, enriched_momentum_preconditioner);
+#endif
 
   return control.last_step();
 }

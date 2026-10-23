@@ -33,7 +33,7 @@ namespace ConvDiff
 /*
  *  Multigrid preconditioner for scalar convection-diffusion equation.
  */
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class MultigridPreconditioner : public MultigridPreconditionerBase<dim, Number>
 {
 private:
@@ -43,8 +43,8 @@ public:
   typedef typename Base::MultigridNumber MultigridNumber;
 
 private:
-  typedef CombinedOperator<dim, n_components, Number>          PDEOperator;
-  typedef CombinedOperator<dim, n_components, MultigridNumber> PDEOperatorMG;
+  typedef CombinedOperator<dim, Number>          PDEOperator;
+  typedef CombinedOperator<dim, MultigridNumber> PDEOperatorMG;
 
   typedef MultigridOperatorBase<dim, MultigridNumber>            MGOperatorBase;
   typedef MultigridOperator<dim, MultigridNumber, PDEOperatorMG> MGOperator;

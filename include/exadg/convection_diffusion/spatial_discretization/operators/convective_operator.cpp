@@ -26,13 +26,13 @@ namespace ExaDG
 {
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::initialize(
+ConvectiveOperator<dim, Number>::initialize(
   dealii::MatrixFree<dim, Number> const &                   matrix_free,
   dealii::AffineConstraints<Number> const &                 affine_constraints,
   ConvectiveOperatorData<dim> const &                       data,
-  std::shared_ptr<Operators::ConvectiveKernel<dim, n_components, Number>> kernel)
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>> kernel)
 {
   operator_data = data;
 
@@ -43,30 +43,30 @@ ConvectiveOperator<dim, n_components, Number>::initialize(
   this->integrator_flags = kernel->get_integrator_flags();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::set_velocity_copy(VectorType const & velocity_in) const
+ConvectiveOperator<dim, Number>::set_velocity_copy(VectorType const & velocity_in) const
 {
   kernel->set_velocity_copy(velocity_in);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::set_velocity_ptr(VectorType const & velocity_in) const
+ConvectiveOperator<dim, Number>::set_velocity_ptr(VectorType const & velocity_in) const
 {
   kernel->set_velocity_ptr(velocity_in);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 dealii::LinearAlgebra::distributed::Vector<Number> const &
-ConvectiveOperator<dim, n_components, Number>::get_velocity() const
+ConvectiveOperator<dim, Number>::get_velocity() const
 {
   return kernel->get_velocity();
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::reinit_cell_derived(IntegratorCell &   integrator,
+ConvectiveOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator,
                                                      unsigned int const cell) const
 {
   (void)integrator;
@@ -74,9 +74,9 @@ ConvectiveOperator<dim, n_components, Number>::reinit_cell_derived(IntegratorCel
   kernel->reinit_cell(cell);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
+ConvectiveOperator<dim, Number>::reinit_face_derived(IntegratorFace &   integrator_m,
                                                      IntegratorFace &   integrator_p,
                                                      unsigned int const face) const
 {
@@ -86,9 +86,9 @@ ConvectiveOperator<dim, n_components, Number>::reinit_face_derived(IntegratorFac
   kernel->reinit_face(face);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
+ConvectiveOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator_m,
                                                               unsigned int const face) const
 {
   (void)integrator_m;
@@ -96,9 +96,9 @@ ConvectiveOperator<dim, n_components, Number>::reinit_boundary_face_derived(Inte
   kernel->reinit_boundary_face(face);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
+ConvectiveOperator<dim, Number>::reinit_face_cell_based_derived(
   IntegratorFace &                 integrator_m,
   IntegratorFace &                 integrator_p,
   unsigned int const               cell,
@@ -111,22 +111,22 @@ ConvectiveOperator<dim, n_components, Number>::reinit_face_cell_based_derived(
   kernel->reinit_face_cell_based(cell, face, boundary_id);
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell & integrator) const
+ConvectiveOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) const
 {
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     if(operator_data.kernel_data.formulation == FormulationConvectiveTerm::DivergenceFormulation)
     {
-      value_type value = integrator.get_value(q);
+      scalar value = integrator.get_value(q);
       integrator.submit_gradient(
         kernel->get_volume_flux_divergence_form(value, integrator, q, this->time), q);
     }
     else if(operator_data.kernel_data.formulation ==
             FormulationConvectiveTerm::ConvectiveFormulation)
     {
-      gradient_type gradient = integrator.get_gradient(q);
+      vector gradient = integrator.get_gradient(q);
       integrator.submit_value(
         kernel->get_volume_flux_convective_form(gradient, integrator, q, this->time), q);
     }
@@ -137,19 +137,19 @@ ConvectiveOperator<dim, n_components, Number>::do_cell_integral(IntegratorCell &
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_face_integral(IntegratorFace & integrator_m,
+ConvectiveOperator<dim, Number>::do_face_integral(IntegratorFace & integrator_m,
                                                   IntegratorFace & integrator_p) const
 {
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    value_type value_m = integrator_m.get_value(q);
-    value_type value_p = integrator_p.get_value(q);
+    scalar value_m = integrator_m.get_value(q);
+    scalar value_p = integrator_p.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    std::tuple<value_type, value_type> flux = kernel->calculate_flux_interior_and_neighbor(
+    std::tuple<scalar, scalar> flux = kernel->calculate_flux_interior_and_neighbor(
       q, integrator_m, value_m, value_p, normal_m, this->time, true);
 
     integrator_m.submit_value(std::get<0>(flux), q);
@@ -157,9 +157,9 @@ ConvectiveOperator<dim, n_components, Number>::do_face_integral(IntegratorFace &
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFace & integrator_m,
+ConvectiveOperator<dim, Number>::do_face_int_integral(IntegratorFace & integrator_m,
                                                       IntegratorFace & integrator_p) const
 {
   (void)integrator_p;
@@ -167,12 +167,12 @@ ConvectiveOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFa
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
     // set value_p to zero
-    value_type value_m = integrator_m.get_value(q);
-    value_type value_p = value_m * 0.0;
+    scalar value_p = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_m = integrator_m.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
-    value_type flux = kernel->calculate_flux_interior(
+    scalar flux = kernel->calculate_flux_interior(
       q, integrator_m, value_m, value_p, normal_m, this->time, true);
 
     integrator_m.submit_value(flux, q);
@@ -181,9 +181,9 @@ ConvectiveOperator<dim, n_components, Number>::do_face_int_integral(IntegratorFa
 
 // TODO can be removed later once matrix-free evaluation allows accessing neighboring data for
 // cell-based face loops
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_face_int_integral_cell_based(
+ConvectiveOperator<dim, Number>::do_face_int_integral_cell_based(
   IntegratorFace & integrator_m,
   IntegratorFace & integrator_p) const
 {
@@ -192,8 +192,8 @@ ConvectiveOperator<dim, n_components, Number>::do_face_int_integral_cell_based(
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
     // set value_p to zero
-    value_type value_m = integrator_m.get_value(q);
-    value_type value_p = value_m * 0.0;
+    scalar value_p = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_m = integrator_m.get_value(q);
 
     vector normal_m = integrator_m.get_normal_vector(q);
 
@@ -204,16 +204,16 @@ ConvectiveOperator<dim, n_components, Number>::do_face_int_integral_cell_based(
     // calculates the diagonal and block-diagonal only approximately. The theoretically correct
     // version using integrator_velocity_p is currently not implemented in deal.II.
     bool exterior_velocity_available = false; // TODO -> set to true once functionality is available
-    value_type flux                      = kernel->calculate_flux_interior(
+    scalar flux                      = kernel->calculate_flux_interior(
       q, integrator_m, value_m, value_p, normal_m, this->time, exterior_velocity_available);
 
     integrator_m.submit_value(flux, q);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
+ConvectiveOperator<dim, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
                                                       IntegratorFace & integrator_p) const
 {
   (void)integrator_m;
@@ -221,22 +221,22 @@ ConvectiveOperator<dim, n_components, Number>::do_face_ext_integral(IntegratorFa
   for(unsigned int q = 0; q < integrator_p.n_q_points; ++q)
   {
     // set value_m to zero
-    value_type value_p = integrator_p.get_value(q);
-    value_type value_m = value_p * 0.0;
+    scalar value_m = dealii::make_vectorized_array<Number>(0.0);
+    scalar value_p = integrator_p.get_value(q);
 
     // n⁺ = -n⁻
     vector normal_p = -integrator_p.get_normal_vector(q);
 
-    value_type flux = kernel->calculate_flux_interior(
+    scalar flux = kernel->calculate_flux_interior(
       q, integrator_p, value_p, value_m, normal_p, this->time, true);
 
     integrator_p.submit_value(flux, q);
   }
 }
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 void
-ConvectiveOperator<dim, n_components, Number>::do_boundary_integral(
+ConvectiveOperator<dim, Number>::do_boundary_integral(
   IntegratorFace &                   integrator_m,
   OperatorType const &               operator_type,
   dealii::types::boundary_id const & boundary_id) const
@@ -245,8 +245,8 @@ ConvectiveOperator<dim, n_components, Number>::do_boundary_integral(
 
   for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
   {
-    value_type value_m = calculate_interior_value(q, integrator_m, operator_type);
-    value_type value_p = calculate_exterior_value(value_m,
+    scalar value_m = calculate_interior_value(q, integrator_m, operator_type);
+    scalar value_p = calculate_exterior_value(value_m,
                                               q,
                                               integrator_m,
                                               operator_type,
@@ -259,23 +259,18 @@ ConvectiveOperator<dim, n_components, Number>::do_boundary_integral(
 
     // In case of numerical velocity field:
     // Simply use velocity_p = velocity_m on boundary faces -> exterior_velocity_available = false.
-    value_type flux = kernel->calculate_flux_interior(
+    scalar flux = kernel->calculate_flux_interior(
       q, integrator_m, value_m, value_p, normal_m, this->time, false);
 
     integrator_m.submit_value(flux, q);
   }
 }
 
-template class ConvectiveOperator<2, 1, float>;
-template class ConvectiveOperator<2, 1, double>;
+template class ConvectiveOperator<2, float>;
+template class ConvectiveOperator<2, double>;
 
-template class ConvectiveOperator<3, 1, float>;
-template class ConvectiveOperator<3, 1, double>;
+template class ConvectiveOperator<3, float>;
+template class ConvectiveOperator<3, double>;
 
-template class ConvectiveOperator<2, 2, float>;
-template class ConvectiveOperator<2, 2, double>;
-
-template class ConvectiveOperator<3, 2, float>;
-template class ConvectiveOperator<3, 2, double>;
 } // namespace ConvDiff
 } // namespace ExaDG

@@ -24,6 +24,7 @@
 
 // deal.II
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 // ExaDG
 #include <exadg/time_integration/lambda_functions_ale.h>
@@ -35,7 +36,7 @@ namespace ConvDiff
 {
 class Parameters;
 
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class Operator;
 
 template<typename Number>
@@ -45,13 +46,14 @@ class PostProcessorInterface;
 
 namespace ConvDiff
 {
-template<int dim, int n_components, typename Number>
+template<int dim, typename Number>
 class TimeIntBDF : public TimeIntBDFBase
 {
 public:
   using VectorType = dealii::LinearAlgebra::distributed::Vector<Number>;
+  using BlockVectorType = dealii::LinearAlgebra::distributed::BlockVector<Number>;
 
-  TimeIntBDF(std::shared_ptr<Operator<dim, n_components, Number>>          operator_in,
+  TimeIntBDF(std::shared_ptr<Operator<dim, Number>>          operator_in,
              std::shared_ptr<HelpersALE<dim, Number> const>  helpers_ale_in,
              std::shared_ptr<PostProcessorInterface<Number>> postprocessor_in,
              Parameters const &                              param_in,
@@ -63,15 +65,15 @@ public:
                            std::vector<double> const &             times_in);
 
   void
-  extrapolate_solution(VectorType & vector);
+  extrapolate_solution(BlockVectorType & vector);
 
-  VectorType const &
+  BlockVectorType const &
   get_solution_np() const;
 
   void
   ale_update();
 
-  void
+  virtual void
   print_iterations() const;
 
   void
@@ -109,13 +111,33 @@ private:
   prepare_vectors_for_next_timestep() final;
 
   void
-  do_timestep_solve() final;
+  do_timestep_solve() override;
 
   void
   setup_derived() final;
 
+protected:
+  /*
+   * Parts of do_timestep_solve(), also used by the Newton solver (TimeIntBDFNewton):
+   *
+   * prepare_timestep(): stored eddy viscosity, modal filter, transport velocity at t_{n+1}
+   * assemble_right_hand_side(): rhs_vector = f, inhomogeneous boundary terms, explicit convective
+   *   and source terms, BDF history terms (no turbulence terms)
+   * evaluate_explicit_terms_at_new_time(): explicit convective and source terms at t_{n+1}
+   */
+  void
+  prepare_timestep(VectorType & velocity_np);
+
+  void
+  assemble_right_hand_side(VectorType const & velocity_np);
+
+  void
+  evaluate_explicit_terms_at_new_time(VectorType const & velocity_np);
+
   bool
   print_solver_info() const final;
+
+private:
 
   void
   read_restart_vectors(boost::archive::binary_iarchive & ia) final;
@@ -126,7 +148,8 @@ private:
   void
   postprocessing() const final;
 
-  std::shared_ptr<Operator<dim, n_components, Number>> pde_operator;
+protected:
+  std::shared_ptr<Operator<dim, Number>> pde_operator;
 
   Parameters const & param;
 
@@ -135,14 +158,14 @@ private:
   double const cfl;
 
   // solution vectors
-  VectorType              solution_np;
-  std::vector<VectorType> solution;
-  std::vector<VectorType> vec_convective_term;
-  VectorType              convective_term_np;
+  BlockVectorType              solution_np;
+  std::vector<BlockVectorType> solution;
+  std::vector<BlockVectorType> vec_convective_term;
+  BlockVectorType              convective_term_np;
 
-  std::vector<VectorType> vec_source_term;
-  VectorType              source_term_np;
-  VectorType rhs_vector;
+  std::vector<BlockVectorType> vec_source_term;
+  BlockVectorType              source_term_np;
+  BlockVectorType rhs_vector;
 
   // numerical velocity field
   std::vector<VectorType const *> velocities;
@@ -157,6 +180,7 @@ private:
   // This object allows to access utility functions needed for ALE
   std::shared_ptr<HelpersALE<dim, Number> const> helpers_ale;
 
+private:
   // ALE
   VectorType              grid_velocity;
   std::vector<VectorType> vec_grid_coordinates;
