@@ -88,16 +88,8 @@ LinePlotCalculator<dim, Number>::evaluate(VectorType const & velocity,
     {
       if((*quantity)->type == QuantityType::Velocity)
       {
-        std::vector<dealii::Tensor<1, dim, Number>> solution_vector(n_points);
-
-        // calculate velocity for all points along line
-        for(unsigned int i = 0; i < n_points; ++i)
-        {
-          dealii::Tensor<1, dim, Number> u;
-          evaluate_vectorial_quantity_in_point(
-            u, *dof_handler_velocity, *mapping, velocity, points[i], mpi_comm);
-          solution_vector[i] = u;
-        }
+        std::vector<dealii::Tensor<1, dim, Number>> solution_vector =
+          evaluate_quantity_in_points<dim>(*dof_handler_velocity, *mapping, velocity, points);
 
         // write output to file
         if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
@@ -110,7 +102,7 @@ LinePlotCalculator<dim, Number>::evaluate(VectorType const & velocity,
             f.open(filename.c_str(), std::ios::trunc);
           }
           else
-          {
+        {
             f.open(filename.c_str(), std::ios::app);
           }
 
@@ -140,16 +132,8 @@ LinePlotCalculator<dim, Number>::evaluate(VectorType const & velocity,
       }
       else if((*quantity)->type == QuantityType::Pressure)
       {
-        std::vector<Number> solution_vector(n_points);
-
-        // calculate pressure for all points along line
-        for(unsigned int i = 0; i < n_points; ++i)
-        {
-          Number p;
-          evaluate_scalar_quantity_in_point(
-            p, *dof_handler_pressure, *mapping, pressure, points[i], mpi_comm);
-          solution_vector[i] = p;
-        }
+        std::vector<Number> solution_vector =
+          evaluate_quantity_in_points<1>(*dof_handler_pressure, *mapping, pressure, points);
 
         // write output to file
         if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)

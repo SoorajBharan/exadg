@@ -91,20 +91,16 @@ LinePlotCalculator<dim, Number>::evaluate(
       {
         unsigned int const n_blocks = solution.n_blocks();
 
-        std::vector<std::vector<Number>> solution_vector(n_points,
-                                                         std::vector<Number>(n_blocks));
-
-        for(unsigned int i = 0; i < n_points; ++i)
-        {
+          std::vector<std::vector<Number>> solution_vector(n_points, std::vector<Number>(n_blocks)); 
+          
           for(unsigned int b = 0; b < n_blocks; ++b)
           {
-            Number value;
-            evaluate_scalar_quantity_in_point(
-              value, *dof_handler, *mapping, solution.block(b), points[i],
-              mpi_comm);    
-            solution_vector[i][b] = value;
+            std::vector<Number> const values_b =
+              evaluate_quantity_in_points<1>(*dof_handler, *mapping, solution.block(b), points);
+
+            for(unsigned int i = 0; i < n_points; ++i)
+              solution_vector[i][b] = values_b[i];
           }
-        }
 
         // write output to file
         if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
@@ -151,16 +147,8 @@ LinePlotCalculator<dim, Number>::evaluate(
       }
       else if((*quantity)->type == QuantityType::EddyViscosity)
       {
-        std::vector<Number> solution_vector(n_points);
-
-        // calculate pressure for all points along line
-        for(unsigned int i = 0; i < n_points; ++i)
-        {
-          Number nu_t;
-          evaluate_scalar_quantity_in_point(
-            nu_t, *dof_handler_eddy_viscosity, *mapping, eddy_viscosity, points[i], mpi_comm);
-          solution_vector[i] = nu_t;
-        }
+        std::vector<Number> solution_vector =
+          evaluate_quantity_in_points<1>(*dof_handler_eddy_viscosity, *mapping,eddy_viscosity, points);
 
         // write output to file
         if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)

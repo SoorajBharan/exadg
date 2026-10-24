@@ -29,6 +29,8 @@
 #include <deal.II/fe/mapping.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/base/mpi_remote_point_evaluation.h>
+#include <deal.II/numerics/vector_tools_evaluate.h>
 
 namespace ExaDG
 {
@@ -340,6 +342,29 @@ struct Interpolator<1, dim, Number>
     return result;
   }
 };
+
+template<int n_components, int dim, typename Number>
+std::vector<typename dealii::FEPointEvaluation<n_components, dim, dim,
+Number>::value_type>
+evaluate_quantity_in_points(dealii::DoFHandler<dim> const &
+                            dof_handler,
+                            dealii::Mapping<dim> const &
+                            mapping,  
+                            dealii::LinearAlgebra::distributed::Vector<Number>
+                            const & vector,
+                            std::vector<dealii::Point<dim>> const &
+                            points)
+{ 
+  dealii::Utilities::MPI::RemotePointEvaluation<dim> remote_evaluator(1.e-6 /* 
+  tolerance */);
+  remote_evaluator.reinit(points, dof_handler.get_triangulation(), mapping);
+
+  AssertThrow(remote_evaluator.all_points_found(),
+              dealii::ExcMessage("Not all points of the line plot were found in the mesh."));
+
+  return dealii::VectorTools::point_values<n_components>(remote_evaluator,
+                                                         dof_handler, vector);
+}
 
 } // namespace ExaDG
 
