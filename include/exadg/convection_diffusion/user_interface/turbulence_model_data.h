@@ -169,6 +169,8 @@ struct TurbulenceModelData
 
   TurbulenceEddyViscosityModel turbulence_model{TurbulenceEddyViscosityModel::Undefined};
   bool                         is_active{false};
+  bool                         use_stress_limiter{false};
+
   std::vector<PositivityPreservingLimiter> positivity_preserving_limiter;
   std::shared_ptr<TurbulenceDataBase> turbulence_data_base;
 
@@ -204,8 +206,9 @@ struct TurbulenceModelData
       print_parameter(pcout, "Turbulence model", turbulence_model);
       for(unsigned int c = 0; c < positivity_preserving_limiter.size(); ++c)
       {
-        print_parameter(pcout, "Positivity preserving limiter (component " + std::to_string(c) + ")", 
-                        static_cast<int>(positivity_preserving_limiter[c]));
+        print_parameter(pcout, "Positivity preserving limiter (component " + std::to_string(c) + ")", static_cast<int>(positivity_preserving_limiter[c]));
+
+        print_parameter(pcout, "Stress limiter", use_stress_limiter);
       }
       turbulence_data_base->print_coefficients(pcout);
     }

@@ -1434,7 +1434,8 @@ Operator<dim, Number>::update_time_step_size(double const dt,
                                              double const end_time,
                                              double const time_step_number) const
 {
-  turbulence_source_operator.set_time_step_size(dt, time, end_time, time_step_number);
+  if(param.turbulence_model_data.is_active)
+    turbulence_source_operator.set_time_step_size(dt, time, end_time, time_step_number);
 }
 
 template<int dim, typename Number>

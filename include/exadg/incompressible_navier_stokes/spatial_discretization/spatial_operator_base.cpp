@@ -410,6 +410,11 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
     wall_dg_coupler->set_rank_tolerance(param.wall_enrichment_rank_tolerance);
     function_enrichment->set_global_pressure_dof_handler(get_dof_handler_p());
 
+    if(param.turbulence_model_data.rans_model)
+    {
+      function_enrichment->set_global_eddy_viscosity_dof_handler(matrix_free->get_dof_handler(matrix_free_data->get_dof_index(dof_index_eddy_viscosity)));
+    }
+
     function_enrichment->initialize(*grid->triangulation,
                                     get_mapping(),
                                     get_dof_handler_u(),
@@ -1770,10 +1775,26 @@ SpatialOperatorBase<dim, Number>::update_viscosity_enriched(BlockVectorType cons
   compute_total_velocity(velocity_total, velocity);
 
   update_viscosity(velocity_total);
-  enriched_momentum_operator.update_viscosity(velocity_total, turbulence_model);
 
-  // U_bar-U_bar block (ExaDG's viscous kernel): the same cell-wise constant nu_K on the wall layer
-  apply_wall_layer_viscosity_to_kernel();
+  if(param.turbulence_model_data.rans_model)
+  {
+    // nu_t,h of the RANS solver: DoF copy into the shadow layout (enriched and   halo cells)
+    VectorType nu_t_global;
+    turbulence_model.get_eddy_viscosity(nu_t_global);
+    function_enrichment->copy_global_eddy_viscosity_to_wall_layout(
+      nu_t_global, function_enrichment->shadow_eddy_viscosity);
+    function_enrichment->shadow_eddy_viscosity.update_ghost_values();
+
+      enriched_momentum_operator.update_viscosity_rans(function_enrichment->shadow_eddy_viscosity);
+
+      // blocks form one bilinear form
+      apply_wall_layer_viscosity_to_kernel();
+  }
+  else {
+    // LES: cell-wise constant nu_K on the wall layer, written back into the kernel tables
+    enriched_momentum_operator.update_viscosity(velocity_total, turbulence_model);
+    apply_wall_layer_viscosity_to_kernel();
+  }
 
 #ifdef EXADG_DEBUG
   /*************************************DEBUG*********************************/
@@ -1781,13 +1802,21 @@ SpatialOperatorBase<dim, Number>::update_viscosity_enriched(BlockVectorType cons
   // enriched layer (EnrichedMomentumOperator, quadrature of matrix_free_en)
   {
     double nu_max_domain = 0.0, nu_max_enriched = 0.0;
+    double nu_min_domain = std::numeric_limits<double>::max(), nu_min_enriched = nu_min_domain;
 
     unsigned int const n_q =  matrix_free->get_n_q_points(get_quad_index_velocity_standard());
     for(unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
+    {
       for(unsigned int q = 0; q < n_q; ++q)
-        for(unsigned int v = 0; v <
-          matrix_free->n_active_entries_per_cell_batch(cell); ++v)
-          nu_max_domain = std::max(nu_max_domain, double(viscous_kernel->get_viscosity_cell(cell, q)[v]));
+      {
+        for(unsigned int v = 0; v < matrix_free->n_active_entries_per_cell_batch(cell); ++v)
+        {
+          double const nu_q = double(viscous_kernel->get_viscosity_cell(cell, q)[v]);
+          nu_max_domain     = std::max(nu_max_domain, nu_q);
+          nu_min_domain     = std::min(nu_min_domain, nu_q); 
+        }
+      }
+    }
 
     auto const &       mf_en  = *function_enrichment->get_matrix_free();
     unsigned int const n_q_en =
@@ -1797,18 +1826,23 @@ SpatialOperatorBase<dim, Number>::update_viscosity_enriched(BlockVectorType cons
       if(mf_en.get_cell_iterator(cell, 0)->active_fe_index() != 1)
         continue;
       for(unsigned int q = 0; q < n_q_en; ++q)
+      {
         for(unsigned int v = 0; v < mf_en.n_active_entries_per_cell_batch(cell);++v)
-          nu_max_enriched =
-            std::max(nu_max_enriched,
-                     double(enriched_momentum_operator.get_viscosity_cell(cell, q)[v]));
+        {
+          double const nu_q =
+            double(enriched_momentum_operator.get_viscosity_cell(cell, q)[v]);
+          nu_max_enriched   = std::max(nu_max_enriched, nu_q);
+          nu_min_enriched   = std::min(nu_min_enriched, nu_q);
+        }
+      }
     }
 
     nu_max_domain   = dealii::Utilities::MPI::max(nu_max_domain, mpi_comm);
     nu_max_enriched = dealii::Utilities::MPI::max(nu_max_enriched, mpi_comm);
-    pcout << "  [viscosity debug] max nu/nu_mol: domain = " << nu_max_domain /
-      param.viscosity
-      << "   enriched layer = " << nu_max_enriched / param.viscosity <<
-      std::endl;
+    nu_min_domain   = dealii::Utilities::MPI::min(nu_min_domain, mpi_comm);
+    nu_min_enriched = dealii::Utilities::MPI::min(nu_min_enriched, mpi_comm);
+    pcout << "  [viscosity debug] max nu/nu_mol: domain = " << nu_max_domain / param.viscosity << "   enriched layer = " << nu_max_enriched / param.viscosity <<  std::endl;
+    pcout << "  [viscosity debug] min nu/nu_mol: domain = " << nu_min_domain / param.viscosity << "   enriched layer = " << nu_min_enriched / param.viscosity << std::endl;
   }
   /****************************************************************************/
 #endif

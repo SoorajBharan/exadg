@@ -32,6 +32,7 @@
 // ExaDG
 #include <exadg/functions_and_boundary_conditions/container_interface_data.h>
 #include <exadg/functions_and_boundary_conditions/verify_boundary_conditions.h>
+#include <exadg/operators/wall_modelling/wall_friction_velocity.h>
 
 namespace ExaDG
 {
@@ -121,6 +122,8 @@ struct BoundaryDescriptorU
 
   // add more types of boundary conditions
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> wall_enrichment_bc;
+
+  std::shared_ptr<WallFrictionVelocity<dim>> wall_friction_velocity;
 
 
   // return the boundary type

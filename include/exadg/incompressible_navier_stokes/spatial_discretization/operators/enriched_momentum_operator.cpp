@@ -239,6 +239,278 @@ EnrichedMomentumOperator<dim, Number>::update_viscosity(
 }
 
 template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::update_viscosity_rans(VectorType const & nu_t_shadow) const
+{
+  AssertThrow(viscosity_is_variable,
+              dealii::ExcMessage("EnrichedMomentumOperator: viscosity is constant."));
+
+#ifdef EXADG_DEBUG
+  AssertThrow(nu_t_shadow.has_ghost_elements(),
+              dealii::ExcMessage("update_viscosity_rans: call update_ghost_values() on nu_t first."));
+#endif
+
+
+  AssertThrow(dim >= 2, dealii::ExcMessage("cell_viscosity uses component 1 as marker."));
+
+  /*
+     * RANS: nu_K = nu + I_1 max(nu_t,h, 0) on enriched and halo cells, I_1 the 
+  d-linear interpolation
+     * from the cell vertices, nu_t = 0 at vertices on enrichment walls. nu_t ~ 
+  kappa u_tau y varies
+     * linearly across the wall cell, which the wall layer profile psi relies on. 
+  On affine cells,
+     * nu_K grad(U_bar) : grad(v_bar) is integrated exactly by the k+1 point rule 
+  of ExaDG's viscous
+     * kernel (U_bar-U_bar block) and by the enrichment rule (blocks with psi), so 
+  all four blocks
+     * form one bilinear form. The same nu_K is written into the kernel tables
+     * (apply_wall_layer_viscosity_to_kernel).
+     */
+  initialize_vertex_interpolation();
+
+
+  cell_viscosity.zero_out_ghost_values();
+  function_enrichment->get_matrix_free()->cell_loop(&This::cell_loop_cell_viscosity_rans,
+                                                    this,
+                                                    cell_viscosity,
+                                                    nu_t_shadow,
+                                                    true /*zero_dst_vector*/);
+  // halo side of the faces on neighbouring processes (tables, kernel)
+  cell_viscosity.update_ghost_values();
+
+  VectorType dummy;
+
+  function_enrichment->get_matrix_free()->loop(&This::cell_loop_set_viscosity_rans,
+
+                                               &This::face_loop_set_viscosity_rans,
+
+                                               &This::boundary_face_loop_set_viscosity_rans,
+                                               this,
+                                               dummy,
+                                               cell_viscosity);
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::initialize_vertex_interpolation() const
+{ 
+  if(vertex_values_nu_t.n_rows() > 0)
+    return;
+
+  auto const & matrix_free = *function_enrichment->get_matrix_free();
+
+  dealii::FiniteElement<dim> const & fe_nu_t = matrix_free.get_dof_handler(function_enrichment->get_dof_index_shadow_eddy_viscosity()).get_fe(1);
+
+  unsigned int const n_vertices = dealii::GeometryInfo<dim>::vertices_per_cell;
+
+  vertex_values_nu_t.reinit(n_vertices, fe_nu_t.n_dofs_per_cell());
+  for(unsigned int v = 0; v < n_vertices; ++v)
+    for(unsigned int i = 0; i < fe_nu_t.n_dofs_per_cell(); ++i)
+      vertex_values_nu_t(v, i) = fe_nu_t.shape_value(i, dealii::GeometryInfo<dim>::unit_cell_vertex(v));
+
+
+  dealii::FiniteElement<dim> const & fe_nu_K = function_enrichment->get_dof_handler_shadow_vector().get_fe(1).base_element(0);
+
+  std::vector<dealii::Point<dim>> const & support_points = fe_nu_K.get_unit_support_points();
+
+  nodal_values_nu_K.reinit(support_points.size(), n_vertices);
+  for(unsigned int i = 0; i < support_points.size(); ++i)
+    for(unsigned int v = 0; v < n_vertices; ++v)
+      nodal_values_nu_K(i, v) = dealii::GeometryInfo<dim>::d_linear_shape_function(support_points[i], v);
+
+  auto const & bc = momentum_operator->get_data().bc;
+
+  wall_vertex_factor.resize(matrix_free.n_cell_batches() * n_vertices);
+  for(unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+  {
+    for(unsigned int v = 0; v < n_vertices; ++v)
+      wall_vertex_factor[cell * n_vertices + v] = dealii::make_vectorized_array<Number>(1.0);
+
+    for(unsigned int l = 0; l < matrix_free.n_active_entries_per_cell_batch(cell); ++l)
+    {
+      typename dealii::Triangulation<dim>::cell_iterator const cell_it = matrix_free.get_cell_iterator(cell, l);
+      for(auto const f : cell_it->face_indices())
+      {
+        if(not cell_it->at_boundary(f) or cell_it->has_periodic_neighbor(f) or bc->get_boundary_type(cell_it->face(f)->boundary_id()) != BoundaryTypeU::WallEnrichment)
+          continue;
+
+        for(unsigned int i = 0; i < dealii::GeometryInfo<dim>::vertices_per_face; ++i)
+          wall_vertex_factor[cell * n_vertices + dealii::GeometryInfo<dim>::face_to_cell_vertices(f, i)][l] = 0.0;                
+      }
+    } 
+  } 
+} 
+    
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::cell_loop_cell_viscosity_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           cell_range) const
+{ 
+  unsigned int const fe_index = matrix_free.get_cell_active_fe_index(cell_range);
+  if(fe_index != 1 and fe_index != 2)
+    return;
+
+  CellIntegratorScalar integrator_nu_t(matrix_free,
+                                       cell_range,
+
+                                       function_enrichment->get_dof_index_shadow_eddy_viscosity(),
+                                       function_enrichment->get_quad_index());
+  CellIntegratorU      integrator_nu_K(matrix_free,
+                                       cell_range,
+
+                                       function_enrichment->get_dof_index_shadow_vector(),
+                                       function_enrichment->get_quad_index());
+
+  AssertDimension(integrator_nu_t.dofs_per_cell, vertex_values_nu_t.n_cols());
+  AssertDimension(integrator_nu_K.dofs_per_component, nodal_values_nu_K.n_rows());
+
+  scalar const nu_mol = dealii::make_vectorized_array<Number>(viscosity);
+  scalar const zero   = dealii::make_vectorized_array<Number>(0.0);
+  scalar const one    = dealii::make_vectorized_array<Number>(1.0);
+
+  unsigned int const n_vertices = dealii::GeometryInfo<dim>::vertices_per_cell;
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator_nu_t.reinit(cell);
+    integrator_nu_t.read_dof_values(src);
+
+    std::array<scalar, dealii::GeometryInfo<dim>::vertices_per_cell> nu_t_vertex;
+    for(unsigned int v = 0; v < n_vertices; ++v)
+    {
+      nu_t_vertex[v] = zero;
+      for(unsigned int i = 0; i < integrator_nu_t.dofs_per_cell; ++i)
+        nu_t_vertex[v] += Number(vertex_values_nu_t(v, i)) * integrator_nu_t.get_dof_value(i);
+      nu_t_vertex[v] = std::max(nu_t_vertex[v], zero) * wall_vertex_factor[cell * n_vertices + v];
+    }
+
+    integrator_nu_K.reinit(cell);
+    for(unsigned int i = 0; i < integrator_nu_K.dofs_per_component; ++i)
+    {
+      vector value;
+      value[0] = nu_mol;
+      for(unsigned int v = 0; v < n_vertices; ++v)
+        value[0] += Number(nodal_values_nu_K(i, v)) * nu_t_vertex[v];
+      value[1] = one;
+      integrator_nu_K.submit_dof_value(value, i);
+    }
+
+    integrator_nu_K.distribute_local_to_global(dst);
+  } 
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::cell_loop_set_viscosity_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           cell_range) const
+{
+  (void)dst;
+
+  // cell tables are read on enriched cells (index 1) only (cell_loop)
+  if(matrix_free.get_cell_active_fe_index(cell_range) != 1)
+    return;
+
+  CellIntegratorU integrator(matrix_free,
+                             cell_range,
+                             function_enrichment->get_dof_index_shadow_vector(),
+                             function_enrichment->get_quad_index());
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.read_dof_values(src);
+    integrator.evaluate(dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      viscosity_coefficients.set_coefficient_cell(cell, q, integrator.get_value(q)[0]);
+  }
+}
+
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::face_loop_set_viscosity_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           face_range) const
+{
+  (void)dst;
+
+  // face tables are read on faces with at least one enriched side; the other side is enriched
+  // (1) or halo (2), both carry nu_t,h in the shadow layout
+  unsigned int const fe_m = matrix_free.get_face_active_fe_index(face_range, true);
+  unsigned int const fe_p = matrix_free.get_face_active_fe_index(face_range, false);
+  if(fe_m != 1 and fe_p != 1)
+    return;
+
+  unsigned int const dof  = function_enrichment->get_dof_index_shadow_vector();
+  unsigned int const quad = function_enrichment->get_quad_index();
+
+  FaceIntegratorU integrator_m(matrix_free, face_range, true, dof, quad);
+  FaceIntegratorU integrator_p(matrix_free, face_range, false, dof, quad);
+
+  for(unsigned int face = face_range.first; face < face_range.second; ++face)
+  {
+    integrator_m.reinit(face);
+    integrator_p.reinit(face);
+
+    integrator_m.read_dof_values(src);
+    integrator_p.read_dof_values(src);
+
+    integrator_m.evaluate(dealii::EvaluationFlags::values);
+    integrator_p.evaluate(dealii::EvaluationFlags::values);
+
+
+    for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
+    {
+      viscosity_coefficients.set_coefficient_face(face, q,
+                                                  integrator_m.get_value(q)[0]);
+      viscosity_coefficients.set_coefficient_face_neighbor(face, q,
+                                                           integrator_p.get_value(q)[0]);
+    } 
+  }
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::boundary_face_loop_set_viscosity_rans(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           face_range) const
+{
+  (void)dst;
+
+  // boundary face tables are read on enriched cells only (boundary_face_loop)
+  if(matrix_free.get_face_active_fe_index(face_range, true) != 1)
+    return;
+
+  FaceIntegratorU integrator(matrix_free,
+                             face_range,
+                             true,
+                             function_enrichment->get_dof_index_shadow_vector(),
+                             function_enrichment->get_quad_index());
+
+  for(unsigned int face = face_range.first; face < face_range.second; ++face)
+  {
+    integrator.reinit(face);
+    integrator.read_dof_values(src);
+    integrator.evaluate(dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      viscosity_coefficients.set_coefficient_face(face, q, integrator.get_value(q)[0]);
+  }
+}
+
+template<int dim, typename Number>
 typename EnrichedMomentumOperator<dim, Number>::scalar
 EnrichedMomentumOperator<dim, Number>::get_viscosity_cell(
   unsigned int const cell,
@@ -580,6 +852,20 @@ EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorT
   //     K_tilde_bar * U_bar + K_tilde_tilde * U_tilde -> dst.block(1)   (psi v_tilde rows)
   //     (K_bar_bar * U_bar is already in step (1))
   cell_loop(u_bar, src.block(1), &correction_bar, dst.block(1));
+
+
+  // U_bar-U_bar mass on enriched cells with the enrichment quadrature (scaled as  the mass term
+  // of momentum_operator), consistent with apply_mass_operator and the inverse   mass
+  if(momentum_operator->get_data().unsteady_problem)
+    function_enrichment->add_bar_bar_mass_consistency(
+      momentum_operator->get_matrix_free(),
+      momentum_operator->get_dof_index(),
+      momentum_operator->get_quad_index(),
+      src.block(0),
+      u_bar,
+      correction_bar,
+      momentum_operator->get_scaling_factor_mass_operator());
+
   if(viscous)
   {
     inner_face_loop(u_bar, src.block(1), &correction_bar, dst.block(1));

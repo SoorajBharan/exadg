@@ -288,6 +288,16 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
    */
   if(line_plot_calculator.time_control.needs_evaluation(time, time_step_number))
     line_plot_calculator.evaluate(velocity, pressure);
+
+  if(line_plot_calculator.time_control.needs_evaluation(time, time_step_number))
+  {
+    // wall enrichment: velocity = U_bar only; the lines need u_h = U_bar + psi U_tilde
+    // (L2 projection onto the velocity space, as the VTU field total_velocity)
+    if(navier_stokes_operator->get_wall_enrichment_enabled())
+      line_plot_calculator.evaluate(total_velocity.evaluate_get(velocity), pressure);
+    else
+      line_plot_calculator.evaluate(velocity, pressure);
+  }
 }
 
 template<int dim, typename Number>
@@ -296,7 +306,7 @@ PostProcessor<dim, Number>::initialize_derived_fields()
 {
   // vorticity
   if(pp_data.output_data.write_vorticity or pp_data.output_data.write_streamfunction or
-     pp_data.output_data.write_vorticity_magnitude)
+    pp_data.output_data.write_vorticity_magnitude)
   {
     vorticity.type              = SolutionFieldType::vector;
     vorticity.name              = "vorticity";
@@ -530,7 +540,7 @@ PostProcessor<dim, Number>::initialize_derived_fields()
     enrichment_velocity.reinit();
   }
 
-  if(pp_data.output_data.write_total_velocity)
+  if(pp_data.output_data.write_total_velocity or (navier_stokes_operator->get_wall_enrichment_enabled() and pp_data.line_plot_data.time_control_data.is_active))
   {
     bool wall_enriched = navier_stokes_operator->get_wall_enrichment_enabled();
     AssertThrow(wall_enriched, dealii::ExcMessage("Asked to write total velocity without enabling wall enrichment. To fix this set param.wall_enrichment_enabled = true"));

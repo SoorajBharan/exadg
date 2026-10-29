@@ -642,6 +642,8 @@ TurbulenceModel<dim, Number>::cell_loop_set_coefficients_rans(
   CellIntegratorScalar integrator(matrix_free,
                                   this->dof_index_scalar,
                                   this->viscous_kernel->get_quad_index());
+
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
   // loop over all cells
   for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
@@ -656,7 +658,7 @@ TurbulenceModel<dim, Number>::cell_loop_set_coefficients_rans(
       // get the current viscosity
       scalar viscosity = this->viscous_kernel->get_viscosity_cell(cell, q);
       // add eddy viscosity
-      viscosity += integrator.get_value(q);
+      viscosity += std::max(integrator.get_value(q), zero);
 
       this->viscous_kernel->set_coefficient_cell(cell, q, viscosity);
     }
@@ -680,6 +682,8 @@ TurbulenceModel<dim, Number>::face_loop_set_coefficients_rans(
                                     this->dof_index_scalar,
                                     this->viscous_kernel->get_quad_index());
 
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+
   // loop over all interior faces
   for(unsigned int face = face_range.first; face < face_range.second; face++)
   {
@@ -698,8 +702,8 @@ TurbulenceModel<dim, Number>::face_loop_set_coefficients_rans(
     {
       scalar viscosity_m = this->viscous_kernel->get_coefficient_face(face, q);
       scalar viscosity_p = this->viscous_kernel->get_coefficient_face_neighbor(face, q);
-      viscosity_m += integrator_m.get_value(q);
-      viscosity_p += integrator_p.get_value(q);
+      viscosity_m += std::max(integrator_m.get_value(q), zero);
+      viscosity_p += std::max(integrator_p.get_value(q), zero);
 
       // set the coefficients
       this->viscous_kernel->set_coefficient_face(face, q, viscosity_m);
@@ -721,6 +725,8 @@ TurbulenceModel<dim, Number>::boundary_face_loop_set_coefficients_rans(
                                   this->dof_index_scalar,
                                   this->viscous_kernel->get_quad_index());
 
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+
   // loop over all boundary faces
   for(unsigned int face = face_range.first; face < face_range.second; face++)
   {
@@ -733,7 +739,7 @@ TurbulenceModel<dim, Number>::boundary_face_loop_set_coefficients_rans(
     for(unsigned int q = 0; q < integrator.n_q_points; ++q)
     {
       scalar viscosity = this->viscous_kernel->get_coefficient_face(face, q);
-      viscosity += integrator.get_value(q);
+      viscosity += std::max(integrator.get_value(q), zero);
 
       // set the coefficients
       this->viscous_kernel->set_coefficient_face(face, q, viscosity);

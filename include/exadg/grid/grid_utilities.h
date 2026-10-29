@@ -187,7 +187,7 @@ create_triangulation(
   }
   else if(data.triangulation_type == TriangulationType::Distributed)
   {
-    typename dealii::parallel::distributed::Triangulation<dim>::Settings distributed_settings;
+    typename dealii::parallel::distributed::Triangulation<dim>::Settings distributed_settings = dealii::parallel::distributed::Triangulation<dim>::default_setting;
 
     if(construct_multigrid_hierarchy)
     {

@@ -354,6 +354,18 @@ EnrichedProjectionOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVecto
   //     K_tilde_bar U_bar + K_tilde_tilde U_tilde -> dst.block(1)   (psi v_tilde rows)
   //     (K_bar_bar U_bar is already in step 1)
   cell_loop(u_bar, src.block(1), &correction_bar, dst.block(1));
+
+
+  // U_bar-U_bar mass on enriched cells with the enrichment quadrature  (projection operator:
+  // mass factor 1), consistent with apply_mass_operator and the inverse mass
+  function_enrichment->add_bar_bar_mass_consistency(projection_operator->get_matrix_free(), 
+                                                    projection_operator->get_dof_index(),
+                                                    projection_operator->get_quad_index(),
+                                                    src.block(0),
+                                                    u_bar,
+                                                    correction_bar,
+                                                    Number(1.0));
+
   if(use_continuity_penalty)
     inner_face_loop(u_bar, src.block(1), &correction_bar, dst.block(1));
 #ifdef EXADG_PROFILE

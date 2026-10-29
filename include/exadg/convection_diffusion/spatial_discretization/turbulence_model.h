@@ -34,6 +34,8 @@
 #include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
 #include <exadg/utilities/lazy_ptr.h>
 
+#include <exadg/convection_diffusion/spatial_discretization/eddy_viscosity_evaluator.h>
+
 #include <exadg/operators/inverse_mass_operator.h>
 
 
@@ -126,23 +128,15 @@ public:
                           scalar &                                viscosity,
                           dealii::ArrayView<scalar> const &       viscosity_derivative) const;
 
+  EddyViscosityEvaluator<dim, Number> const &
+  get_eddy_viscosity_evaluator() const;
+
 private:
   void
   cell_loop(dealii::MatrixFree<dim, Number> const & matrix_free,
             VectorType &                            dst,
             BlockVectorType const &                 src,
             Range const &                           cell_range);
-
-  void
-  standard_k_epsilon_model(dealii::ArrayView<scalar const> const & solution,
-                           scalar &                                viscosity,
-                           dealii::ArrayView<scalar> const &       viscosity_derivative) const;
-
-  void
-  standard_k_omega_1988_model(dealii::ArrayView<scalar const> const & solution,
-                              dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
-                              scalar &                                viscosity,
-                              dealii::ArrayView<scalar> const &       viscosity_derivative) const;
 
   void
   cell_loop_extract_tke(dealii::MatrixFree<dim, Number> const & matrix_free,
@@ -156,7 +150,9 @@ private:
                                BlockVectorType const &                 src,
                                Range const &                           cell_range) const;
 
-  TurbulenceModelData                                   turbulence_model_data;
+  TurbulenceModelData                                  turbulence_model_data;
+
+  EddyViscosityEvaluator<dim, Number> evaluator;
 
   unsigned int n_variables;
 

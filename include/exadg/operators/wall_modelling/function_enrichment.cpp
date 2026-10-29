@@ -120,6 +120,26 @@ FunctionEnrichment<dim, Number>::initialize(
   }
   dof_handler_shadow_pressure.reinit(triangulation);
 
+  if(has_eddy_viscosity())
+  {
+    dealii::FiniteElement<dim> const & fe_nu_t = global_dof_handler_eddy_viscosity->get_fe();
+
+    AssertThrow(fe_nu_t.n_components() == 1,
+                dealii::ExcMessage("RANS eddy viscosity: scalar finite element expected."));
+
+    // index 0 must be of the same kind as fe_nu_t (FESystem only compares to FESystem)
+    if(dynamic_cast<dealii::FESystem<dim> const *>(&fe_nu_t) != nullptr)
+      fe_shadow_eddy_viscosity_collection.push_back(
+        dealii::FESystem<dim>(dealii::FE_Nothing<dim>(), 1)); // index 0
+    else
+      fe_shadow_eddy_viscosity_collection.push_back(dealii::FE_Nothing<dim>()); // index 0
+
+    fe_shadow_eddy_viscosity_collection.push_back(fe_nu_t); // index 1: enriched
+    fe_shadow_eddy_viscosity_collection.push_back(fe_nu_t); // index 2: halo
+
+    dof_handler_shadow_eddy_viscosity.reinit(triangulation);
+  }
+
   // DG scalar (wall distance)
   fe_en_scalar = create_finite_element<dim>(type, true /* is_dg */, 1, 1);
   fe_en_collection_scalar.push_back(dealii::FESystem<dim>(dealii::FE_Nothing<dim>(), 1)); // index 0
@@ -272,6 +292,15 @@ FunctionEnrichment<dim, Number>::initialize(
     }
   }
 
+  if(has_eddy_viscosity())
+  {
+    auto cell_shadow_vector = dof_handler_shadow_vector.begin_active();
+    auto cell_nu_t          = dof_handler_shadow_eddy_viscosity.begin_active();
+    for(; cell_shadow_vector != dof_handler_shadow_vector.end(); ++cell_shadow_vector, ++cell_nu_t)
+      if(cell_shadow_vector->is_locally_owned())
+        cell_nu_t->set_active_fe_index(cell_shadow_vector->active_fe_index());
+  }
+
   dof_handler_en_vector.distribute_dofs(fe_en_collection);
   dof_handler_shadow_vector.distribute_dofs(fe_shadow_collection);
 
@@ -280,6 +309,9 @@ FunctionEnrichment<dim, Number>::initialize(
 
   dof_handler_en_scalar.distribute_dofs(fe_en_collection_scalar);
   dof_handler_shadow_pressure.distribute_dofs(fe_shadow_pressure_collection);
+
+  if(has_eddy_viscosity())
+    dof_handler_shadow_eddy_viscosity.distribute_dofs(fe_shadow_eddy_viscosity_collection);
   // ====================================================================
   // Setup Isolated MatrixFree Object
   // ====================================================================
@@ -289,6 +321,8 @@ FunctionEnrichment<dim, Number>::initialize(
   dof_index_shadow_vector = 3;
   dof_index_en_scalar     = 4;
   dof_index_shadow_pressure = 5;
+  if(has_eddy_viscosity())
+    dof_index_shadow_eddy_viscosity = 6;
 
   // CG scalar (friction velocity, wall traction)
   constraint_cg_scalar.clear();
@@ -327,6 +361,11 @@ FunctionEnrichment<dim, Number>::initialize(
     &constraint_dg         // dof_handler_shadow_pressure (dof_index_shadow_pressure)
   };
 
+  if(has_eddy_viscosity())
+  {
+    dof_handlers.push_back(&dof_handler_shadow_eddy_viscosity);
+    constraints.push_back(&constraint_dg); // dof_handler_shadow_eddy_viscosity (6)
+  }
 
   unsigned int const n_q_1d = std::max({fe_degree_dg + 1, fe_degree_en + 1,
     n_q_points_enrichment});
@@ -390,6 +429,12 @@ FunctionEnrichment<dim, Number>::initialize(
   friction_velocity_old = 0.0;
   wall_shear_stress = 0.0;
 
+  if(has_eddy_viscosity())
+  {
+    matrix_free_en->initialize_dof_vector(shadow_eddy_viscosity, dof_index_shadow_eddy_viscosity);
+    shadow_eddy_viscosity = 0.0;
+  }
+
   // ====================================================================
   //  Index maps global DG layout <-> shadow layout, locally owned enriched (1) and halo (2)
   //  cells; the enriched pairs come first. Both layouts are DG, so all DoFs of a locally
@@ -440,10 +485,17 @@ FunctionEnrichment<dim, Number>::initialize(
                                               dof_handler_shadow_vector,
                                               velocity_index_global,
                                               velocity_index_shadow);
+
   build_index_map(*global_dof_handler_pressure,
                   dof_handler_shadow_pressure,
                   pressure_index_global,
                   pressure_index_shadow);
+
+  if(has_eddy_viscosity())
+    build_index_map(*global_dof_handler_eddy_viscosity,
+                    dof_handler_shadow_eddy_viscosity,
+                    eddy_viscosity_index_global,
+                    eddy_viscosity_index_shadow);
 }
 
 template<int dim, typename Number>
@@ -671,6 +723,8 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
   }
 
   node_to_wall_node.clear();
+
+  wall_node_points = global_cg_wall_points;
 
   for(auto const & cell : dof_handler_cg_scalar.active_cell_iterators())
   {
@@ -1024,6 +1078,24 @@ FunctionEnrichment<dim, Number>::finish_friction_velocity(std::array<VectorType,
     auto const it = wall_tau.find(entry.second);
     if(it != wall_tau.end())
       wall_tau[entry.first] = it->second;
+  }
+
+  if(boundary_descriptor->wall_friction_velocity)
+  {
+    std::vector<dealii::Point<dim>> points;
+    std::vector<double>             values;
+    points.reserve(wall_node_points.size());
+    values.reserve(wall_node_points.size());
+    for(auto const & [point, dof] : wall_node_points)
+    {
+      auto const it = wall_tau.find(dof);
+      if(it != wall_tau.end())
+      {
+        points.push_back(point);
+        values.push_back(std::sqrt(double(it->second)));
+      }
+    }
+    boundary_descriptor->wall_friction_velocity->set(points, values);
   }
 
   // (4) tau_w on wall nodes, off-wall nodes take the value of their nearest wall node
@@ -1383,6 +1455,137 @@ FunctionEnrichment<dim, Number>::copy_global_pressure_to_wall_layout(VectorType 
 
 template<int dim, typename Number>
 void
+FunctionEnrichment<dim, Number>::set_global_eddy_viscosity_dof_handler(
+  dealii::DoFHandler<dim> const & dof_handler_nu_t_in)
+{
+  global_dof_handler_eddy_viscosity = &dof_handler_nu_t_in;
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::copy_global_eddy_viscosity_to_wall_layout(
+  VectorType const & global_nu_t,
+  VectorType &       wall_nu_t) const
+{
+  AssertThrow(has_eddy_viscosity(),
+              dealii::ExcMessage("No RANS eddy viscosity: call set_global_eddy_viscosity_dof_handler() before initialize()."));
+
+#ifdef EXADG_DEBUG
+  AssertThrow(global_nu_t.locally_owned_size() ==
+              global_dof_handler_eddy_viscosity->n_locally_owned_dofs() and
+              wall_nu_t.locally_owned_size() ==
+              dof_handler_shadow_eddy_viscosity.n_locally_owned_dofs(),
+              dealii::ExcMessage("copy_global_eddy_viscosity_to_wall_layout: vector layouts do not match."));
+#endif
+
+  wall_nu_t = 0.0;
+
+  // DoF copy, locally owned enriched (1) and halo (2) cells: same FE on both sides, so the DoF
+  // values are the same numbers
+  for(unsigned int i = 0; i < eddy_viscosity_index_global.size(); ++i)
+    wall_nu_t.local_element(eddy_viscosity_index_shadow[i]) =
+      global_nu_t.local_element(eddy_viscosity_index_global[i]);
+}
+
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::add_bar_bar_mass_consistency(
+  dealii::MatrixFree<dim, Number> const & matrix_free_fluid,
+  unsigned int const                      dof_index_fluid,
+  unsigned int const                      quad_index_fluid,
+  VectorType const &                      u_bar_global,
+  VectorType const &                      u_bar_shadow,
+  VectorType &                            correction_bar,
+  Number const                            factor) const
+{ 
+  if(factor == Number(0.0))
+    return;
+
+  // (1) M_bb^fluid U_bar: the mass inside ExaDG's operator, whole domain
+  dof_index_fluid_mass  = dof_index_fluid;
+  quad_index_fluid_mass = quad_index_fluid;
+  VectorType mass_fluid;
+  matrix_free_fluid.initialize_dof_vector(mass_fluid, dof_index_fluid);
+  matrix_free_fluid.cell_loop(&This::cell_loop_mass_fluid,
+                              this,
+                              mass_fluid,
+                              u_bar_global,
+                              true /*zero_dst_vector = true*/);
+
+  // (2) M_bb^enr U_bar: enrichment quadrature, enriched cells
+  VectorType mass_enriched;
+  matrix_free_en->initialize_dof_vector(mass_enriched, dof_index_shadow_vector);
+  matrix_free_en->cell_loop(&This::cell_loop_mass_enriched,
+                            this,
+                            mass_enriched,
+                            u_bar_shadow,
+                            true /*zero_dst_vector = true*/);
+
+  // (3) DoF loop over the enriched cells (first n_velocity_index_enriched pairs  of the index
+  //     map): factor (M_bb^enr - M_bb^fluid) U_bar
+  for(unsigned int i = 0; i < n_velocity_index_enriched; ++i)
+    correction_bar.local_element(velocity_index_shadow[i]) +=
+      factor * (mass_enriched.local_element(velocity_index_shadow[i]) -
+      mass_fluid.local_element(velocity_index_global[i]));
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::cell_loop_mass_fluid(
+  dealii::MatrixFree<dim, Number> const &       matrix_free,
+  VectorType &                                  dst,
+  VectorType const &                            src,
+  std::pair<unsigned int, unsigned int> const & cell_range) const
+{ 
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> integrator(matrix_free,
+                                                           dof_index_fluid_mass,
+
+                                                           quad_index_fluid_mass);                                    
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.read_dof_values(src);
+    integrator.evaluate(dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(integrator.get_value(q), q);
+    integrator.integrate(dealii::EvaluationFlags::values);
+    integrator.distribute_local_to_global(dst);
+  }
+} 
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::cell_loop_mass_enriched(
+  dealii::MatrixFree<dim, Number> const &       matrix_free,
+  VectorType &                                  dst,
+  VectorType const &                            src,
+  std::pair<unsigned int, unsigned int> const & cell_range) const
+{ 
+  // enriched cells only; halo cells have no psi blocks, their U_bar-U_bar block stays ExaDG's
+  if(matrix_free.get_cell_active_fe_index(cell_range) != active_fe_index)
+    return;
+
+  dealii::FEEvaluation<dim, -1, 0, dim, Number> integrator(matrix_free,
+                                                           cell_range,
+                                                           dof_index_shadow_vector,
+                                                           quad_index);
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.read_dof_values(src);
+    integrator.evaluate(dealii::EvaluationFlags::values);
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(integrator.get_value(q), q);
+    integrator.integrate(dealii::EvaluationFlags::values);
+    integrator.distribute_local_to_global(dst);
+  }
+} 
+
+template<int dim, typename Number>
+void
 FunctionEnrichment<dim, Number>::add_wall_layout_to_global_pressure(VectorType const & wall_p,
                                                                     VectorType &       global_p) const
 { 
@@ -1516,6 +1719,22 @@ unsigned int
 FunctionEnrichment<dim, Number>::get_dof_index_shadow_pressure() const
 {
   return dof_index_shadow_pressure;
+}
+
+template<int dim, typename Number>
+bool
+FunctionEnrichment<dim, Number>::has_eddy_viscosity() const
+{
+  return global_dof_handler_eddy_viscosity != nullptr;
+}
+
+template<int dim, typename Number>
+unsigned int
+FunctionEnrichment<dim, Number>::get_dof_index_shadow_eddy_viscosity() const
+{
+  AssertThrow(has_eddy_viscosity(),
+              dealii::ExcMessage("No RANS eddy viscosity: call set_global_eddy_viscosity_dof_handler() before initialize()."));
+  return dof_index_shadow_eddy_viscosity;
 }
 
 template<int dim, typename Number>

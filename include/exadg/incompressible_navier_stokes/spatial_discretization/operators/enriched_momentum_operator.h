@@ -22,6 +22,7 @@
 #ifndef INCLUDE_EXADG_INCOMPRESSIBLE_NAVIER_STOKES_SPATIAL_DISCRETIZATION_OPERATORS_ENRICHED_MOMENTUM_OPERATOR_H_
 #define INCLUDE_EXADG_INCOMPRESSIBLE_NAVIER_STOKES_SPATIAL_DISCRETIZATION_OPERATORS_ENRICHED_MOMENTUM_OPERATOR_H_
 
+#include <deal.II/base/table.h>
 #include <deal.II/base/aligned_vector.h>
 #include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/matrix_free/fe_evaluation.h>
@@ -71,6 +72,11 @@ public:
   typedef FEEnrichedEvaluation<dim, Number, CellIntegratorU>     EnrichedCellIntegrator;
   typedef FEFaceEnrichedEvaluation<dim, Number, FaceIntegratorU> EnrichedFaceIntegrator;
 
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number>     CellIntegratorScalar;
+  typedef dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> FaceIntegratorScalar;
+  typedef std::pair<unsigned int, unsigned int>           Range;
+  typedef EnrichedMomentumOperator<dim, Number>           This;
+
   EnrichedMomentumOperator();
 
   void
@@ -105,6 +111,9 @@ public:
   void
   update_viscosity(VectorType const & velocity_total,
                    TurbulenceModel<dim, Number> const & turbulence_model) const;
+
+  void
+  update_viscosity_rans(VectorType const & nu_t_shadow) const;
 
   scalar
   get_viscosity_cell(unsigned int const cell,
@@ -152,6 +161,35 @@ private:
   scalar
   get_viscosity_interior_face(unsigned int const face,
                               unsigned int const q) const;
+
+
+    void
+  initialize_vertex_interpolation() const;
+
+  void
+  cell_loop_cell_viscosity_rans(dealii::MatrixFree<dim, Number> const & matrix_free,
+                                VectorType &                            dst,
+                                VectorType const &                      src,
+                                Range const &                           cell_range) const;
+
+
+  void
+  cell_loop_set_viscosity_rans(dealii::MatrixFree<dim, Number> const & matrix_free,
+                               VectorType &                            dst,
+                               VectorType const &                      src,
+                               Range const &                           cell_range) const;
+
+  void
+  face_loop_set_viscosity_rans(dealii::MatrixFree<dim, Number> const & matrix_free,
+                               VectorType &                            dst,
+                               VectorType const &                      src,
+                               Range const &                           face_range) const;
+
+  void
+  boundary_face_loop_set_viscosity_rans(dealii::MatrixFree<dim, Number> const & matrix_free,
+                                        VectorType &                            dst,
+                                        VectorType const &                      src,
+                                        Range const &                           face_range) const;
 
   // overloads: plain side (halo) and enriched side
   void
@@ -216,6 +254,10 @@ private:
   dealii::AlignedVector<scalar> filter_width;
 
   mutable VectorType cell_viscosity;
+
+  mutable dealii::Table<2, double> vertex_values_nu_t;
+  mutable dealii::Table<2, double> nodal_values_nu_K;
+  mutable dealii::AlignedVector<scalar> wall_vertex_factor;
 };
 
 } // namespace IncNS

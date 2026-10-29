@@ -59,20 +59,8 @@ TurbulenceModel<dim, Number>::initialize(dealii::MatrixFree<dim, Number> const &
 
   model_coefficients = turbulence_model_data_in.turbulence_data_base->get_all_coefficients();
 
-  // number of transport variables of the turbulence model
-  switch(turbulence_model_data.turbulence_model)
-  {
-    case TurbulenceEddyViscosityModel::StandardKEpsilon:
-    case TurbulenceEddyViscosityModel::StandardKOmega1988:
-      n_variables = 2;
-      break;
-    default:
-      AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
-      break;
-  }
-  AssertThrow(turbulence_model_data.positivity_preserving_limiter.size() == n_variables,
-              dealii::ExcMessage(
-              "One positivity preserving limiter per transport variable has to be specified."));
+  evaluator.initialize(turbulence_model_data);
+  n_variables = evaluator.get_n_variables();
 
   matrix_free->initialize_dof_vector(eddy_viscosity, dof_index_viscosity_in);
 
@@ -255,91 +243,15 @@ TurbulenceModel<dim, Number>::evaluate_eddy_viscosity(
   scalar &                                viscosity,
   dealii::ArrayView<scalar> const &       viscosity_derivative) const
 {
-  switch(turbulence_model_data.turbulence_model)
-  {
-    case TurbulenceEddyViscosityModel::StandardKEpsilon:
-      standard_k_epsilon_model(solution, viscosity, viscosity_derivative);
-      break;
-    case TurbulenceEddyViscosityModel::StandardKOmega1988:
-      standard_k_omega_1988_model(solution, velocity_gradient, viscosity, viscosity_derivative);
-      break;
-    default:
-      AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
-      break;
-  }
+  evaluator.evaluate_eddy_viscosity(solution, velocity_gradient, viscosity, 
+                                    viscosity_derivative);
 }
 
 template<int dim, typename Number>
-void
-TurbulenceModel<dim, Number>::standard_k_epsilon_model(
-  dealii::ArrayView<scalar const> const & solution,
-  scalar &                                viscosity,
-  dealii::ArrayView<scalar> const &       viscosity_derivative) const
+EddyViscosityEvaluator<dim, Number> const &
+TurbulenceModel<dim, Number>::get_eddy_viscosity_evaluator() const
 {
-  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-  scalar const one  = dealii::make_vectorized_array<Number>(1.0);
-  scalar const C_mu = dealii::make_vectorized_array<Number>(model_coefficients[3]);
-
-  scalar const tke     = solution[0];
-  scalar const epsilon = solution[1];
-
-  scalar const viscosity_unclipped = C_mu * tke * tke / epsilon;
-
-  viscosity = std::max(viscosity_unclipped, zero);
-
-  if(viscosity_derivative.size() > 0)
-  {
-    // derivative of the clipping: 1 in the SIMD lanes where the viscosity is not clipped, 0 where
-    // it is clipped to zero
-    scalar const not_clipped =
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(viscosity_unclipped,
-                                                                           zero,
-                                                                           one,
-                                                                           zero);
-
-    // d nu_t / d k
-    viscosity_derivative[0] =
-      not_clipped * dealii::make_vectorized_array<Number>(2.0) * C_mu * tke / epsilon;
-    // d nu_t / d epsilon
-    viscosity_derivative[1] = -not_clipped * C_mu * tke * tke / (epsilon * epsilon);
-  }
-}
-
-template<int dim, typename Number>
-void
-TurbulenceModel<dim, Number>::standard_k_omega_1988_model(
-  dealii::ArrayView<scalar const> const & solution,
-  dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
-  scalar &                                viscosity,
-  dealii::ArrayView<scalar> const &       viscosity_derivative) const
-{
-  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-  scalar const one  = dealii::make_vectorized_array<Number>(1.0);
-
-  // realizability limiter (Bassi et al. 2014, eqs. (5)-(8)): k_bar = max(0, k),
-  // omega_r = max(omega_r0, omega)
-  scalar const omega_r0 = compute_realizability_alpha(velocity_gradient);
-
-  scalar const tke_limited   = std::max(solution[0], zero);
-  scalar const omega_limited = std::max(solution[1], omega_r0);
-
-  // nu_t = k_bar / omega_r (alpha* = 1)
-  viscosity = tke_limited / omega_limited;
-
-  if(viscosity_derivative.size() > 0)
-  {
-    // derivatives vanish where a limiter is active
-    scalar const tke_not_limited =
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(solution[0], zero, one, zero);
-    scalar const omega_not_limited =
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(solution[1],
-                                                                           omega_r0,
-                                                                           one,
-                                                                           zero);
-
-    viscosity_derivative[0] = tke_not_limited / omega_limited;
-    viscosity_derivative[1] = -omega_not_limited * tke_limited / (omega_limited * omega_limited);
-  }
+  return evaluator;
 }
 
 template<int dim, typename Number>
@@ -347,53 +259,7 @@ typename TurbulenceModel<dim, Number>::scalar
 TurbulenceModel<dim, Number>::compute_realizability_alpha(
   dealii::Tensor<2, dim, scalar> const & grad_u) const
 {
-  scalar zero = dealii::make_vectorized_array<Number>(0.0);
-
-  dealii::Tensor<2, 3, scalar> S;
-  for (unsigned int i = 0; i < 3; ++i) 
-  {
-    for (unsigned int j = 0; j < 3; ++j) 
-    {
-      S[i][j] = zero;
-    }
-  }
-
-  for (unsigned int i = 0; i < dim; ++i) 
-  {
-    for (unsigned int j = 0; j < dim; ++j) 
-    {
-      S[i][j] = dealii::make_vectorized_array<Number>(0.5) * (grad_u[i][j] + grad_u[j][i]);
-    }
-  }
-
-  scalar alpha = zero;
-  scalar three = dealii::make_vectorized_array<Number>(3.0);
-
-  for (unsigned int i = 0; i < 3; ++i) 
-  {
-    for (unsigned int j = i + 1; j < 3; ++j) 
-    {
-      scalar B = three * (S[i][i] + S[j][j]);
-      scalar S_ij = S[i][j]; 
-
-      // Discriminant Delta = 9(Sd_ii - Sd_jj)^2 + 4(S_ij)^2
-      scalar diff = S[i][i] - S[j][j];
-      scalar delta = dealii::make_vectorized_array<Number>(9.0) * diff * diff + 
-        dealii::make_vectorized_array<Number>(36.0) * S_ij * S_ij;
-
-      delta = std::max(delta, zero);
-
-      // The largest positive root bounds alpha
-      scalar root_1 = dealii::make_vectorized_array<Number>(0.5) * (B + std::sqrt(delta));
-      scalar root_2 = dealii::make_vectorized_array<Number>(0.5) * (B - std::sqrt(delta));
-      scalar root = std::max(root_1, root_2);
-      alpha = std::max(alpha, root);
-    }
-  }
-
-  scalar alpha_safe = std::max(alpha, dealii::make_vectorized_array<Number>(1.0e-6));
-
-  return alpha_safe;
+  return evaluator.compute_realizability_alpha(grad_u);
 }
 
 template<int dim, typename Number>
@@ -434,31 +300,7 @@ TurbulenceModel<dim, Number>::get_physical_variables(
   dealii::ArrayView<scalar> const &       solution,
   dealii::ArrayView<scalar> const &       solution_derivative) const
 {
-  AssertDimension(transported_values.size(), n_variables);
-  AssertDimension(solution.size(), n_variables);
-
-  bool const compute_solution_derivative = solution_derivative.size() > 0;
-
-  for(unsigned int i = 0; i < n_variables; ++i)
-  {
-    if(turbulence_model_data.positivity_preserving_limiter[i] ==
-      PositivityPreservingLimiter::LogarithmicTransportVariable)
-    {
-      // transported value = log(solution)
-      solution[i] = std::exp(transported_values[i]);
-
-      if(compute_solution_derivative)
-        solution_derivative[i] = solution[i];
-    }
-    else
-  {
-      // transported value = solution
-      solution[i] = transported_values[i];
-
-      if(compute_solution_derivative)
-        solution_derivative[i] = dealii::make_vectorized_array<Number>(1.0);
-    }
-  }
+    evaluator.get_physical_variables(transported_values, solution, solution_derivative);
 }
 
 template<int dim, typename Number>

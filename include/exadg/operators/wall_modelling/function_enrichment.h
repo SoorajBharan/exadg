@@ -132,6 +132,27 @@ void
   void
   add_wall_layout_to_global_pressure(VectorType const & wall_p, VectorType & global_p) const;
 
+  // RANS eddy viscosity DoFHandler (scalar DG); call before initialize()
+  void
+  set_global_eddy_viscosity_dof_handler(dealii::DoFHandler<dim> const & dof_handler_nu_t_in);
+
+  // global nu_t -> shadow layout (enriched + halo cells), DoF copy, overwrites wall_nu_t
+  void
+  copy_global_eddy_viscosity_to_wall_layout(VectorType const & global_nu_t,
+                                            VectorType &       wall_nu_t) const;
+
+  // Enriched cells: correction_bar += factor (M_bb^enr - M_bb^fluid) U_bar (shadow layout, not
+  // compressed). M_bb^fluid: ExaDG's mass on matrix_free_fluid (dof/quad of the operator), whose
+  // U_bar-U_bar block is replaced by the enrichment quadrature, as in the mass  and inverse mass
+  void
+  add_bar_bar_mass_consistency(dealii::MatrixFree<dim, Number> const & matrix_free_fluid,
+                               unsigned int const                      dof_index_fluid,
+                               unsigned int const                      quad_index_fluid,
+                               VectorType const &                      u_bar_global,
+                               VectorType const &                      u_bar_shadow,
+                               VectorType &                            correction_bar,
+                               Number const                            factor) const;
+
   // Largest y+ in the enriched layer: max(y) * max(u_tau) / nu.
   // Small values: psi is (nearly) linear, the enrichment is redundant -> do not use it.
   double
@@ -142,6 +163,13 @@ void
 
   unsigned int
   get_dof_index_shadow_pressure() const;
+
+  // true if the RANS eddy viscosity DoFHandler was set (set_global_eddy_viscosity_dof_handler)
+  bool
+  has_eddy_viscosity() const;
+
+  unsigned int
+  get_dof_index_shadow_eddy_viscosity() const;
 
   // ── Accessors ──────────────────────────────────────────────────────────
   dealii::DoFHandler<dim> const &
@@ -245,6 +273,8 @@ void
 
   VectorType shadow_pressure;
 
+  VectorType shadow_eddy_viscosity;
+
   VectorType src;
   VectorType dst;
 
@@ -272,6 +302,22 @@ private:
     VectorType &                            dst,
     VectorType const &                      src,
     std::pair<unsigned int, unsigned int> const & range) const;
+
+
+  // U_bar-U_bar mass, fluid matrix_free (dof_index_fluid_mass, quad_index_fluid_mass)
+  void
+  cell_loop_mass_fluid(dealii::MatrixFree<dim, Number> const &       matrix_free,
+                       VectorType &                                  dst,
+                       VectorType const &                            src,
+                       std::pair<unsigned int, unsigned int> const & cell_range)
+  const;
+
+  // U_bar-U_bar mass, enrichment quadrature, enriched cells (shadow layout)
+  void
+  cell_loop_mass_enriched(dealii::MatrixFree<dim, Number> const &       matrix_free,
+                          VectorType &                                  dst,
+                          VectorType const &                            src,
+                          std::pair<unsigned int, unsigned int> const & cell_range) const;
 
   // ── Internal helpers ───────────────────────────────────────────────────
 
@@ -327,6 +373,11 @@ private:
   unsigned int dof_index_cg_vector;
   unsigned int dof_index_shadow_vector;
   unsigned int dof_index_shadow_pressure;
+  unsigned int dof_index_shadow_eddy_viscosity = dealii::numbers::invalid_unsigned_int;
+  mutable unsigned int dof_index_fluid_mass  =
+  dealii::numbers::invalid_unsigned_int;
+  mutable unsigned int quad_index_fluid_mass =
+  dealii::numbers::invalid_unsigned_int;
   unsigned int quad_index;
 
   const unsigned int active_fe_index = 1;
@@ -361,6 +412,12 @@ private:
   std::vector<unsigned int> pressure_index_global;
   std::vector<unsigned int> pressure_index_shadow;
 
+  dealii::DoFHandler<dim> const * global_dof_handler_eddy_viscosity = nullptr;
+  dealii::DoFHandler<dim>         dof_handler_shadow_eddy_viscosity;
+  dealii::hp::FECollection<dim>   fe_shadow_eddy_viscosity_collection;
+  std::vector<unsigned int>       eddy_viscosity_index_global;
+  std::vector<unsigned int>       eddy_viscosity_index_shadow;
+
   // CG Wall variables
   std::shared_ptr<dealii::FiniteElement<dim>> fe_cg_scalar;
   dealii::DoFHandler<dim>                     dof_handler_cg_scalar;
@@ -380,6 +437,8 @@ private:
   WallLawEvaluator<dim, Number> wall_law_eval;
 
   std::shared_ptr<IncNS::BoundaryDescriptorU<dim> const> boundary_descriptor;
+
+  std::vector<std::pair<dealii::Point<dim>, dealii::types::global_dof_index>> wall_node_points;
 
   dealii::AffineConstraints<Number> constraint_cg_scalar; // periodicity, dof_handler_cg_scalar
   dealii::AffineConstraints<Number> constraint_cg_vector; // periodicity, dof_handler_cg_vector

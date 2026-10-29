@@ -895,10 +895,19 @@ private:
       cell_production_jacobian[index(q, 1, 1)] = alpha * G * inverse_omega_derivative;
     }
     else {
-      // equation of omega: alpha G omega / omega_r
-      cell_production[index(q, 1)] = alpha * G * values.omega * inverse_omega;
+      // equation of omega: alpha G max(omega, 0) / omega_r
+      // max(omega, 0): no (negative) production where omega undershoots below  zero, otherwise
+      // alpha G omega / omega_r drives omega further down (omega_r = omega_r0   there)
+
+      scalar const one = dealii::make_vectorized_array<Number>(1.0);
+
+      scalar const omega_bar = std::max(values.omega, zero);
+      scalar const omega_positive =
+        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(values.omega,zero, one, zero);  
+
+      cell_production[index(q, 1)] = alpha * G * omega_bar * inverse_omega;
       cell_production_jacobian[index(q, 1, 1)] =
-        alpha * G * (inverse_omega + values.omega * inverse_omega_derivative);
+        alpha * G * (omega_positive * inverse_omega + omega_bar * inverse_omega_derivative);
     }
 
     // explicit treatment: no Jacobian
