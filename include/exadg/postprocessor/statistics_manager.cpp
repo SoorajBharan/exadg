@@ -331,6 +331,13 @@ StatisticsManager<dim, Number>::reset()
 
 template<int dim, typename Number>
 void
+StatisticsManager<dim, Number>::set_velocity_correction(VelocityCorrection const & correction)
+{
+  velocity_correction = correction;
+}
+
+template<int dim, typename Number>
+void
 StatisticsManager<dim, Number>::evaluate_statistics(VectorType const & velocity)
 {
   std::vector<VectorType const *> vecs;
@@ -391,6 +398,9 @@ StatisticsManager<dim, Number>::do_evaluate(const std::vector<VectorType const *
   // vector of dealii::FEValues for all x-z-planes of a cell
   std::vector<std::shared_ptr<dealii::FEValues<dim, dim>>> fe_values(n_points_y_per_cell);
 
+  // reference coordinates of the points of each x-z-plane (velocity_correction)
+  std::vector<std::vector<dealii::Point<dim>>> unit_points(n_points_y_per_cell);
+
   for(unsigned int i = 0; i < n_points_y_per_cell; ++i)
   {
     std::vector<dealii::Point<dim>> points(gauss_2d.size());
@@ -403,6 +413,7 @@ StatisticsManager<dim, Number>::do_evaluate(const std::vector<VectorType const *
       points[j][1] = (double)i / (n_points_y_per_cell - 1);
       weights[j]   = gauss_2d.weight(j);
     }
+    unit_points[i] = points;
 
     fe_values[i].reset(new dealii::FEValues<dim>(mapping,
                                                  dof_handler.get_fe().base_element(0),
@@ -450,13 +461,22 @@ StatisticsManager<dim, Number>::do_evaluate(const std::vector<VectorType const *
         std::vector<double> velsq(dim, 0.);
         double              area = 0, veluv = 0;
 
+        // interpolate velocity to the quadrature points of the current x-z-plane
+        std::vector<dealii::Tensor<1, dim>> velocity_q(fe_values[i]->n_quadrature_points);
+        for(unsigned int q = 0; q < fe_values[i]->n_quadrature_points; ++q)
+          for(unsigned int j = 0; j < velocity_vector.size(); ++j)
+            velocity_q[q] += fe_values[i]->shape_value(j, q) * velocity_vector[j];
+
+        // optional correction at these points (e.g. wall enrichment: u_h = U_bar + psi U_tilde)
+        if(velocity_correction)
+          velocity_correction(typename dealii::Triangulation<dim>::active_cell_iterator(cell),
+                              unit_points[i],
+                              velocity_q);
+
         // perform integral over current x-z-plane of current cell
         for(unsigned int q = 0; q < fe_values[i]->n_quadrature_points; ++q)
         {
-          // interpolate velocity to the quadrature point
-          dealii::Tensor<1, dim> velocity;
-          for(unsigned int j = 0; j < velocity_vector.size(); ++j)
-            velocity += fe_values[i]->shape_value(j, q) * velocity_vector[j];
+          dealii::Tensor<1, dim> const & velocity = velocity_q[q];
 
           double det = 0.;
           if(dim == 3)

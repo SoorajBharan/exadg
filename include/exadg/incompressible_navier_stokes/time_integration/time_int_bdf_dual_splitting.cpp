@@ -323,6 +323,13 @@ TimeIntBDFDualSplitting<dim, Number>::get_velocity_np() const
 }
 
 template<int dim, typename Number>
+typename TimeIntBDFDualSplitting<dim, Number>::BlockVectorType const &
+TimeIntBDFDualSplitting<dim, Number>::get_velocity_np_enriched() const
+{
+  return velocity_np;
+}
+
+template<int dim, typename Number>
 typename TimeIntBDFDualSplitting<dim, Number>::VectorType const &
 TimeIntBDFDualSplitting<dim, Number>::get_pressure() const
 {
@@ -455,11 +462,6 @@ TimeIntBDFDualSplitting<dim, Number>::do_timestep_solve()
   enrichment_coupling = this->param.wall_enrichment_enabled and
     (this->get_time_step_number() > 1 or
     this->param.restarted_simulation);
-  // if(this->param.wall_enrichment_enabled and this->get_time() >= t_start_enrichment)
-  // {
-  //   double const y_plus_max = pde_operator->get_function_enrichment()->get_max_y_plus();
-  //   enrichment_coupling       = (y_plus_max >= y_plus_min_enrichment);
-  // }
   if(this->param.wall_enrichment_enabled and enrichment_coupling)
   {
 #ifdef EXADG_PROFILE
@@ -1271,7 +1273,16 @@ TimeIntBDFDualSplitting<dim, Number>::viscous_step_enriched()
   pde_operator->rhs_add_viscous_term(rhs.block(0), this->get_next_time());
   pde_operator->rhs_add_enriched_viscous_boundary_data(rhs.block(0), rhs.block(1), this->get_next_time());
 
-  unsigned int const n_iter = pde_operator->solve_linear_momentum_equation(velocity_np, rhs, this->get_scaling_factor_time_derivative_term());
+  bool const update_preconditioner =
+    this->param.update_preconditioner_momentum and
+    ((this->time_step_number - 1) % this->param.update_preconditioner_momentum_every_time_steps ==
+     0);
+
+  unsigned int const n_iter =
+    pde_operator->solve_linear_momentum_equation(velocity_np,
+                                                 rhs,
+                                                 update_preconditioner,
+                                                 this->get_scaling_factor_time_derivative_term());
 
   iterations_viscous.first += 1;
   std::get<1>(iterations_viscous.second) += n_iter;

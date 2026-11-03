@@ -16,6 +16,7 @@
 #include <exadg/operators/wall_modelling/fe_enriched_evaluation.h>
 #include <exadg/operators/wall_modelling/fe_face_enriched_evaluation.h>
 
+#include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/utilities.h>
 #include <deal.II/dofs/dof_tools.h>
@@ -23,6 +24,7 @@
 #include <deal.II/fe/mapping.h>
 #include <deal.II/base/geometry_info.h>
 #include <deal.II/lac/vector_operation.h>
+#include <deal.II/matrix_free/operators.h>
 #include <deal.II/grid/reference_cell.h>
 
 namespace ExaDG
@@ -372,6 +374,15 @@ FunctionEnrichment<dim, Number>::initialize(
   std::shared_ptr<dealii::Quadrature<dim>> quad = create_quadrature<dim>(ExaDG::ElementType::Hypercube, n_q_1d);
   std::vector<dealii::Quadrature<dim>> quadratures = { *quad };
 
+  // Gauss rule of the RANS operator (degree of nu_t,h + 1 points): nu_t^psi is interpolated in
+  // these points (compute_eddy_viscosity_wall_law_rans)
+  if(has_eddy_viscosity())
+  {
+    quadratures.push_back(*create_quadrature<dim>(ExaDG::ElementType::Hypercube,
+                                                  global_dof_handler_eddy_viscosity->get_fe().degree + 1));
+    quad_index_rans = 1;
+  }
+
   typename dealii::MatrixFree<dim, Number>::AdditionalData additional_data;
 
   additional_data.mapping_update_flags = dealii::update_values |
@@ -492,10 +503,10 @@ FunctionEnrichment<dim, Number>::initialize(
                   pressure_index_shadow);
 
   if(has_eddy_viscosity())
-    build_index_map(*global_dof_handler_eddy_viscosity,
-                    dof_handler_shadow_eddy_viscosity,
-                    eddy_viscosity_index_global,
-                    eddy_viscosity_index_shadow);
+    n_eddy_viscosity_index_enriched = build_index_map(*global_dof_handler_eddy_viscosity,
+                                                      dof_handler_shadow_eddy_viscosity,
+                                                      eddy_viscosity_index_global,
+                                                      eddy_viscosity_index_shadow);
 }
 
 template<int dim, typename Number>
@@ -942,7 +953,7 @@ void FunctionEnrichment<dim, Number>::local_integrate_wall_traction(
     {
       continue;
     }
-    // Extract smoothed gradients directly from the Continuous P1 field!
+    // grad u_h (U_bar + psi U_tilde) at the wall, thesis Eq. (6.11)
     u_wall.reinit(face);
     u_wall.gather_evaluate(src, enrichment_velocity,
                            dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
@@ -986,8 +997,6 @@ void FunctionEnrichment<dim, Number>::evaluate_friction_velocity(VectorType cons
 {
   copy_global_dg_to_wall_layout(global_velocity, shadow_velocity);
   shadow_velocity.update_ghost_values();
-  // Project DG velocity onto the continuous P1 wall space (Spatial Coarsening)
-  project_velocity_to_wall();
   enrichment_velocity.update_ghost_values();
 
   // Setup temporary vectors for the boundary traction integration
@@ -1532,6 +1541,20 @@ FunctionEnrichment<dim, Number>::add_bar_bar_mass_consistency(
 
 template<int dim, typename Number>
 void
+FunctionEnrichment<dim, Number>::add_enriched_cell_difference(VectorType const & enriched,
+                                                              VectorType const & fluid,
+                                                              VectorType &       correction_bar,
+                                                              Number const       factor) const
+{
+  // DoF loop over the enriched cells (first n_velocity_index_enriched pairs of the index map)
+  for(unsigned int i = 0; i < n_velocity_index_enriched; ++i)
+    correction_bar.local_element(velocity_index_shadow[i]) +=
+      factor * (enriched.local_element(velocity_index_shadow[i]) -
+                fluid.local_element(velocity_index_global[i]));
+}
+
+template<int dim, typename Number>
+void
 FunctionEnrichment<dim, Number>::cell_loop_mass_fluid(
   dealii::MatrixFree<dim, Number> const &       matrix_free,
   VectorType &                                  dst,
@@ -1754,6 +1777,36 @@ FunctionEnrichment<dim, Number>::set_minimum_wall_shear_stress_fraction(double c
   minimum_wall_shear_stress_fraction = fraction;
 }
 
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::set_y_plus_max(double const y_plus_max)
+{
+  y_plus_max_enrichment = y_plus_max;
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::set_y_plus_min(double const y_plus_min)
+{
+  y_plus_min_enrichment = y_plus_min;
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::set_wall_layer_stress_gradient(double const stress_gradient)
+{
+  wall_layer_stress_gradient = stress_gradient;
+}
+
+template<int dim, typename Number>
+bool
+FunctionEnrichment<dim, Number>::is_enrichment_active(unsigned int const cell,
+                                                      unsigned int const lane) const
+{
+  AssertIndexRange(cell * scalar::size() + lane, cell_enriched.size());
+  return cell_enriched[cell * scalar::size() + lane] != 0;
+}
+
 /*
  * DoFTools::make_periodicity_constraints(dof_handler, b_id_1, b_id_2, direction, ...) does not
  * work for an hp DoFHandler on a parallel::distributed::Triangulation: while recursing from the
@@ -1887,6 +1940,21 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
     n_q_points_cell = y_eval.n_q_points;
     psi_cell.resize(n_batches * n_q_points_cell);
     grad_psi_cell.resize(n_batches * n_q_points_cell);
+    stress_ratio_cell.resize(n_batches * n_q_points_cell);
+
+    // y+ criterion (Krank et al. 2018, Sec. 3.3; thesis Sec. 8.1.2), per cell batch * lanes + lane
+    unsigned int const lanes = scalar::size();
+
+    // on/off state of the last update, for the hysteresis of the y+ criterion
+    std::vector<unsigned char> const cell_enriched_old = cell_enriched;
+
+    cell_enriched.assign(n_batches * lanes, 0);
+
+    scalar const nu      = dealii::make_vectorized_array<Number>(kinematic_viscosity);
+    scalar const tau_min = dealii::make_vectorized_array<Number>(tau_w_absolute_minimum);
+
+    unsigned int n_cells_wall     = 0;
+    unsigned int n_cells_enriched = 0;
 
     for(unsigned int cell = 0; cell < n_batches; ++cell)
     {
@@ -1899,18 +1967,71 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
       y_eval.gather_evaluate(wall_distance, flags);
       tau_eval.gather_evaluate(wall_shear_stress, flags);
 
+      // largest y+ of the cell over its quadrature points
+      scalar y_plus_cell = dealii::make_vectorized_array<Number>(0.0);
+
       for(unsigned int q = 0; q < n_q_points_cell; ++q)
       {
         auto const psi = evaluate_enrichment_function(y_eval.get_value(q),
                                                       y_eval.get_gradient(q),
                                                       tau_eval.get_value(q),
                                                       tau_eval.get_gradient(q));
-        psi_cell[cell * n_q_points_cell + q]      = psi.first;
-        grad_psi_cell[cell * n_q_points_cell + q] = psi.second;
+        psi_cell[cell * n_q_points_cell + q]          = psi.first;
+        grad_psi_cell[cell * n_q_points_cell + q]     = psi.second;
+        stress_ratio_cell[cell * n_q_points_cell + q] = stress_ratio(y_eval.get_value(q));
+
+        scalar const u_tau = std::sqrt(std::max(tau_eval.get_value(q), tau_min));
+        y_plus_cell        = std::max(y_plus_cell, y_eval.get_value(q) * u_tau / nu);
+      }
+
+      // switched off: psi = 0, i.e. only the polynomial space (U_tilde = 0 through P = 0 in
+      // WallDGCoupler); y_plus_max_enrichment <= 0: every wall cell is enriched.
+      // Hysteresis: a cell that is off switches on above y_plus_max_enrichment, a cell that is on
+      // switches off only below y_plus_min_enrichment (no on/off flipping when y+ ~ y_plus_max)
+      for(unsigned int v = 0; v < lanes; ++v)
+      {
+        bool const was_enriched =
+          cell_enriched_old.size() == cell_enriched.size() and
+          cell_enriched_old[cell * lanes + v] != 0;
+        double const y_plus_switch =
+          was_enriched ? y_plus_min_enrichment : y_plus_max_enrichment;
+
+        bool const enriched =
+          (y_plus_max_enrichment <= 0.0) or (y_plus_cell[v] > y_plus_switch);
+        cell_enriched[cell * lanes + v] = enriched ? 1 : 0;
+
+        if(not enriched)
+          for(unsigned int q = 0; q < n_q_points_cell; ++q)
+          {
+            psi_cell[cell * n_q_points_cell + q][v] = 0.0;
+            for(unsigned int d = 0; d < dim; ++d)
+              grad_psi_cell[cell * n_q_points_cell + q][d][v] = 0.0;
+          }
+
+        // count locally owned, filled lanes only
+        if(cell < mf.n_cell_batches() and v < mf.n_active_entries_per_cell_batch(cell))
+        {
+          ++n_cells_wall;
+          if(enriched)
+            ++n_cells_enriched;
+        }
       }
     }
     if(psi_cell_old.size() != psi_cell.size())
       psi_cell_old = psi_cell;
+
+    // report when the number of enriched cells changes
+    MPI_Comm const comm = dof_handler_cg_scalar.get_triangulation().get_communicator();
+    n_cells_wall        = dealii::Utilities::MPI::sum(n_cells_wall, comm);
+    n_cells_enriched    = dealii::Utilities::MPI::sum(n_cells_enriched, comm);
+    if(n_cells_enriched != n_enriched_cells_last)
+    {
+      dealii::ConditionalOStream pcout(std::cout,
+                                       dealii::Utilities::MPI::this_mpi_process(comm) == 0);
+      pcout << "  [enrichment] y+ > " << y_plus_max_enrichment << ": " << n_cells_enriched
+            << " of " << n_cells_wall << " wall cells enriched" << std::endl;
+      n_enriched_cells_last = n_cells_enriched;
+    }
   }
 
   // ---- faces: every enriched side of inner and boundary faces ----------------------
@@ -1959,6 +2080,22 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
           psi_face[side][face * n_q_points_face + q]      = psi.first;
           grad_psi_face[side][face * n_q_points_face + q] = psi.second;
         }
+
+        // face sides of cells switched off by the y+ criterion: psi = 0 (same as on the cell)
+        auto const & info  = mf.get_face_info(face);
+        auto const & cells = interior ? info.cells_interior : info.cells_exterior;
+        for(unsigned int v = 0; v < scalar::size(); ++v)
+        {
+          if(cells[v] == dealii::numbers::invalid_unsigned_int or cell_enriched[cells[v]] != 0)
+            continue;
+
+          for(unsigned int q = 0; q < n_q_points_face; ++q)
+          {
+            psi_face[side][face * n_q_points_face + q][v] = 0.0;
+            for(unsigned int d = 0; d < dim; ++d)
+              grad_psi_face[side][face * n_q_points_face + q][d][v] = 0.0;
+          }
+        }
       }
     }
   }
@@ -1988,6 +2125,262 @@ FunctionEnrichment<dim, Number>::get_grad_psi_cell(unsigned int const cell, unsi
 {
   AssertIndexRange(cell * n_q_points_cell + q, grad_psi_cell.size());
   return grad_psi_cell[cell * n_q_points_cell + q];
+}
+
+template<int dim, typename Number>
+typename FunctionEnrichment<dim, Number>::scalar
+FunctionEnrichment<dim, Number>::eddy_viscosity_from_u_plus(scalar const & u_plus,
+                                                            scalar const & stress_ratio) const
+{
+  // total shear stress (nu + nu_t) du/dy = tau(y) = r tau_w, wall units:
+  //   (1 + nu_t / nu) du+/dy+ = r   ->   nu_t / nu = r dy+/du+ - 1
+  // (r = 1: constant stress layer). With this nu_t the Spalding profile u+(y+) satisfies the
+  // momentum balance also where the stress varies across the wall cell.
+  scalar const dy_plus_du_plus = SpaldingLaw()(u_plus).second;
+
+  // max(., 0): near the wall r dy+/du+ ~ r < 1 possible; round-off in exp(x) - 1 - x - ... for
+  // small x can give tiny negative values
+  return std::max(stress_ratio * dy_plus_du_plus - Number(1.0),
+                  dealii::make_vectorized_array<Number>(0.0)) *
+         Number(kinematic_viscosity);
+}
+
+template<int dim, typename Number>
+typename FunctionEnrichment<dim, Number>::scalar
+FunctionEnrichment<dim, Number>::stress_ratio(scalar const & y) const
+{
+  // linear shear stress across the wall layer: tau(y) / tau_w = 1 + g y (g = 0: constant),
+  // channel: g = -1/delta; not negative
+  return std::max(dealii::make_vectorized_array<Number>(1.0) +
+                    Number(wall_layer_stress_gradient) * y,
+                  dealii::make_vectorized_array<Number>(0.0));
+}
+
+template<int dim, typename Number>
+typename FunctionEnrichment<dim, Number>::scalar
+FunctionEnrichment<dim, Number>::get_eddy_viscosity_wall_law(unsigned int const cell,
+                                                             unsigned int const q) const
+{
+  // psi = kappa u+ (Eq. (12)) -> u+; stress ratio r = tau(y) / tau_w stored with psi
+  AssertIndexRange(cell * n_q_points_cell + q, stress_ratio_cell.size());
+  return eddy_viscosity_from_u_plus(get_psi_cell(cell, q) / Number(SpaldingLaw().kappa),
+                                    stress_ratio_cell[cell * n_q_points_cell + q]);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::compute_eddy_viscosity_wall_law_rans(
+  VectorType & global_nu_t_wall_law) const
+{
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number> CellIntegratorScalar;
+
+  AssertThrow(has_eddy_viscosity() and quad_index_rans != dealii::numbers::invalid_unsigned_int,
+              dealii::ExcMessage("compute_eddy_viscosity_wall_law_rans: RANS eddy viscosity "
+                                 "DoFHandler not set."));
+
+  // no bound outside the enriched cells and on lanes switched off by the y+ criterion
+  Number const no_bound = 1.e20;
+  global_nu_t_wall_law  = no_bound;
+
+  auto const & mf = *matrix_free_en;
+
+  wall_distance.update_ghost_values();
+  wall_shear_stress.update_ghost_values();
+
+  CellIntegratorScalar y_eval(mf, dof_index_en_scalar, quad_index_rans, 0, active_fe_index);
+  CellIntegratorScalar tau_eval(mf, dof_index_cg_scalar, quad_index_rans, 0, active_fe_index);
+  CellIntegratorScalar nu_t_eval(mf, dof_index_shadow_eddy_viscosity, quad_index_rans, 0, active_fe_index);
+
+  dealii::MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, 1, Number> inverse_mass(nu_t_eval);
+
+  VectorType wall_nu_t_wall_law;
+  mf.initialize_dof_vector(wall_nu_t_wall_law, dof_index_shadow_eddy_viscosity);
+
+  scalar const nu      = dealii::make_vectorized_array<Number>(kinematic_viscosity);
+  scalar const tau_min = dealii::make_vectorized_array<Number>(tau_w_absolute_minimum);
+
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+  {
+    if(mf.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+      continue;
+
+    y_eval.reinit(cell);
+    tau_eval.reinit(cell);
+    nu_t_eval.reinit(cell);
+    y_eval.gather_evaluate(wall_distance, dealii::EvaluationFlags::values);
+    tau_eval.gather_evaluate(wall_shear_stress, dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < nu_t_eval.n_q_points; ++q)
+    {
+      // y+ and u+ as in evaluate_enrichment_function
+      scalar const u_tau  = std::sqrt(std::max(tau_eval.get_value(q), tau_min));
+      scalar const u_plus = wall_law_eval.get_value(y_eval.get_value(q) * u_tau / nu);
+
+      // stress-scaled wall-law nu_t, r = tau(y) / tau_w at the wall distance of this point
+      scalar nu_t = eddy_viscosity_from_u_plus(u_plus, stress_ratio(y_eval.get_value(q)));
+      for(unsigned int v = 0; v < scalar::size(); ++v)
+        if(not is_enrichment_active(cell, v))
+          nu_t[v] = no_bound;
+
+      nu_t_eval.begin_values()[q] = nu_t;
+    }
+
+    // values in the Gauss points -> DG basis (exact interpolation in these points)
+    inverse_mass.transform_from_q_points_to_basis(1,
+                                                  nu_t_eval.begin_values(),
+                                                  nu_t_eval.begin_dof_values());
+    nu_t_eval.set_dof_values(wall_nu_t_wall_law);
+  }
+
+  // enriched cells (first n_eddy_viscosity_index_enriched pairs of the index map) -> RANS layout
+  for(unsigned int i = 0; i < n_eddy_viscosity_index_enriched; ++i)
+    global_nu_t_wall_law.local_element(eddy_viscosity_index_global[i]) =
+      wall_nu_t_wall_law.local_element(eddy_viscosity_index_shadow[i]);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::compute_velocity_gradient_rans(
+  std::vector<VectorType> & gradient,
+  VectorType &              indicator,
+  VectorType const &        u_bar_global,
+  VectorType const &        u_tilde) const
+{
+  AssertThrow(has_eddy_viscosity() and quad_index_rans != dealii::numbers::invalid_unsigned_int,
+              dealii::ExcMessage("compute_velocity_gradient_rans: RANS eddy viscosity "
+                                 "DoFHandler not set."));
+  AssertDimension(gradient.size(), dim * dim);
+
+  auto const & mf = *matrix_free_en;
+
+  // input: U_bar in the shadow layout (block 0), U_tilde in the enrichment layout (block 1)
+  dealii::LinearAlgebra::distributed::BlockVector<Number> src(2);
+  mf.initialize_dof_vector(src.block(0), dof_index_shadow_vector);
+  copy_global_dg_to_wall_layout(u_bar_global, src.block(0));
+  mf.initialize_dof_vector(src.block(1), dof_index_en);
+  src.block(1).copy_locally_owned_data_from(u_tilde);
+  src.collect_sizes();
+
+  // y and tau_w for psi, grad psi in the RANS Gauss points
+  wall_distance.update_ghost_values();
+  wall_shear_stress.update_ghost_values();
+
+  // output in the shadow eddy viscosity layout: dim * dim gradient components + indicator
+  std::vector<VectorType> dst(dim * dim + 1);
+  for(auto & vec : dst)
+    mf.initialize_dof_vector(vec, dof_index_shadow_eddy_viscosity);
+
+  mf.cell_loop(&This::cell_loop_velocity_gradient_rans, this, dst, src, true /*zero_dst*/);
+
+  // enriched cells (first n_eddy_viscosity_index_enriched pairs of the index map) -> RANS layout;
+  // 0 in all other cells (indicator = 0: the RANS operator keeps its own velocity gradient)
+  for(unsigned int c = 0; c < dim * dim; ++c)
+  {
+    gradient[c] = 0.0;
+    for(unsigned int i = 0; i < n_eddy_viscosity_index_enriched; ++i)
+      gradient[c].local_element(eddy_viscosity_index_global[i]) =
+        dst[c].local_element(eddy_viscosity_index_shadow[i]);
+  }
+
+  indicator = 0.0;
+  for(unsigned int i = 0; i < n_eddy_viscosity_index_enriched; ++i)
+    indicator.local_element(eddy_viscosity_index_global[i]) =
+      dst[dim * dim].local_element(eddy_viscosity_index_shadow[i]);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::cell_loop_velocity_gradient_rans(
+  dealii::MatrixFree<dim, Number> const &                         matrix_free,
+  std::vector<VectorType> &                                       dst,
+  dealii::LinearAlgebra::distributed::BlockVector<Number> const & src,
+  std::pair<unsigned int, unsigned int> const &                   range) const
+{
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number>   CellIntegratorScalar;
+  typedef dealii::FEEvaluation<dim, -1, 0, dim, Number> CellIntegratorU;
+
+  // psi only exists on enriched cells (hp batches have a single active_fe_index)
+  if(matrix_free.get_cell_active_fe_index(range) != active_fe_index)
+    return;
+
+  CellIntegratorU      u_bar_eval(matrix_free, range, dof_index_shadow_vector, quad_index_rans);
+  CellIntegratorU      u_tilde_eval(matrix_free, range, dof_index_en, quad_index_rans);
+  CellIntegratorScalar y_eval(matrix_free, range, dof_index_en_scalar, quad_index_rans);
+  CellIntegratorScalar tau_eval(matrix_free, range, dof_index_cg_scalar, quad_index_rans);
+  CellIntegratorScalar out_eval(matrix_free,
+                                range,
+                                dof_index_shadow_eddy_viscosity,
+                                quad_index_rans);
+
+  dealii::MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, 1, Number> inverse_mass(out_eval);
+
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+
+  dealii::AlignedVector<tensor> gradient_q(out_eval.n_q_points);
+
+  for(unsigned int cell = range.first; cell < range.second; ++cell)
+  {
+    u_bar_eval.reinit(cell);
+    u_bar_eval.gather_evaluate(src.block(0), dealii::EvaluationFlags::gradients);
+    u_tilde_eval.reinit(cell);
+    u_tilde_eval.gather_evaluate(src.block(1),
+                                 dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+    y_eval.reinit(cell);
+    y_eval.gather_evaluate(wall_distance,
+                           dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+    tau_eval.reinit(cell);
+    tau_eval.gather_evaluate(wall_shear_stress,
+                             dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+    out_eval.reinit(cell);
+
+    // lanes switched off by the y+ criterion: psi = 0, grad u_h = grad U_bar
+    scalar active = zero;
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      if(is_enrichment_active(cell, v))
+        active[v] = 1.0;
+
+    // grad u_h = grad U_bar + psi grad U_tilde + U_tilde (x) grad psi  in the RANS Gauss points
+    for(unsigned int q = 0; q < out_eval.n_q_points; ++q)
+    {
+      std::pair<scalar, vector> const psi = evaluate_enrichment_function(y_eval.get_value(q),
+                                                                         y_eval.get_gradient(q),
+                                                                         tau_eval.get_value(q),
+                                                                         tau_eval.get_gradient(q));
+      scalar const psi_q      = active * psi.first;
+      vector const grad_psi_q = active * psi.second;
+
+      tensor const grad_u_tilde = u_tilde_eval.get_gradient(q);
+      vector const u_tilde      = u_tilde_eval.get_value(q);
+
+      tensor g = u_bar_eval.get_gradient(q);
+      for(unsigned int i = 0; i < dim; ++i)
+        for(unsigned int j = 0; j < dim; ++j)
+          g[i][j] += psi_q * grad_u_tilde[i][j] + u_tilde[i] * grad_psi_q[j];
+
+      gradient_q[q] = g;
+    }
+
+    // each component: values in the Gauss points -> DG basis (exact interpolation in these points)
+    for(unsigned int c = 0; c < dim * dim; ++c)
+    {
+      for(unsigned int q = 0; q < out_eval.n_q_points; ++q)
+        out_eval.begin_values()[q] = gradient_q[q][c / dim][c % dim];
+
+      inverse_mass.transform_from_q_points_to_basis(1,
+                                                    out_eval.begin_values(),
+                                                    out_eval.begin_dof_values());
+      out_eval.set_dof_values(dst[c]);
+    }
+
+    // indicator = 1 on all lanes of the enriched cells (also switched-off lanes: grad U_bar)
+    for(unsigned int q = 0; q < out_eval.n_q_points; ++q)
+      out_eval.begin_values()[q] = dealii::make_vectorized_array<Number>(1.0);
+
+    inverse_mass.transform_from_q_points_to_basis(1,
+                                                  out_eval.begin_values(),
+                                                  out_eval.begin_dof_values());
+    out_eval.set_dof_values(dst[dim * dim]);
+  }
 }
 
 template<int dim, typename Number>
@@ -2109,6 +2502,99 @@ FunctionEnrichment<dim, Number>::compute_enrichment_component(
   }
 
   dst.update_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::update_ghost_values_point_evaluation(
+  VectorType const & u_tilde) const
+{
+  u_tilde.update_ghost_values();
+  wall_distance.update_ghost_values();
+  wall_shear_stress.update_ghost_values();
+}
+
+template<int dim, typename Number>
+bool
+FunctionEnrichment<dim, Number>::add_enrichment_velocity(
+  typename dealii::Triangulation<dim>::active_cell_iterator const & cell,
+  std::vector<dealii::Point<dim>> const &                           unit_points,
+  dealii::Mapping<dim> const &                                      mapping,
+  VectorType const &                                                u_tilde,
+  std::vector<dealii::Tensor<1, dim>> &                             values) const
+{
+  AssertDimension(values.size(), unit_points.size());
+
+  // the same cell in the (hp) DoFHandlers of the enrichment
+  typename dealii::DoFHandler<dim>::active_cell_iterator const cell_u(&cell->get_triangulation(),
+                                                                      cell->level(),
+                                                                      cell->index(),
+                                                                      &dof_handler_en_vector);
+  if(cell_u->active_fe_index() != active_fe_index)
+    return false; // \tilde u_h = 0 outside the enriched layer
+
+  typename dealii::DoFHandler<dim>::active_cell_iterator const cell_y(&cell->get_triangulation(),
+                                                                      cell->level(),
+                                                                      cell->index(),
+                                                                      &dof_handler_en_scalar);
+  typename dealii::DoFHandler<dim>::active_cell_iterator const cell_tau(&cell->get_triangulation(),
+                                                                        cell->level(),
+                                                                        cell->index(),
+                                                                        &dof_handler_cg_scalar);
+
+  dealii::Quadrature<dim> const points(unit_points);
+  unsigned int const            n_points = points.size();
+
+  dealii::FEValues<dim> fe_values_u(mapping,
+                                    dof_handler_en_vector.get_fe(active_fe_index),
+                                    points,
+                                    dealii::update_values);
+  dealii::FEValues<dim> fe_values_y(mapping,
+                                    dof_handler_en_scalar.get_fe(active_fe_index),
+                                    points,
+                                    dealii::update_values | dealii::update_gradients);
+  dealii::FEValues<dim> fe_values_tau(mapping,
+                                      dof_handler_cg_scalar.get_fe(active_fe_index),
+                                      points,
+                                      dealii::update_values | dealii::update_gradients);
+
+  fe_values_u.reinit(cell_u);
+  fe_values_y.reinit(cell_y);
+  fe_values_tau.reinit(cell_tau);
+
+  std::vector<dealii::Vector<Number>>         u_tilde_values(n_points, dealii::Vector<Number>(dim));
+  std::vector<Number>                         y_values(n_points), tau_values(n_points);
+  std::vector<dealii::Tensor<1, dim, Number>> y_gradients(n_points), tau_gradients(n_points);
+
+  // ghost values: update_ghost_values_point_evaluation() (collective, called by the user)
+  fe_values_u.get_function_values(u_tilde, u_tilde_values);
+  fe_values_y.get_function_values(wall_distance, y_values);
+  fe_values_y.get_function_gradients(wall_distance, y_gradients);
+  fe_values_tau.get_function_values(wall_shear_stress, tau_values);
+  fe_values_tau.get_function_gradients(wall_shear_stress, tau_gradients);
+
+  for(unsigned int q = 0; q < n_points; ++q)
+  {
+    // \psi(x_q) as in compute_enrichment_component (all SIMD lanes equal, lane 0 is used)
+    vector grad_y, grad_tau;
+    for(unsigned int d = 0; d < dim; ++d)
+    {
+      grad_y[d]   = dealii::make_vectorized_array<Number>(y_gradients[q][d]);
+      grad_tau[d] = dealii::make_vectorized_array<Number>(tau_gradients[q][d]);
+    }
+    Number const psi =
+      evaluate_enrichment_function(dealii::make_vectorized_array<Number>(y_values[q]),
+                                   grad_y,
+                                   dealii::make_vectorized_array<Number>(tau_values[q]),
+                                   grad_tau)
+        .first[0];
+
+    // u_h = U_bar + psi U_tilde: add the enrichment part
+    for(unsigned int d = 0; d < dim; ++d)
+      values[q][d] += psi * u_tilde_values[q][d];
+  }
+
+  return true;
 }
 
 template class FunctionEnrichment<2, float>;

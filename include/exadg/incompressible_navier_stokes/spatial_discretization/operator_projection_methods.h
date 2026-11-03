@@ -180,6 +180,7 @@ public:
   unsigned int
   solve_linear_momentum_equation(BlockVectorType &       solution,
                                  BlockVectorType const & rhs,
+                                 bool const &            update_preconditioner,
                                  double const &          scaling_factor_mass);
 
   /**********************************DEBUG*************************************/

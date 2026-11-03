@@ -94,6 +94,10 @@ public:
   Operators::ViscousKernelData
   get_viscous_kernel_data() const;
 
+  // viscous kernel (variable viscosity tables), used by the wall enrichment
+  std::shared_ptr<Operators::ViscousKernel<dim, Number>> const &
+  get_viscous_kernel() const;
+
   dealii::LinearAlgebra::distributed::Vector<Number> const &
   get_velocity() const;
 

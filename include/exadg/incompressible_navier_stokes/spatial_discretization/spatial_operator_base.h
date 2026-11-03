@@ -525,6 +525,19 @@ public:
   EnrichedMomentumOperator<dim, Number> const &
   get_enriched_momentum_operator() const;
 
+  // RANS: nu_t^psi (Spalding) in the RANS quadrature points of enriched cells, DG field on the
+  // eddy viscosity DoFHandler of the RANS scalar; 1e20 (no bound) elsewhere
+  void
+  compute_eddy_viscosity_wall_law(VectorType & dst) const;
+
+  // RANS: exact velocity gradient grad(U_bar + psi U_tilde) in the RANS Gauss points of the
+  // enriched cells (dim*dim DG fields + indicator on the eddy viscosity DoFHandler of the RANS
+  // scalar); velocity = fluid velocity (block 0: U_bar, block 1: U_tilde)
+  void
+  compute_velocity_gradient_rans(std::vector<VectorType> & gradient,
+                                 VectorType &              indicator,
+                                 BlockVectorType const &   velocity) const;
+
   void
   apply_wall_layer_viscosity_to_kernel() const;
 

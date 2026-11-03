@@ -101,6 +101,7 @@ Parameters::Parameters()
     use_combined_operator(true),
     store_analytical_velocity_in_dof_vector(false),
     use_overintegration(false),
+    cell_dirichlet_penalty_factor(1.0e6),
     treatment_of_variable_viscosity(TreatmentOfVariableViscosity::Undefined),
     treatment_of_production(TreatmentOfProduction::Undefined),
     treatment_of_dissipation(TreatmentOfDissipation::Undefined),
@@ -396,6 +397,8 @@ Parameters::check() const
   }
 
   // NUMERICAL PARAMETERS
+  AssertThrow(cell_dirichlet_penalty_factor > 0.0,
+              dealii::ExcMessage("cell_dirichlet_penalty_factor must be positive."));
 }
 
 bool
@@ -618,6 +621,8 @@ Parameters::print_parameters_spatial_discretization(dealii::ConditionalOStream c
   {
     print_parameter(pcout, "IP factor viscous term", IP_factor);
   }
+
+  print_parameter(pcout, "Cell Dirichlet penalty factor", cell_dirichlet_penalty_factor);
 }
 
 void

@@ -189,6 +189,14 @@ public:
                      VectorType const *      velocity) const;
 
   /*
+   * CellDirichlet boundaries: dst += lambda (g(t), v) on the cells adjacent to the boundary, with
+   * lambda = cell_dirichlet_penalty_factor / dt and t of update_time_step_size() / rhs() of this
+   * time step. Called once per time step at t_{n+1}, after rhs().
+   */
+  void
+  rhs_add_cell_dirichlet(BlockVectorType & dst) const;
+
+  /*
    * Newton solver: dst += right-hand side of the turbulence terms treated Explicit, at the previous
    * time step solution_n. Call once per time step, before evaluate_add_turbulence_newton_explicit().
    */
@@ -364,6 +372,17 @@ public:
 
   void
   get_eddy_viscosity(VectorType & dst) const;
+
+  // wall model: upper bound of the eddy viscosity in the turbulence source terms
+  void
+  set_eddy_viscosity_wall_law(VectorType const & eddy_viscosity_wall_law) const;
+
+  // wall model: exact velocity gradient of the enriched cells (dim*dim fields) and its indicator,
+  // on the eddy viscosity DoFHandler; replaces the gradient of the velocity field in the cell terms
+  // of the turbulence source terms where indicator = 1
+  void
+  set_velocity_gradient_enriched(std::vector<VectorType> const & velocity_gradient,
+                                 VectorType const &              indicator) const;
 
   /*
    * Dof index for eddy viscosity (in case of turbulence model with eddy viscosity).

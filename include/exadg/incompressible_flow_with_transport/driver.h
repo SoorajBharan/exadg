@@ -164,6 +164,12 @@ private:
   mutable BlockVectorType rans_solution_extrapolated;
   mutable VectorType      eddy_viscosity;
   mutable VectorType      turbulent_kinetic_energy;
+  // wall model: upper bound nu_t^psi of the RANS eddy viscosity (fluid -> RANS)
+  mutable VectorType      eddy_viscosity_wall_law;
+  // wall model: exact velocity gradient of the enriched cells (dim*dim fields) and its indicator
+  // for the RANS cell terms (fluid -> RANS)
+  mutable std::vector<VectorType> velocity_gradient_enriched;
+  mutable VectorType              velocity_gradient_indicator;
 };
 
 } // namespace FTI

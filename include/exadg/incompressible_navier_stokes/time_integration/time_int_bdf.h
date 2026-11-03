@@ -67,6 +67,17 @@ public:
   virtual VectorType const &
   get_velocity_np() const = 0;
 
+  // wall enrichment: velocity at t_{n+1} with both blocks (block 0: U_bar, block 1: U_tilde);
+  // implemented by the dual splitting scheme
+  virtual BlockVectorType const &
+  get_velocity_np_enriched() const
+  {
+    AssertThrow(false,
+                dealii::ExcMessage("get_velocity_np_enriched: not implemented for this solver."));
+    static BlockVectorType const dummy;
+    return dummy;
+  }
+
   virtual VectorType const &
   get_pressure() const = 0;
 

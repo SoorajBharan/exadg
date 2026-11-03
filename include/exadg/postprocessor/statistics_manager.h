@@ -25,6 +25,13 @@
 // deal.II
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#include <deal.II/base/point.h>
+#include <deal.II/base/tensor.h>
+#include <deal.II/grid/tria.h>
+
+// C/C++
+#include <functional>
+#include <vector>
 
 // ExaDG
 #include <exadg/postprocessor/time_control_statistics.h>
@@ -105,6 +112,21 @@ public:
   void
   reset();
 
+  /*
+   * Optional correction of the velocity at the sampling points of one x-z-plane of a cell, before
+   * the averaging (e.g. wall enrichment: the vector given to evaluate() is U_bar, the correction
+   * adds psi U_tilde in the enriched cells). Arguments: cell, reference coordinates of the points,
+   * velocity at the points (in/out). Called for locally owned cells only, i.e. it must not
+   * communicate (MPI).
+   */
+  typedef std::function<void(typename dealii::Triangulation<dim>::active_cell_iterator const &,
+                             std::vector<dealii::Point<dim>> const &,
+                             std::vector<dealii::Tensor<1, dim>> &)>
+    VelocityCorrection;
+
+  void
+  set_velocity_correction(VelocityCorrection const & correction);
+
   TimeControlStatistics time_control_statistics;
 
 private:
@@ -145,6 +167,9 @@ private:
   bool write_final_output;
 
   TurbulentChannelData data;
+
+  // optional correction of the velocity at the sampling points (empty: none)
+  VelocityCorrection velocity_correction;
 };
 
 } // namespace ExaDG

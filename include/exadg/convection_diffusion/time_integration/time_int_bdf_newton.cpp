@@ -23,6 +23,7 @@
 #include <exadg/convection_diffusion/time_integration/time_int_bdf_newton.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>
 #include <exadg/utilities/print_solver_results.h>
+#include <exadg/utilities/section_profile.h>
 
 namespace ExaDG
 {
@@ -55,6 +56,10 @@ TimeIntBDFNewton<dim, Number>::evaluate_residual(BlockVectorType &       residua
                                                  BlockVectorType const & constant_part,
                                                  VectorType const &      velocity_np) const
 {
+#ifdef EXADG_PROFILE
+  auto t_prof = SectionProfile::Clock::now();
+#endif
+
   // (gamma_0/dt M + A) solution, homogeneous operator (mass scaling set by
   // update_conv_diff_operator())
   this->pde_operator->apply_conv_diff_operator(residual, solution);
@@ -62,12 +67,20 @@ TimeIntBDFNewton<dim, Number>::evaluate_residual(BlockVectorType &       residua
   // constant_part - (gamma_0/dt M + A) solution
   residual.sadd(-1.0, 1.0, constant_part);
 
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 2a residual: conv-diff operator", t_prof);
+#endif
+
   // + Newton_Explicit part of the turbulence terms treated Implicit, at solution
   if(this->param.turbulence_model_data.is_active)
     this->pde_operator->evaluate_add_turbulence_newton_explicit(residual,
                                                                 solution,
                                                                 this->get_next_time(),
                                                                 &velocity_np);
+
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 2b residual: turbulence Newton_Explicit", t_prof);
+#endif
 }
 
 template<int dim, typename Number>
@@ -90,6 +103,10 @@ TimeIntBDFNewton<dim, Number>::do_timestep_solve()
     AssertThrow(velocity_np.size() > 0,
                 dealii::ExcMessage("Turbulence model: the velocity field is not initialized."));
 
+#ifdef EXADG_PROFILE
+  auto t_prof_rhs = SectionProfile::Clock::now();
+#endif
+
   // constant part of the right-hand side: b (no turbulence) + Explicit turbulence terms at Q^n
   this->assemble_right_hand_side(velocity_np);
 
@@ -98,6 +115,10 @@ TimeIntBDFNewton<dim, Number>::do_timestep_solve()
                                                          this->solution[0],
                                                          this->get_time(),
                                                          &velocity_np);
+
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 1 rhs + Explicit turbulence terms", t_prof_rhs);
+#endif
 
   // time t_{n+1}, mass scaling gamma_0/dt and velocity of the convection-diffusion operator
   this->pde_operator->update_conv_diff_operator(this->get_next_time(),
@@ -139,12 +160,20 @@ TimeIntBDFNewton<dim, Number>::do_timestep_solve()
     // J(Q^j) dQ = r(Q^j), linearization point set by evaluate_residual()
     increment = 0.0;
 
+#ifdef EXADG_PROFILE
+    auto t_prof_solve = SectionProfile::Clock::now();
+#endif
+
     n_iter_linear += this->pde_operator->solve(increment,
                                                residual,
                                                update_preconditioner,
                                                scaling_factor_mass,
                                                this->get_next_time(),
                                                &velocity_np);
+
+#ifdef EXADG_PROFILE
+    SectionProfile::lap("scal 3 linear solve (total)", t_prof_solve);
+#endif
 
     if(update_preconditioner)
     {
@@ -219,8 +248,15 @@ TimeIntBDFNewton<dim, Number>::do_timestep_solve()
   newton_iterations.first += 1;
   newton_iterations.second += n_iter_newton;
 
-  // explicit convective and source terms at t_{n+1} for the next time steps
+#ifdef EXADG_PROFILE
+  auto t_prof_explicit = SectionProfile::Clock::now();
+#endif
+
   this->evaluate_explicit_terms_at_new_time(velocity_np);
+
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 4 explicit terms at t_{n+1}", t_prof_explicit);
+#endif
 
   if(this->print_solver_info() and not(this->is_test))
   {

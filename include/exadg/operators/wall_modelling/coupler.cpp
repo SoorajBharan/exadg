@@ -226,7 +226,24 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
       }
     }
 
-    data.M_tilde_tilde_inverse = invert_matrix_simd(data.M_tilde_tilde, n_en);
+    // lanes without enrichment (switched off: psi = 0, M_tt = 0): invert the identity there and
+    // zero the result, so that U_tilde = M_tt^{-1} (...) = 0 in those cells
+    {
+      auto M_tilde_tilde_regular = data.M_tilde_tilde;
+      for(unsigned int v = 0; v < scalar::size(); ++v)
+        if(not function_enrichment->is_enrichment_active(cell, v))
+          for(unsigned int i = 0; i < n_en; ++i)
+            for(unsigned int j = 0; j < n_en; ++j)
+              M_tilde_tilde_regular[i][j][v] = (i == j) ? 1.0 : 0.0;
+
+      data.M_tilde_tilde_inverse = invert_matrix_simd(M_tilde_tilde_regular, n_en);
+
+      for(unsigned int v = 0; v < scalar::size(); ++v)
+        if(not function_enrichment->is_enrichment_active(cell, v))
+          for(unsigned int i = 0; i < n_en; ++i)
+            for(unsigned int j = 0; j < n_en; ++j)
+              data.M_tilde_tilde_inverse[i][j][v] = 0.0;
+    }
 
     // S = M_tilde_tilde - M_bar_tilde^T X,   X = M_bar_bar^{-1} M_bar_tilde
     std::vector<std::vector<scalar>> X(n_dg, std::vector<scalar>(n_en, zero));
@@ -261,6 +278,7 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
                                                       data.M_tilde_tilde,
                                                       data.projector,
                                                       mf_en.n_active_entries_per_cell_batch(cell),
+                                                      cell,
                                                       n_modes_total,
                                                       n_modes_dropped,
                                                       lambda_min_kept);
@@ -342,6 +360,8 @@ WallDGCoupler<dim, Number>::precompute_schur_matrices()
  *
  * \epsilon = max(rank_tolerance, 10^3 \epsilon_{machine}(Number)).
  * Unfilled SIMD lanes (v >= n_active_lanes): S^+ = 0, P = 0, not counted.
+ * Cells switched off by the y+ criterion (FunctionEnrichment::is_enrichment_active): S^+ = 0, P = 0,
+ * not counted.
  */
 template<int dim, typename Number>
 std::vector<std::vector<dealii::VectorizedArray<Number>>>
@@ -350,6 +370,7 @@ WallDGCoupler<dim, Number>::compute_schur_pseudo_inverse(
   std::vector<std::vector<scalar>> const & M_tilde_tilde,
   std::vector<std::vector<scalar>>       & projector,
   unsigned int const                       n_active_lanes,
+  unsigned int const                       cell,
   unsigned int &                           n_modes_total,
   unsigned int &                           n_modes_dropped,
   double &                                 lambda_min_kept) const
@@ -365,6 +386,10 @@ WallDGCoupler<dim, Number>::compute_schur_pseudo_inverse(
 
   for(unsigned int v = 0; v < n_active_lanes; ++v)
   {
+    // cell switched off by the y+ criterion (psi = 0, M_tt = 0): no enrichment, S^+ = 0, P = 0
+    if(not function_enrichment->is_enrichment_active(cell, v))
+      continue;
+
     // d_i = (M_tt)_{ii}^{-1/2}
     std::vector<double> d(n);
     for(unsigned int i = 0; i < n; ++i)

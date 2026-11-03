@@ -705,8 +705,15 @@ TimeIntBDFPressureCorrection<dim, Number>::momentum_step_enriched()
   for(unsigned int i = 0; i < velocity.size(); ++i)
     velocity_np.add(this->extra.get_beta(i), velocity[i]);
 
-  unsigned int const n_iter =
-    pde_operator->solve_linear_momentum_equation(velocity_np, rhs, mass_factor);
+  bool const update_preconditioner =
+    this->param.update_preconditioner_momentum and
+    ((this->time_step_number - 1) % this->param.update_preconditioner_momentum_every_time_steps ==
+     0);
+
+  unsigned int const n_iter = pde_operator->solve_linear_momentum_equation(velocity_np,
+                                                                           rhs,
+                                                                           update_preconditioner,
+                                                                           mass_factor);
 
   // residual-based friction velocity: s (N, u* - \hat{u}) + \nu (grad N, grad u*)
   velocity_momentum    = velocity_np;

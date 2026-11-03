@@ -120,6 +120,7 @@ private:
                                std::vector<std::vector<scalar>> const & M_tilde_tilde,
                                std::vector<std::vector<scalar>>       & projector,
                                unsigned int const                       n_active_lanes,
+                               unsigned int const                       cell,
                                unsigned int &                           n_modes_total,
                                unsigned int &                           n_modes_dropped,
                                double &                                 lambda_min_kept) const;

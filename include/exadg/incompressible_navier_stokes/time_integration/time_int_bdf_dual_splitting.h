@@ -67,6 +67,9 @@ public:
   VectorType const &
   get_velocity_np() const final;
 
+  BlockVectorType const &
+  get_velocity_np_enriched() const final;
+
   VectorType const &
   get_pressure() const final;
 

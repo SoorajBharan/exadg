@@ -105,7 +105,7 @@ struct SpaldingLaw
     // Spalding's implicit law: y^+ = u^+ + e^{-\beta \kappa} \left( e^{u^+ \kappa} - 1 - u^+ \kappa - \frac{(u^+ \kappa)^2}{2!} - \frac{(u^+ \kappa)^3}{3!} - \frac{(u^+ \kappa)^4}{4!} \right)
     scalar y_plus = u_plus + expKB * term_1;
 
-    // \frac{dy^+}{du^+} = \left[ 1 + e^{-\beta \kappa} \kappa \left( e^{u^+ \kappa} - 1 - \frac{(u^+ \kappa)^2}{2!} - \frac{(u^+ \kappa)^3}{3!} - \frac{(u^+ \kappa)^4}{4!} \right) \right]^{-1}
+    // \frac{dy^+}{du^+} = 1 + e^{-\beta \kappa} \kappa \left( e^{u^+ \kappa} - 1 - u^+ \kappa - \frac{(u^+ \kappa)^2}{2!} - \frac{(u^+ \kappa)^3}{3!} \right)
     scalar dy_plus = 1.0 + expKB * term_2;
 
     return std::make_pair(y_plus, dy_plus);

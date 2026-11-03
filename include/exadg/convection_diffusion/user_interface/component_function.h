@@ -106,6 +106,9 @@ get_boundary_descriptor_of_component(BoundaryDescriptor<dim> const &boundary_des
   for(auto const & [boundary_id, function] : boundary_descriptor.neumann_bc)
   bc_component->neumann_bc.insert({boundary_id, get_component_function(function, component)});
 
+  for(auto const & [boundary_id, function] : boundary_descriptor.cell_dirichlet_bc)
+  bc_component->cell_dirichlet_bc.insert({boundary_id, get_component_function(function, component)});
+
 
   for(auto const & [boundary_id, mixed_data] : boundary_descriptor.mixed_bc)
   {
@@ -118,9 +121,11 @@ get_boundary_descriptor_of_component(BoundaryDescriptor<dim> const &boundary_des
       bc_component->dirichlet_bc.insert({boundary_id, get_component_function(mixed_data.function, component)});
     else if(type == BoundaryType::Neumann)
       bc_component->neumann_bc.insert({boundary_id, get_component_function(mixed_data.function, component)});
+    else if(type == BoundaryType::CellDirichlet)
+      bc_component->cell_dirichlet_bc.insert({boundary_id, get_component_function(mixed_data.function, component)});
     else
       AssertThrow(false,
-                  dealii::ExcMessage("Mixed boundary condition: only Dirichlet or Neumann allowed per component."));
+                  dealii::ExcMessage("Mixed boundary condition: only Dirichlet, Neumann or CellDirichlet allowed per component."));
   }
 
   return bc_component;

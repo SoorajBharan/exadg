@@ -35,6 +35,7 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/inverse_mass_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/solvers/iterative_solvers_dealii_wrapper.h>
+#include <exadg/utilities/section_profile.h>
 
 namespace ExaDG
 {
@@ -375,6 +376,7 @@ Operator<dim, Number>::setup_operators()
     Operators::TurbulenceSourceKernelData<dim> turbulence_source_kernel_data;
     turbulence_source_kernel_data.dof_index                = get_dof_index();
     turbulence_source_kernel_data.dof_index_velocity       = get_dof_index_velocity();
+    turbulence_source_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
     turbulence_source_kernel_data.turbulence_model_data    = param.turbulence_model_data;
     turbulence_source_kernel_data.diffusivity              = param.diffusivity;
     turbulence_source_kernel_data.k_log                    = param.turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable;
@@ -470,6 +472,24 @@ Operator<dim, Number>::setup_operators()
                                        convective_kernel,
                                        param.diffusive_problem() ? diffusive_kernel[b] : nullptr);
     }
+  }
+
+  // CellDirichlet: the penalty is part of the BDF combined operator only (stiff, lambda ~ 1/dt);
+  // multigrid level operators do not get lambda
+  bool has_cell_dirichlet = false;
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    has_cell_dirichlet =
+      has_cell_dirichlet or not boundary_descriptor_block[b]->cell_dirichlet_bc.empty();
+
+  if(has_cell_dirichlet)
+  {
+    AssertThrow(param.problem_type == ProblemType::Unsteady and
+                  param.temporal_discretization == TemporalDiscretization::BDF,
+                dealii::ExcMessage("CellDirichlet boundary: only unsteady problems with BDF time "
+                                   "integration are implemented."));
+    AssertThrow(param.preconditioner != Preconditioner::Multigrid,
+                dealii::ExcMessage("CellDirichlet boundary: multigrid preconditioner not "
+                                   "implemented (use BlockJacobi)."));
   }
 
   // modal filter (scalar, acts on all blocks)
@@ -913,6 +933,15 @@ Operator<dim, Number>::rhs(BlockVectorType & dst,
 
 template<int dim, typename Number>
 void
+Operator<dim, Number>::rhs_add_cell_dirichlet(BlockVectorType & dst) const
+{
+  // time of the combined operators: set by rhs() just before
+  for(unsigned int b = 0; b < combined_operator.size(); ++b)
+    combined_operator[b]->rhs_add_cell_dirichlet(dst.block(b));
+}
+
+template<int dim, typename Number>
+void
 Operator<dim, Number>::rhs_add_turbulence(BlockVectorType &       dst,
                                           BlockVectorType const & solution_n,
                                           double const            time_n,
@@ -1110,7 +1139,15 @@ Operator<dim, Number>::solve(BlockVectorType &       sol,
 {
   update_conv_diff_operator(time, scaling_factor, velocity);
 
+#ifdef EXADG_PROFILE
+  auto t_prof = SectionProfile::Clock::now();
+#endif
+
   iterative_solver->update_preconditioner(update_preconditioner);
+
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 3a precond update", t_prof);
+#endif
 
   unsigned int const iterations = iterative_solver->solve(sol, rhs);
 
@@ -1133,17 +1170,27 @@ Operator<dim, Number>::get_turbulence_model_data() const
 
 template<int dim, typename Number>
 void
-Operator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src)
-const
+Operator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src) const
 {
-  // block-diagonal part: operator of each transport variable acting on its own  block
+#ifdef EXADG_PROFILE
+  auto t_prof = SectionProfile::Clock::now();
+#endif
+
+  // block-diagonal part: operator of each transport variable acting on its own block
   for(unsigned int b = 0; b < n_blocks; ++b)
     combined_operator[b]->vmult(dst.block(b), src.block(b));
 
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 3b vmult: conv-diff operator", t_prof);
+#endif
 
   // Newton_Implicit part of the turbulence terms treated Implicit
   if(param.turbulence_model_data.is_active)
     turbulence_source_operator.apply_add_newton_implicit(dst, src);
+
+#ifdef EXADG_PROFILE
+  SectionProfile::lap("scal 3c vmult: turbulence Jacobian", t_prof);
+#endif
 }
 
 template<int dim, typename Number>
@@ -1406,6 +1453,25 @@ Operator<dim, Number>::get_eddy_viscosity(VectorType & dst) const
 }
 
 template<int dim, typename Number>
+void
+Operator<dim, Number>::set_eddy_viscosity_wall_law(VectorType const & eddy_viscosity_wall_law) const
+{
+  AssertThrow(turbulence_source_kernel != nullptr,
+              dealii::ExcMessage("set_eddy_viscosity_wall_law: no turbulence source terms."));
+  turbulence_source_kernel->set_eddy_viscosity_wall_law_ptr(eddy_viscosity_wall_law);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::set_velocity_gradient_enriched(std::vector<VectorType> const & velocity_gradient,
+                                                      VectorType const &              indicator) const
+{
+  AssertThrow(turbulence_source_kernel != nullptr,
+              dealii::ExcMessage("set_velocity_gradient_enriched: no turbulence source terms."));
+  turbulence_source_kernel->set_velocity_gradient_enriched_ptr(velocity_gradient, indicator);
+}
+
+template<int dim, typename Number>
 std::string
 Operator<dim, Number>::get_dof_name_eddy_viscosity() const
 {
@@ -1436,6 +1502,11 @@ Operator<dim, Number>::update_time_step_size(double const dt,
 {
   if(param.turbulence_model_data.is_active)
     turbulence_source_operator.set_time_step_size(dt, time, end_time, time_step_number);
+
+  // CellDirichlet: lambda = cell_dirichlet_penalty_factor / dt, the same in rhs_add_cell_dirichlet()
+  // (called after this function) and in the residual / linear system of this time step
+  for(unsigned int b = 0; b < combined_operator.size(); ++b)
+    combined_operator[b]->set_cell_dirichlet_penalty(param.cell_dirichlet_penalty_factor / dt);
 }
 
 template<int dim, typename Number>

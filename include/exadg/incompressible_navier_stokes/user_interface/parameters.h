@@ -433,6 +433,20 @@ public:
 
   double wall_enrichment_rank_tolerance;
 
+  // y+ criterion of the enrichment (Krank et al. 2018, Sec. 3.3; thesis Sec. 8.1.2): a wall cell
+  // is enriched only if y+ > wall_enrichment_y_plus_max in at least one quadrature point;
+  // 0: all wall cells are enriched
+  double wall_enrichment_y_plus_max;
+
+  // hysteresis of the y+ criterion: an enriched wall cell is switched off only if
+  // y+ < wall_enrichment_y_plus_min (must be <= wall_enrichment_y_plus_max)
+  double wall_enrichment_y_plus_min;
+
+  // wall-law eddy viscosity with a linear shear stress across the wall layer,
+  // tau(y) / tau_w = 1 + g y, nu_t = nu (r dy+/du+ - 1); g in 1/length.
+  // 0: constant stress layer (default); channel: -1/delta (exact for the mean flow)
+  double wall_layer_stress_gradient;
+
   unsigned int enrichment_quadrature_points;
   // viscous interior penalty on enriched cells:
   //   false: polynomial tau_IP = (k+1)^2 A/V (Krank et al. 2018, Eq. (35)-(36)) -- default
@@ -442,6 +456,25 @@ public:
   WallBoundaryConditionViscous wall_bc_viscous;
 
   double wall_penalty_factor_viscous;
+
+  // RANS eddy viscosity on the wall layer (enriched and halo cells):
+  //   true:  d-linear interpolant of the vertex values, nu_t = 0 at wall vertices
+  //   false: nu_t,h of the RANS solver (DG field of degree k), as on all other cells (default)
+  bool wall_layer_nu_t_linear;
+
+  // RANS: volume eddy viscosity on enriched cells = min(nu_t,h, nu_t^psi), nu_t^psi the eddy
+  // viscosity of Spalding's law (nu (dy+/du+ - 1)); faces use the linear interpolant
+  bool wall_layer_nu_t_wall_law;
+
+  // RANS (with wall_layer_nu_t_wall_law): volume eddy viscosity on enriched cells = nu_t^psi
+  // alone, i.e. the wall cell does not use the RANS nu_t,h (the RANS model sets nu_t from the
+  // next cell on)
+  bool wall_layer_nu_t_wall_law_only;
+
+  // RANS: the cell terms of the turbulence model (production, dissipation, cell nu_t) use the exact
+  // velocity gradient grad(U_bar + psi U_tilde) in the enriched cells instead of the gradient of
+  // the projected velocity (which overestimates the production in large wall cells)
+  bool wall_layer_exact_velocity_gradient;
 
   /**************************************************************************************/
   /*                                                                                    */

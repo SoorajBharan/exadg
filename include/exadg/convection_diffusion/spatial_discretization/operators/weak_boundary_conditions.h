@@ -45,6 +45,7 @@ namespace ConvDiff
  *  +-------------------------+----------------------+--------------------+
  *  | inhomogeneous operator  | phi⁻ = 0, phi⁺ = 2g  | phi⁻ = 0, phi⁺ = 0 |
  *  +-------------------------+----------------------+--------------------+
+ *  CellDirichlet boundaries: as Neumann (zero flux), value imposed in the adjacent cells.
  */
 template<int dim, typename Number>
 inline DEAL_II_ALWAYS_INLINE //
@@ -105,7 +106,7 @@ dealii::VectorizedArray<Number>
       AssertThrow(false, dealii::ExcMessage("Specified OperatorType is not implemented!"));
     }
   }
-  else if(boundary_type == BoundaryType::Neumann)
+  else if(boundary_type == BoundaryType::Neumann or boundary_type == BoundaryType::CellDirichlet)
   {
     value_p = value_m;
   }
@@ -142,6 +143,9 @@ dealii::VectorizedArray<Number>
    *  +-------------------------+-----------------------------------------------+------------------------------------------------------+
    *  | inhomogeneous operator  | {{grad(phi)}}*n = 0                           | {{grad(phi)}}*n = h                                  |
    *  +-------------------------+-----------------------------------------------+------------------------------------------------------+
+   *
+   *  CellDirichlet boundaries: as Neumann with h = 0 (zero flux); the value is imposed in the
+   *  cells adjacent to the boundary by a penalty term (CombinedOperator / RHSOperator).
    */
 // clang-format on
 template<int dim, typename Number>
@@ -207,6 +211,11 @@ dealii::VectorizedArray<Number>
     {
       AssertThrow(false, dealii::ExcMessage("Specified OperatorType is not implemented!"));
     }
+  }
+  else if(boundary_type == BoundaryType::CellDirichlet)
+  {
+    // zero flux (h = 0): the value is imposed in the cell by the penalty term
+    normal_gradient_p = -normal_gradient_m;
   }
   else
   {

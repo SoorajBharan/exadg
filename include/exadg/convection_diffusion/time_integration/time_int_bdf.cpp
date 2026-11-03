@@ -654,6 +654,10 @@ TimeIntBDF<dim, Number>::assemble_right_hand_side(VectorType const & velocity_np
   // calculate rhs (rhs-vector f and inhomogeneous boundary face integrals)
   pde_operator->rhs(rhs_vector, solution_np, this->get_next_time(), &velocity_np);
 
+  // CellDirichlet boundaries: + lambda (g(t_{n+1}), v) on the adjacent cells (lambda set by
+  // update_time_step_size() above)
+  pde_operator->rhs_add_cell_dirichlet(rhs_vector);
+
   // if the convective term is involved in the equations:
   // add the convective term to the right-hand side of the equations
   // if this term is treated explicitly (additive decomposition)

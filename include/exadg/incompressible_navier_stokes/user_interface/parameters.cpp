@@ -225,11 +225,21 @@ Parameters::Parameters()
     fe_degree_enrichment(1),
     wall_enrichment_layers(1),
     wall_shear_stress_computation(WallShearStressComputation::VelocityGradient),
-    wall_shear_stress_min_fraction(0.02),
+    // no clipping of tau_w: replaced by the y+ criterion (Krank et al. 2018, Sec. 3.3)
+    wall_shear_stress_min_fraction(0.0),
     wall_enrichment_rank_tolerance(1.e-6),
+    wall_enrichment_y_plus_max(30.0),
+    wall_enrichment_y_plus_min(15.0),
+    wall_layer_stress_gradient(0.0),
     use_enrichment_aware_penalty(false),
     wall_bc_viscous(WallBoundaryConditionViscous::Weak),
     wall_penalty_factor_viscous(1.0),
+    // nu_t,h of the RANS solver on the wall layer: the linear vertex interpolant (true) adds
+    // spurious eddy viscosity in the buffer layer (channel test: U_bulk -4 % ... -29 %)
+    wall_layer_nu_t_linear(false),
+    wall_layer_nu_t_wall_law(false),
+    wall_layer_nu_t_wall_law_only(false),
+    wall_layer_exact_velocity_gradient(false),
     enrichment_quadrature_points(15)
 {
 }
@@ -576,6 +586,13 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
                 dealii::ExcMessage("wall_shear_stress_min_fraction must be in [0, 1)."));
     AssertThrow(wall_enrichment_rank_tolerance > 0.0 and wall_enrichment_rank_tolerance < 1.0,
                 dealii::ExcMessage("wall_enrichment_rank_tolerance must in [0, 1)."));
+    AssertThrow(wall_enrichment_y_plus_max >= 0.0,
+                dealii::ExcMessage("wall_enrichment_y_plus_max must be non-negative."));
+    AssertThrow(wall_enrichment_y_plus_min >= 0.0 and
+                  wall_enrichment_y_plus_min <= wall_enrichment_y_plus_max,
+                dealii::ExcMessage("wall_enrichment_y_plus_min must be in [0, wall_enrichment_y_plus_max]."));
+    AssertThrow(not wall_layer_nu_t_wall_law_only or wall_layer_nu_t_wall_law,
+                dealii::ExcMessage("wall_layer_nu_t_wall_law_only requires wall_layer_nu_t_wall_law."));
     AssertThrow(wall_penalty_factor_viscous > 0.0,
                 dealii::ExcMessage("wall_penalty_factor_viscous must be positive."));
     // Strong: the wall traction is a reaction force on the fixed DoFs, not the penalty flux
@@ -1359,10 +1376,20 @@ Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout
   print_parameter(pcout, "Wall shear stress computation", wall_shear_stress_computation);
   print_parameter(pcout, "Minimum wall shear stress (fraction of mean)", wall_shear_stress_min_fraction);
   print_parameter(pcout, "Rank tolerance of enrichment space", wall_enrichment_rank_tolerance);
+  print_parameter(pcout, "Enrichment switched on above y+", wall_enrichment_y_plus_max);
+  print_parameter(pcout, "Enrichment switched off below y+", wall_enrichment_y_plus_min);
+  print_parameter(pcout, "Wall layer stress gradient (1/length)", wall_layer_stress_gradient);
   print_parameter(pcout, "Enrichment-aware interior penalty", use_enrichment_aware_penalty);
   print_parameter(pcout, "Wall boundary condition viscous step", wall_bc_viscous);
   if(wall_bc_viscous == WallBoundaryConditionViscous::Weak)
     print_parameter(pcout, "Wall penalty factor viscous step", wall_penalty_factor_viscous);
+  if(turbulence_model_data.rans_model)
+  {
+    print_parameter(pcout, "Linear nu_t on the wall layer", wall_layer_nu_t_linear);
+    print_parameter(pcout, "Wall-law nu_t on enriched cells", wall_layer_nu_t_wall_law);
+    print_parameter(pcout, "Wall-law nu_t only (no RANS nu_t)", wall_layer_nu_t_wall_law_only);
+    print_parameter(pcout, "Exact velocity gradient in RANS", wall_layer_exact_velocity_gradient);
+  }
   print_parameter(pcout, "Number of 1D quadrature points on enriched cells",
                   enrichment_quadrature_points);
 

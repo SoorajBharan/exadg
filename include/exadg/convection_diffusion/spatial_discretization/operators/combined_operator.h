@@ -108,6 +108,15 @@ public:
   void
   set_scaling_factor_mass_operator(Number const & scaling_factor);
 
+  // CellDirichlet: penalty lambda = cell_dirichlet_penalty_factor / dt of the current time step
+  void
+  set_cell_dirichlet_penalty(double const penalty);
+
+  // CellDirichlet: dst += lambda (g(t), v) on the CellDirichlet cells (right-hand side part of the
+  // penalty; the part lambda (u, v) is in do_cell_integral()); t = time of the last set_time()
+  void
+  rhs_add_cell_dirichlet(VectorType & dst) const;
+
 private:
   void
   reinit_cell_derived(IntegratorCell & integrator, unsigned int const cell) const final;
@@ -150,6 +159,17 @@ private:
   do_face_int_integral_cell_based(IntegratorFace & integrator_m,
                                   IntegratorFace & integrator_p) const final;
 
+  // fills cell_dirichlet_mask(_per_id) from the CellDirichlet boundaries of operator_data.bc
+  void
+  setup_cell_dirichlet();
+
+  // cell loop of rhs_add_cell_dirichlet(): + lambda (g, v) on the CellDirichlet cells
+  void
+  cell_loop_rhs_cell_dirichlet(dealii::MatrixFree<dim, Number> const &       matrix_free,
+                               VectorType &                                  dst,
+                               VectorType const &                            src,
+                               std::pair<unsigned int, unsigned int> const & range) const;
+
   CombinedOperatorData<dim> operator_data;
 
   std::shared_ptr<MassKernel<dim, Number>>                  mass_kernel;
@@ -157,6 +177,20 @@ private:
   std::shared_ptr<Operators::DiffusiveKernel<dim, Number>>  diffusive_kernel;
 
   double scaling_factor_mass;
+
+  // CellDirichlet (penalty lambda (u - g) v on the cells with a face on a CellDirichlet boundary):
+  // lambda = cell_dirichlet_penalty_factor / dt, set every time step by the PDE operator
+  double cell_dirichlet_penalty;
+
+  // per cell batch: 1 in the SIMD lanes of the CellDirichlet cells, 0 elsewhere
+  // (empty: this operator has no CellDirichlet boundary)
+  std::vector<scalar> cell_dirichlet_mask;
+
+  // the same mask per CellDirichlet boundary ID (which function g is imposed in which cell)
+  std::map<dealii::types::boundary_id, std::vector<scalar>> cell_dirichlet_mask_per_id;
+
+  // mask of the cell batch of the last reinit_cell_derived(), read in do_cell_integral()
+  mutable scalar current_cell_dirichlet_mask;
 };
 
 } // namespace ConvDiff

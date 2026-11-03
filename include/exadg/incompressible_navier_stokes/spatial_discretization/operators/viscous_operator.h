@@ -45,7 +45,8 @@ struct ViscousKernelData
       penalty_term_div_formulation(PenaltyTermDivergenceFormulation::Symmetrized),
       IP_formulation(InteriorPenaltyFormulation::SIPG),
       viscosity_is_variable(false),
-      variable_normal_vector(false)
+      variable_normal_vector(false),
+      use_cell_based_face_loops(false)
   {
   }
 
@@ -56,6 +57,7 @@ struct ViscousKernelData
   InteriorPenaltyFormulation       IP_formulation;
   bool                             viscosity_is_variable;
   bool                             variable_normal_vector;
+  bool                             use_cell_based_face_loops;
 };
 
 template<int dim, typename Number>
@@ -94,7 +96,10 @@ public:
     if(data.viscosity_is_variable)
     {
       // allocate vectors for variable coefficients and initialize with constant viscosity
-      viscosity_coefficients.initialize(matrix_free, quad_index, true, false);
+      viscosity_coefficients.initialize(matrix_free,
+                                        quad_index,
+                                        true,
+                                        data.use_cell_based_face_loops);
       viscosity_coefficients.set_coefficients(data.viscosity);
     }
   }
@@ -158,6 +163,20 @@ public:
   set_coefficient_face_neighbor(unsigned int const face, unsigned int const q, scalar const & value)
   {
     viscosity_coefficients.set_coefficient_face_neighbor(face, q, value);
+  }
+
+  scalar
+  get_coefficient_face_cell_based(unsigned int const cell_based_face, unsigned int const q)
+  {
+    return viscosity_coefficients.get_coefficient_face_cell_based(cell_based_face, q);
+  }
+
+  void
+  set_coefficient_face_cell_based(unsigned int const cell_based_face,
+                                  unsigned int const q,
+                                  scalar const &     value)
+  {
+    viscosity_coefficients.set_coefficient_face_cell_based(cell_based_face, q, value);
   }
 
   IntegratorFlags
@@ -315,6 +334,29 @@ public:
     if(data.viscosity_is_variable)
     {
       viscosity = viscosity_coefficients.get_coefficient_face(face, q);
+    }
+
+    return viscosity;
+  }
+
+  /*
+   *  This function returns the viscosity for faces in cell-based face loops, @p cell_based_face =
+   *  cell * n_faces_per_cell + face as returned by get_current_cell_index() of a face integrator
+   *  initialized with reinit(cell, face). The value is the one of the own cell, also for interior
+   *  faces (data of the neighbor is not accessed in cell-based face loops).
+   */
+  inline DEAL_II_ALWAYS_INLINE //
+  scalar
+  get_viscosity_face_cell_based(unsigned int const cell_based_face, unsigned int const q) const
+  {
+    scalar viscosity = dealii::make_vectorized_array<Number>(data.viscosity);
+
+    if(data.viscosity_is_variable)
+    {
+      AssertThrow(data.use_cell_based_face_loops,
+                  dealii::ExcMessage("Viscous kernel: cell-based face data not available."));
+
+      viscosity = viscosity_coefficients.get_coefficient_face_cell_based(cell_based_face, q);
     }
 
     return viscosity;
@@ -607,6 +649,10 @@ private:
 
   void
   do_face_int_integral(IntegratorFace & integrator_m, IntegratorFace & integrator_p) const final;
+
+  void
+  do_face_int_integral_cell_based(IntegratorFace & integrator_m,
+                                  IntegratorFace & integrator_p) const final;
 
   void
   do_face_ext_integral(IntegratorFace & integrator_m, IntegratorFace & integrator_p) const final;

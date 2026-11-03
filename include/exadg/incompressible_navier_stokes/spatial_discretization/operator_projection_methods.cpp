@@ -505,8 +505,11 @@ unsigned int
 OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
   BlockVectorType &       solution,
   BlockVectorType const & rhs,
+  bool const &            update_preconditioner,
   double const &          scaling_factor_mass)
 {
+  (void)update_preconditioner;
+
   AssertThrow(this->param.wall_enrichment_enabled,
               dealii::ExcMessage("Block momentum solve requires wall_enrichment_enabled."));
 
@@ -515,9 +518,24 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
 
   // Step 7c: strong no-slip -> U_bar DoFs on enrichment walls fixed to zero (E_bar)
   VectorType const * free_bar =
-    (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &this->free_dofs_bar : nullptr;
+    (this->param.wall_bc_viscous == WallBoundaryConditionViscous::Strong) ? &this->free_dofs_bar :
+                                                                           nullptr;
 
-  this->enriched_momentum_preconditioner.set_scaling_factor_mass(scaling_factor_mass);
+  if(this->param.preconditioner_momentum == MomentumPreconditioner::InverseMassMatrix)
+  {
+    this->enriched_momentum_preconditioner.set_scaling_factor_mass(scaling_factor_mass);
+  }
+  else if(this->param.preconditioner_momentum == MomentumPreconditioner::BlockJacobi)
+  {
+    // The local operators on the enriched cells depend on psi (u_tau) and on the rank projector P,
+    // which change every time step. Reusing them over several time steps increases the number of
+    // iterations by a factor 2-6, so they are assembled for every solve. update_preconditioner is
+    // not used here.
+    this->enriched_block_jacobi_preconditioner.update(scaling_factor_mass,
+                                                      this->param.viscosity,
+                                                      nullptr,
+                                                      free_bar);
+  }
 
   dealii::ReductionControl control(this->param.solver_data_momentum.max_iter,
                                    this->param.solver_data_momentum.abs_tol,
@@ -534,6 +552,30 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
   constrained_operator.constrain(rhs_constrained); // E B (homogeneous no-slip: fixed entries 0)
   constrained_operator.constrain(solution);        // E X_0
 
+  // Krylov solve with the preconditioner selected by param.preconditioner_momentum
+  auto const solve = [&](auto & solver) {
+    if(this->param.preconditioner_momentum == MomentumPreconditioner::InverseMassMatrix)
+    {
+      solver.solve(constrained_operator,
+                   solution,
+                   rhs_constrained,
+                   this->enriched_momentum_preconditioner);
+    }
+    else if(this->param.preconditioner_momentum == MomentumPreconditioner::BlockJacobi)
+    {
+      solver.solve(constrained_operator,
+                   solution,
+                   rhs_constrained,
+                   this->enriched_block_jacobi_preconditioner);
+    }
+    else
+    {
+      AssertThrow(false,
+                  dealii::ExcMessage("Wall enrichment is not implemented for the selected momentum "
+                                     "preconditioner. Use InverseMassMatrix or BlockJacobi."));
+    }
+  };
+
   if(this->param.solver_momentum == SolverMomentum::CG)
   {
     dealii::SolverCG<BlockVectorType> solver(control);
@@ -549,13 +591,12 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
       false);
     /************************************************************************************/
 #endif
-    // solver.solve(constrained_operator, s
-    // olution, rhs_constrained, enriched_block_jacobi_preconditioner);
+
 #ifdef EXADG_DEBUG
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_momentum_preconditioner);
+      solve(solver);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
@@ -569,8 +610,7 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
       << "   iterations = " << control.last_step() << std::endl;
     /************************************************************************************/
 #else
-    solver.solve(constrained_operator, solution, rhs_constrained,
-                 this->enriched_momentum_preconditioner);
+    solve(solver);
 #endif
   }
   else
@@ -600,13 +640,11 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
       false);
 #endif
 
-    // solver.solve(constrained_operator, solution, rhs_constrained, enriched_block_jacobi_preconditioner);
-
 #ifdef EXADG_DEBUG
     /*************************************DEBUG*********************************/
     try
     {
-      solver.solve(constrained_operator, solution, rhs_constrained, this->enriched_momentum_preconditioner);
+      solve(solver);
     }
     catch(dealii::SolverControl::NoConvergence const & e)
     {
@@ -620,8 +658,7 @@ OperatorProjectionMethods<dim, Number>::solve_linear_momentum_equation(
       << "   iterations = " << control.last_step() << std::endl;
     /************************************************************************************/
 #else
-    solver.solve(constrained_operator, solution, rhs_constrained,
-                 this->enriched_momentum_preconditioner);
+    solve(solver);
 #endif
   }
 

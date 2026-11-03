@@ -135,6 +135,13 @@ MomentumOperator<dim, Number>::get_viscous_kernel_data() const
 }
 
 template<int dim, typename Number>
+std::shared_ptr<Operators::ViscousKernel<dim, Number>> const &
+MomentumOperator<dim, Number>::get_viscous_kernel() const
+{
+  return viscous_kernel;
+}
+
+template<int dim, typename Number>
 dealii::LinearAlgebra::distributed::Vector<Number> const &
 MomentumOperator<dim, Number>::get_velocity() const
 {
@@ -481,8 +488,10 @@ MomentumOperator<dim, Number>::do_face_int_integral_cell_based(IntegratorFace & 
 
     if(operator_data.viscous_problem)
     {
+      // the value of the own cell is used (the neighbor is not accessed in cell-based face loops),
+      // so the (block-)diagonal is not calculated exactly for a jump of the viscosity
       scalar average_viscosity =
-        viscous_kernel->get_viscosity_interior_face(integrator_m.get_current_cell_index(), q);
+        viscous_kernel->get_viscosity_face_cell_based(integrator_m.get_current_cell_index(), q);
 
       gradient_flux +=
         viscous_kernel->calculate_gradient_flux(value_m, value_p, normal_m, average_viscosity);
@@ -574,6 +583,13 @@ MomentumOperator<dim, Number>::do_boundary_integral(
 
   BoundaryTypeU boundary_type = operator_data.bc->get_boundary_type(boundary_id);
 
+  // This function is called by face loops and by cell-based face loops ((block-)diagonal). In the
+  // latter, the integrator is initialized with reinit(cell, face) and get_current_cell_index()
+  // returns cell * n_faces_per_cell + face, i.e. an index of the cell-based face table.
+  bool const cell_based_face_access =
+    integrator.get_dof_access_index() ==
+    dealii::internal::MatrixFreeFunctions::DoFInfo::dof_access_cell;
+
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     vector value_m = integrator.get_value(q);
@@ -619,7 +635,10 @@ MomentumOperator<dim, Number>::do_boundary_integral(
                                          this->time);
 
       scalar viscosity =
-        viscous_kernel->get_viscosity_boundary_face(integrator.get_current_cell_index(), q);
+        cell_based_face_access ?
+          viscous_kernel->get_viscosity_face_cell_based(integrator.get_current_cell_index(), q) :
+          viscous_kernel->get_viscosity_boundary_face(integrator.get_current_cell_index(), q);
+
       gradient_flux +=
         viscous_kernel->calculate_gradient_flux(value_m, value_p, normal_m, viscosity);
 

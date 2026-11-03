@@ -97,6 +97,18 @@ public:
   void
   set_wall_penalty_factor(double const factor);
 
+  // eddy viscosity on the wall layer: true = linear vertex interpolant, false = nu_t,h (RANS)
+  void
+  set_wall_layer_nu_t_linear(bool const flag);
+
+  // enriched cells: nu_t = min(nu_t,h, nu_t^psi) in the quadrature points (wall law)
+  void
+  set_wall_layer_nu_t_wall_law(bool const flag);
+
+  // enriched cells: nu_t = nu_t^psi (wall law alone, not limited by the RANS nu_t,h)
+  void
+  set_wall_layer_nu_t_wall_law_only(bool const flag);
+
   void
   vmult(BlockVectorType & dst, BlockVectorType const & src) const;
 
@@ -191,6 +203,24 @@ private:
                                         VectorType const &                      src,
                                         Range const &                           face_range) const;
 
+  // correction_bar += (K_bb^enr - K_bb^fluid) U_bar on enriched cells (wall-law nu_t)
+  void
+  add_bar_bar_viscous_consistency(VectorType const & u_bar_global,
+                                  VectorType const & u_bar_shadow,
+                                  VectorType &       correction_bar) const;
+
+  void
+  cell_loop_viscous_fluid(dealii::MatrixFree<dim, Number> const & matrix_free,
+                          VectorType &                            dst,
+                          VectorType const &                      src,
+                          Range const &                           cell_range) const;
+
+  void
+  cell_loop_viscous_enriched(dealii::MatrixFree<dim, Number> const & matrix_free,
+                             VectorType &                            dst,
+                             VectorType const &                      src,
+                             Range const &                           cell_range) const;
+
   // overloads: plain side (halo) and enriched side
   void
   gather(FaceIntegratorU & phi, VectorType const & src_bar, VectorType const & src_tilde) const;
@@ -247,6 +277,12 @@ private:
   Number                        penalty_factor;
 
   bool enrichment_aware_penalty;
+  // true: nu_t on the wall layer = d-linear vertex interpolant (0 at the wall); false: nu_t,h
+  bool wall_layer_nu_t_linear;
+  // true: enriched cells use nu + min(nu_t,h, nu_t^psi) in the volume (Spalding-consistent)
+  bool wall_layer_nu_t_wall_law;
+  // true (with wall_layer_nu_t_wall_law): enriched cells use nu + nu_t^psi, the wall law alone
+  bool wall_layer_nu_t_wall_law_only;
   bool viscosity_is_variable;
   double                               viscosity;
   mutable VariableCoefficients<scalar> viscosity_coefficients;
@@ -257,6 +293,8 @@ private:
 
   mutable dealii::Table<2, double> vertex_values_nu_t;
   mutable dealii::Table<2, double> nodal_values_nu_K;
+  // nu_t,h shape functions at the support points of nu_K (wall_layer_nu_t_linear = false)
+  mutable dealii::Table<2, double> support_values_nu_t;
   mutable dealii::AlignedVector<scalar> wall_vertex_factor;
 };
 

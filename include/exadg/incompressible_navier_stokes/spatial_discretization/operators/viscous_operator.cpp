@@ -157,6 +157,37 @@ ViscousOperator<dim, Number>::do_face_int_integral(IntegratorFace & integrator_m
 
 template<int dim, typename Number>
 void
+ViscousOperator<dim, Number>::do_face_int_integral_cell_based(IntegratorFace & integrator_m,
+                                                              IntegratorFace & integrator_p) const
+{
+  (void)integrator_p;
+
+  for(unsigned int q = 0; q < integrator_m.n_q_points; ++q)
+  {
+    vector value_m = integrator_m.get_value(q);
+    vector value_p; // set exterior values to zero
+    vector normal_m = integrator_m.get_normal_vector(q);
+
+    // the value of the own cell is used (the neighbor is not accessed in cell-based face loops),
+    // so the (block-)diagonal is not calculated exactly for a jump of the viscosity
+    scalar average_viscosity =
+      kernel->get_viscosity_face_cell_based(integrator_m.get_current_cell_index(), q);
+    tensor gradient_flux =
+      kernel->calculate_gradient_flux(value_m, value_p, normal_m, average_viscosity);
+
+    vector normal_gradient_m = kernel->calculate_normal_gradient(q, integrator_m);
+    vector normal_gradient_p; // set exterior gradient to zero
+
+    vector value_flux = kernel->calculate_value_flux(
+      normal_gradient_m, normal_gradient_p, value_m, value_p, normal_m, average_viscosity);
+
+    integrator_m.submit_gradient(gradient_flux, q);
+    integrator_m.submit_value(-value_flux, q);
+  }
+}
+
+template<int dim, typename Number>
+void
 ViscousOperator<dim, Number>::do_face_ext_integral(IntegratorFace & integrator_m,
                                                    IntegratorFace & integrator_p) const
 {
@@ -196,6 +227,13 @@ ViscousOperator<dim, Number>::do_boundary_integral(
 {
   BoundaryTypeU boundary_type = operator_data.bc->get_boundary_type(boundary_id);
 
+  // This function is called by face loops and by cell-based face loops ((block-)diagonal). In the
+  // latter, the integrator is initialized with reinit(cell, face) and get_current_cell_index()
+  // returns cell * n_faces_per_cell + face, i.e. an index of the cell-based face table.
+  bool const cell_based_face_access =
+    integrator.get_dof_access_index() ==
+    dealii::internal::MatrixFreeFunctions::DoFInfo::dof_access_cell;
+
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     vector value_m = calculate_interior_value(q, integrator, operator_type);
@@ -210,7 +248,10 @@ ViscousOperator<dim, Number>::do_boundary_integral(
 
     vector normal = integrator.get_normal_vector(q);
 
-    scalar viscosity = kernel->get_viscosity_boundary_face(integrator.get_current_cell_index(), q);
+    scalar viscosity =
+      cell_based_face_access ?
+        kernel->get_viscosity_face_cell_based(integrator.get_current_cell_index(), q) :
+        kernel->get_viscosity_boundary_face(integrator.get_current_cell_index(), q);
     tensor gradient_flux = kernel->calculate_gradient_flux(value_m, value_p, normal, viscosity);
 
     vector normal_gradient_m =

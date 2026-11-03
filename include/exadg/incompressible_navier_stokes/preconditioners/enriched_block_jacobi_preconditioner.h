@@ -42,6 +42,12 @@ class SpatialOperatorBase;
  *                       on the local (U_bar, U_tilde) DoFs (face terms not included).
  *
  * Captures the stiff terms with grad(psi) cell by cell. SPD -> usable with CG.
+ *
+ * The local operators depend on psi and on the rank projector P of WallDGCoupler. Both change
+ * whenever u_tau changes. In the viscous step u_tau changes every time step, and local operators
+ * of the previous time steps increase the number of iterations strongly. Call update() before
+ * every viscous solve. update_conditionally() and update_lazy() are only suited for problems with
+ * psi fixed over several solves.
  */
 template<int dim, typename Number>
 class EnrichedBlockJacobiPreconditioner
@@ -72,7 +78,8 @@ public:
     spatial_operator = &spatial_operator_in;
   }
 
-  // Assemble and invert the local operators. Call before every solve (psi changes every step).
+  // Assemble and invert the local operators with the current psi, viscosity and mass factor.
+  // In the viscous step, call this function before every solve (see class description).
   //   mass_factor_in    : s
   //   viscosity_in      : > 0: viscous term with nu(x) of the enriched viscous operator
   //                       (constant or turbulence model), 0: no viscous term (penalty step)
@@ -262,11 +269,33 @@ public:
     }
   }
 
-  // Calls update() only every n_every-th time, or when the number of removed enrichment modes
-  // changed since the last assembly. Otherwise the local inverses on the enriched cells are
-  // reused and only the mass factor of the non-enriched cells is updated.
-  // All ranks take the same branch (n_calls and the mode count are global), which is required
-  // because update() contains collective MPI operations.
+  // Calls update() if @p update_local_operators is true, at the first call, or when the number of
+  // removed enrichment modes changed since the last assembly (the local operators then belong to a
+  // different constrained space). Otherwise the local inverses on the enriched cells are reused
+  // and only the mass factor of the non-enriched cells is updated.
+  // All ranks have to take the same branch, because update() contains collective MPI operations:
+  // @p update_local_operators has to be the same on all ranks, the mode count is a global sum.
+  void
+  update_conditionally(bool const                            update_local_operators,
+                       double const                          mass_factor_in,
+                       double const                          viscosity_in,
+                       dealii::AlignedVector<scalar> const * tau_divergence_in,
+                       VectorType const *                    free_bar = nullptr)
+  {
+    unsigned int const n_dropped = spatial_operator->get_wall_dg_coupler()->get_n_modes_dropped();
+
+    if(update_local_operators or n_dropped != n_modes_dropped_at_update)
+    {
+      update(mass_factor_in, viscosity_in, tau_divergence_in, free_bar);
+      n_modes_dropped_at_update = n_dropped;
+    }
+    else
+    {
+      mass_factor = mass_factor_in;
+    }
+  }
+
+  // Calls update_conditionally() with an update every n_every-th call.
   void
   update_lazy(unsigned int const                    n_every,
               double const                          mass_factor_in,
@@ -276,16 +305,8 @@ public:
   {
     AssertThrow(n_every > 0, dealii::ExcMessage("n_every must be positive."));
 
-    unsigned int const n_dropped = spatial_operator->get_wall_dg_coupler()->get_n_modes_dropped();
-
-    if(n_calls % n_every == 0 or n_dropped != n_modes_dropped_at_update)
-    {
-      update(mass_factor_in, viscosity_in, tau_divergence_in, free_bar);
-      n_modes_dropped_at_update = n_dropped;
-    }
-    else {
-      mass_factor = mass_factor_in;
-    }
+    update_conditionally(
+      n_calls % n_every == 0, mass_factor_in, viscosity_in, tau_divergence_in, free_bar);
 
     ++n_calls;
   }

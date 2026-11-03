@@ -165,9 +165,10 @@ public:
     scalar alpha = zero;
     scalar three = dealii::make_vectorized_array<Number>(3.0);
 
-    for (unsigned int i = 0; i < 3; ++i) 
+    // realizability limiter switched off: alpha = 0, only the positivity floor below remains
+    for (unsigned int i = 0; i < 3 and turbulence_model_data.use_realizability_limiter; ++i)
     {
-      for (unsigned int j = i + 1; j < 3; ++j) 
+      for (unsigned int j = i + 1; j < 3; ++j)
       {
         scalar B = three * (S[i][i] + S[j][j]);
         scalar S_ij = S[i][j]; 

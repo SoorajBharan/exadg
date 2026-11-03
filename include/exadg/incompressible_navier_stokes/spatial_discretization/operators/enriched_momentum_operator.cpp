@@ -35,6 +35,9 @@ EnrichedMomentumOperator<dim, Number>::EnrichedMomentumOperator()
   : momentum_operator(nullptr),
   penalty_factor(0.0),
   enrichment_aware_penalty(false),
+  wall_layer_nu_t_linear(true),
+  wall_layer_nu_t_wall_law(false),
+  wall_layer_nu_t_wall_law_only(false),
   wall_penalty_factor(1.0),
   viscosity_is_variable(false),
   viscosity(0.0)
@@ -319,6 +322,16 @@ EnrichedMomentumOperator<dim, Number>::initialize_vertex_interpolation() const
     for(unsigned int v = 0; v < n_vertices; ++v)
       nodal_values_nu_K(i, v) = dealii::GeometryInfo<dim>::d_linear_shape_function(support_points[i], v);
 
+  // nu_t,h shape functions at the support points of nu_K (wall_layer_nu_t_linear = false)
+  support_values_nu_t.reinit(support_points.size(), fe_nu_t.n_dofs_per_cell());
+  for(unsigned int i = 0; i < support_points.size(); ++i)
+    for(unsigned int j = 0; j < fe_nu_t.n_dofs_per_cell(); ++j)
+      support_values_nu_t(i, j) = fe_nu_t.shape_value(j, support_points[i]);
+
+  AssertThrow(wall_layer_nu_t_linear or fe_nu_t.degree <= fe_nu_K.degree,
+              dealii::ExcMessage("wall_layer_nu_t_linear = false: the degree of nu_t must not "
+                                 "exceed the velocity degree (nu_t,h is interpolated into nu_K)."));
+
   auto const & bc = momentum_operator->get_data().bc;
 
   wall_vertex_factor.resize(matrix_free.n_cell_batches() * n_vertices);
@@ -379,24 +392,68 @@ EnrichedMomentumOperator<dim, Number>::cell_loop_cell_viscosity_rans(
     integrator_nu_t.reinit(cell);
     integrator_nu_t.read_dof_values(src);
 
-    std::array<scalar, dealii::GeometryInfo<dim>::vertices_per_cell> nu_t_vertex;
-    for(unsigned int v = 0; v < n_vertices; ++v)
-    {
-      nu_t_vertex[v] = zero;
-      for(unsigned int i = 0; i < integrator_nu_t.dofs_per_cell; ++i)
-        nu_t_vertex[v] += Number(vertex_values_nu_t(v, i)) * integrator_nu_t.get_dof_value(i);
-      nu_t_vertex[v] = std::max(nu_t_vertex[v], zero) * wall_vertex_factor[cell * n_vertices + v];
-    }
-
     integrator_nu_K.reinit(cell);
-    for(unsigned int i = 0; i < integrator_nu_K.dofs_per_component; ++i)
+
+    // wall-law nu_t: nu_K only feeds the faces and the kernel tables, nu_t = 0 on the wall face
+    if(wall_layer_nu_t_linear or wall_layer_nu_t_wall_law)
     {
-      vector value;
-      value[0] = nu_mol;
+      // d-linear interpolant of the vertex values, nu_t = 0 at vertices on enrichment walls
+      std::array<scalar, dealii::GeometryInfo<dim>::vertices_per_cell> nu_t_vertex;
       for(unsigned int v = 0; v < n_vertices; ++v)
-        value[0] += Number(nodal_values_nu_K(i, v)) * nu_t_vertex[v];
-      value[1] = one;
-      integrator_nu_K.submit_dof_value(value, i);
+      {
+        nu_t_vertex[v] = zero;
+        for(unsigned int i = 0; i < integrator_nu_t.dofs_per_cell; ++i)
+          nu_t_vertex[v] += Number(vertex_values_nu_t(v, i)) * integrator_nu_t.get_dof_value(i);
+        nu_t_vertex[v] = std::max(nu_t_vertex[v], zero) * wall_vertex_factor[cell * n_vertices + v];
+      }
+
+      // wall-law nu_t on wall cells (fe index 1): the d-linear interpolant assumes the log layer
+      // (nu_t ~ kappa u_tau y) and is used only on lanes with active enrichment (capped by the
+      // wall law in cell_loop_set_viscosity_rans). Lanes switched off by the y+ criterion are
+      // ordinary DG cells (psi = 0, viscous sublayer / buffer layer, nu_t ~ y^3..y^4): there the
+      // linear interpolant overestimates nu_t (e.g. 1.4 nu instead of 0.14 nu at y+ = 7), so
+      // they take nu_t,h at the nodes as in the else branch below.
+      bool const select_per_lane = wall_layer_nu_t_wall_law and fe_index == 1;
+
+      for(unsigned int i = 0; i < integrator_nu_K.dofs_per_component; ++i)
+      {
+        vector value;
+        value[0] = nu_mol;
+        for(unsigned int v = 0; v < n_vertices; ++v)
+          value[0] += Number(nodal_values_nu_K(i, v)) * nu_t_vertex[v];
+
+        if(select_per_lane)
+        {
+          scalar nu_t = zero;
+          for(unsigned int j = 0; j < integrator_nu_t.dofs_per_cell; ++j)
+            nu_t += Number(support_values_nu_t(i, j)) * integrator_nu_t.get_dof_value(j);
+
+          scalar const value_nodal = nu_mol + std::max(nu_t, zero);
+
+          for(unsigned int l = 0; l < scalar::size(); ++l)
+            if(not function_enrichment->is_enrichment_active(cell, l))
+              value[0][l] = value_nodal[l];
+        }
+
+        value[1] = one;
+        integrator_nu_K.submit_dof_value(value, i);
+      }
+    }
+    else
+    {
+      // nu_t,h of the RANS solver at the nodes of nu_K (exact for degree(nu_t) <= degree(nu_K)),
+      // clipped at 0 as in TurbulenceModel::cell_loop_set_coefficients_rans
+      for(unsigned int i = 0; i < integrator_nu_K.dofs_per_component; ++i)
+      {
+        scalar nu_t = zero;
+        for(unsigned int j = 0; j < integrator_nu_t.dofs_per_cell; ++j)
+          nu_t += Number(support_values_nu_t(i, j)) * integrator_nu_t.get_dof_value(j);
+
+        vector value;
+        value[0] = nu_mol + std::max(nu_t, zero);
+        value[1] = one;
+        integrator_nu_K.submit_dof_value(value, i);
+      }
     }
 
     integrator_nu_K.distribute_local_to_global(dst);
@@ -421,6 +478,13 @@ EnrichedMomentumOperator<dim, Number>::cell_loop_set_viscosity_rans(
                              cell_range,
                              function_enrichment->get_dof_index_shadow_vector(),
                              function_enrichment->get_quad_index());
+  CellIntegratorScalar integrator_nu_t(matrix_free,
+                                       cell_range,
+                                       function_enrichment->get_dof_index_shadow_eddy_viscosity(),
+                                       function_enrichment->get_quad_index());
+
+  scalar const nu_mol = dealii::make_vectorized_array<Number>(viscosity);
+  scalar const zero   = dealii::make_vectorized_array<Number>(0.0);
 
   for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
@@ -428,8 +492,34 @@ EnrichedMomentumOperator<dim, Number>::cell_loop_set_viscosity_rans(
     integrator.read_dof_values(src);
     integrator.evaluate(dealii::EvaluationFlags::values);
 
+    if(wall_layer_nu_t_wall_law)
+    {
+      integrator_nu_t.reinit(cell);
+      integrator_nu_t.gather_evaluate(function_enrichment->shadow_eddy_viscosity,
+                                      dealii::EvaluationFlags::values);
+    }
+
     for(unsigned int q = 0; q < integrator.n_q_points; ++q)
-      viscosity_coefficients.set_coefficient_cell(cell, q, integrator.get_value(q)[0]);
+    {
+      scalar nu = integrator.get_value(q)[0];
+
+      // nu + min(nu_t,h, nu_t^psi) in the quadrature point on lanes with active enrichment
+      // (wall_layer_nu_t_wall_law_only: nu + nu_t^psi, the wall law alone, independent of the
+      // RANS solution in the wall cell); lanes switched off by the y+ criterion keep nu_K
+      if(wall_layer_nu_t_wall_law)
+      {
+        scalar const nu_t_psi = function_enrichment->get_eddy_viscosity_wall_law(cell, q);
+        scalar const nu_wall_law =
+          wall_layer_nu_t_wall_law_only ?
+            nu_mol + nu_t_psi :
+            nu_mol + std::min(std::max(integrator_nu_t.get_value(q), zero), nu_t_psi);
+        for(unsigned int v = 0; v < scalar::size(); ++v)
+          if(function_enrichment->is_enrichment_active(cell, v))
+            nu[v] = nu_wall_law[v];
+      }
+
+      viscosity_coefficients.set_coefficient_cell(cell, q, nu);
+    }
   }
 }
 
@@ -866,6 +956,11 @@ EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorT
       correction_bar,
       momentum_operator->get_scaling_factor_mass_operator());
 
+  // U_bar-U_bar viscous volume term on enriched cells with the enrichment quadrature and the
+  // pointwise wall-law nu (consistent with the blocks with psi)
+  if(viscous and wall_layer_nu_t_wall_law)
+    add_bar_bar_viscous_consistency(src.block(0), u_bar, correction_bar);
+
   if(viscous)
   {
     inner_face_loop(u_bar, src.block(1), &correction_bar, dst.block(1));
@@ -893,6 +988,98 @@ EnrichedMomentumOperator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorT
 
   u_bar.zero_out_ghost_values();
   src.block(1).zero_out_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::add_bar_bar_viscous_consistency(
+  VectorType const & u_bar_global,
+  VectorType const & u_bar_shadow,
+  VectorType &       correction_bar) const
+{
+  // (1) K_bb^fluid U_bar: volume term of ExaDG's viscous kernel (kernel tables and quadrature)
+  VectorType viscous_fluid;
+  momentum_operator->get_matrix_free().initialize_dof_vector(viscous_fluid,
+                                                             momentum_operator->get_dof_index());
+  momentum_operator->get_matrix_free().cell_loop(&This::cell_loop_viscous_fluid,
+                                                 this,
+                                                 viscous_fluid,
+                                                 u_bar_global,
+                                                 true /*zero_dst_vector*/);
+
+  // (2) K_bb^enr U_bar: enrichment quadrature, pointwise nu of the tables, enriched cells
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+  VectorType   viscous_enriched;
+  mf_en.initialize_dof_vector(viscous_enriched, function_enrichment->get_dof_index_shadow_vector());
+  mf_en.cell_loop(&This::cell_loop_viscous_enriched,
+                  this,
+                  viscous_enriched,
+                  u_bar_shadow,
+                  true /*zero_dst_vector*/);
+
+  // (3) (K_bb^enr - K_bb^fluid) U_bar on the DoFs of the enriched cells
+  function_enrichment->add_enriched_cell_difference(viscous_enriched,
+                                                    viscous_fluid,
+                                                    correction_bar,
+                                                    Number(1.0));
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::cell_loop_viscous_fluid(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           cell_range) const
+{
+  auto const & kernel = *momentum_operator->get_viscous_kernel();
+
+  CellIntegratorU integrator(matrix_free,
+                             cell_range,
+                             momentum_operator->get_dof_index(),
+                             kernel.get_quad_index());
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.gather_evaluate(src, dealii::EvaluationFlags::gradients);
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_gradient(kernel.get_volume_flux(integrator.get_gradient(q),
+                                                        kernel.get_viscosity_cell(cell, q)),
+                                 q);
+    integrator.integrate_scatter(dealii::EvaluationFlags::gradients, dst);
+  }
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::cell_loop_viscous_enriched(
+  dealii::MatrixFree<dim, Number> const & matrix_free,
+  VectorType &                            dst,
+  VectorType const &                      src,
+  Range const &                           cell_range) const
+{
+  // enriched cells only; halo cells keep ExaDG's U_bar-U_bar block
+  if(matrix_free.get_cell_active_fe_index(cell_range) != 1)
+    return;
+
+  auto const & kernel = *momentum_operator->get_viscous_kernel();
+
+  CellIntegratorU integrator(matrix_free,
+                             cell_range,
+                             function_enrichment->get_dof_index_shadow_vector(),
+                             function_enrichment->get_quad_index());
+
+  for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+  {
+    integrator.reinit(cell);
+    integrator.gather_evaluate(src, dealii::EvaluationFlags::gradients);
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_gradient(kernel.get_volume_flux(integrator.get_gradient(q),
+                                                        get_viscosity_cell(cell, q)),
+                                 q);
+    integrator.integrate_scatter(dealii::EvaluationFlags::gradients, dst);
+  }
 }
 
 template<int dim, typename Number>
@@ -1375,6 +1562,27 @@ EnrichedMomentumOperator<dim, Number>::set_wall_penalty_factor(double const fact
 {
   AssertThrow(factor > 0.0, dealii::ExcMessage("Wall penalty factor must be positive."));
   wall_penalty_factor = factor;
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::set_wall_layer_nu_t_linear(bool const flag)
+{
+  wall_layer_nu_t_linear = flag;
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::set_wall_layer_nu_t_wall_law(bool const flag)
+{
+  wall_layer_nu_t_wall_law = flag;
+}
+
+template<int dim, typename Number>
+void
+EnrichedMomentumOperator<dim, Number>::set_wall_layer_nu_t_wall_law_only(bool const flag)
+{
+  wall_layer_nu_t_wall_law_only = flag;
 }
 
 template class EnrichedMomentumOperator<2, float>;

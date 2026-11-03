@@ -27,6 +27,7 @@
 #include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/matrix_free/matrix_free.h>
+#include <algorithm>
 
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/operators/integrator_flags.h>
@@ -52,6 +53,7 @@ struct TurbulenceSourceKernelData
   TurbulenceSourceKernelData()
     : dof_index(0),
     dof_index_velocity(0),
+    dof_index_eddy_viscosity(dealii::numbers::invalid_unsigned_int),
     diffusivity(0.0),
     IP_factor(1.0),
     time_step_size(0.0),
@@ -69,6 +71,8 @@ struct TurbulenceSourceKernelData
 
   unsigned int dof_index;
   unsigned int dof_index_velocity;
+  // DoF index of the eddy viscosity field (wall-law bound, set_eddy_viscosity_wall_law_ptr)
+  unsigned int dof_index_eddy_viscosity;
 
   // molecular diffusivity nu; the diffusion coefficient of transport variable i is
   // nu + eddy_viscosity_factor[i] * nu_t (one factor per block, same as in DiffusiveKernelData)
@@ -143,6 +147,20 @@ public:
       integrator = std::make_shared<IntegratorCell>(matrix_free_in, data.dof_index, quad_index);
     }
 
+    if(data.dof_index_eddy_viscosity != dealii::numbers::invalid_unsigned_int)
+    {
+      integrator_wall_law =
+        std::make_shared<IntegratorCell>(matrix_free_in, data.dof_index_eddy_viscosity, quad_index);
+
+      // exact velocity gradient of the wall model (set_velocity_gradient_enriched_ptr)
+      integrator_gradient_enriched.resize(dim * dim);
+      for(auto & integrator : integrator_gradient_enriched)
+        integrator =
+          std::make_shared<IntegratorCell>(matrix_free_in, data.dof_index_eddy_viscosity, quad_index);
+      integrator_gradient_indicator =
+        std::make_shared<IntegratorCell>(matrix_free_in, data.dof_index_eddy_viscosity, quad_index);
+    }
+
     n_q_points_cell = integrator_velocity->n_q_points;
 
     cell_solution.resize(n_q_points_cell * n_variables);
@@ -192,6 +210,31 @@ public:
     }
 
     face_dirichlet.resize(n_variables);
+
+    // storage of the linearization point (Newton_Implicit), one slot per cell / face batch
+    unsigned int const n_cell_batches = matrix_free_in.n_cell_batches();
+    unsigned int const n_face_batches =
+      matrix_free_in.n_inner_face_batches() + matrix_free_in.n_boundary_face_batches();
+
+    stored_cell_solution_gradient.resize(n_cell_batches * cell_solution_gradient.size());
+    stored_cell_viscosity.resize(n_cell_batches * cell_viscosity.size());
+    stored_cell_viscosity_derivative.resize(n_cell_batches * cell_viscosity_derivative.size());
+    stored_cell_production_jacobian.resize(n_cell_batches * cell_production_jacobian.size());
+    stored_cell_dissipation_jacobian.resize(n_cell_batches * cell_dissipation_jacobian.size());
+    stored_cell_square_gradient_jacobian.resize(n_cell_batches *
+                                                cell_square_gradient_jacobian.size());
+    stored_cell_square_gradient_gradient_jacobian.resize(
+      n_cell_batches * cell_square_gradient_gradient_jacobian.size());
+
+    for(unsigned int side = 0; side < 2; ++side)
+    {
+      stored_face_solution[side].resize(n_face_batches * face_solution[side].size());
+      stored_face_normal_gradient[side].resize(n_face_batches * face_normal_gradient[side].size());
+      stored_face_viscosity[side].resize(n_face_batches * face_viscosity[side].size());
+      stored_face_viscosity_derivative[side].resize(n_face_batches *
+                                                    face_viscosity_derivative[side].size());
+    }
+    stored_tau.resize(n_face_batches);
 
     degree = matrix_free_in.get_dof_handler(data.dof_index).get_fe().degree;
     element_type =
@@ -257,6 +300,39 @@ public:
     solution->update_ghost_values();
   }
 
+  /*
+   * Wall model: upper bound nu_t^psi of the eddy viscosity (DG field on the eddy viscosity
+   * DoFHandler, 1e20 = no bound). The vector must stay alive (driver member).
+   */
+  void
+  set_eddy_viscosity_wall_law_ptr(VectorType const & eddy_viscosity_wall_law_in)
+  {
+    AssertThrow(integrator_wall_law != nullptr,
+                dealii::ExcMessage("Set dof_index_eddy_viscosity in TurbulenceSourceKernelData."));
+    AssertThrow(not data.k_log,
+                dealii::ExcMessage("Wall-law bound of the k production: only for linear k."));
+
+    eddy_viscosity_wall_law = &eddy_viscosity_wall_law_in;
+  }
+
+  /*
+   * Wall model: exact velocity gradient of the enriched cells and its indicator (DG fields on the
+   * eddy viscosity DoFHandler, FunctionEnrichment::compute_velocity_gradient_rans). Used in the
+   * cell terms (production, dissipation, cell nu_t) instead of the gradient of the velocity field
+   * where indicator = 1. The vectors must stay alive (driver members).
+   */
+  void
+  set_velocity_gradient_enriched_ptr(std::vector<VectorType> const & velocity_gradient_in,
+                                     VectorType const &              indicator_in)
+  {
+    AssertThrow(integrator_gradient_indicator != nullptr,
+                dealii::ExcMessage("Set dof_index_eddy_viscosity in TurbulenceSourceKernelData."));
+    AssertDimension(velocity_gradient_in.size(), dim * dim);
+
+    velocity_gradient_enriched  = &velocity_gradient_in;
+    velocity_gradient_indicator = &indicator_in;
+  }
+
   void
   reinit_cell(unsigned int const cell) const
   {
@@ -271,6 +347,26 @@ public:
                                               dealii::EvaluationFlags::gradients);
     }
 
+    if(eddy_viscosity_wall_law != nullptr)
+    {
+      integrator_wall_law->reinit(cell);
+      integrator_wall_law->gather_evaluate(*eddy_viscosity_wall_law, dealii::EvaluationFlags::values);
+    }
+
+    // wall model: exact velocity gradient of the enriched cells
+    if(velocity_gradient_enriched != nullptr)
+    {
+      for(unsigned int c = 0; c < dim * dim; ++c)
+      {
+        integrator_gradient_enriched[c]->reinit(cell);
+        integrator_gradient_enriched[c]->gather_evaluate((*velocity_gradient_enriched)[c],
+                                                         dealii::EvaluationFlags::values);
+      }
+      integrator_gradient_indicator->reinit(cell);
+      integrator_gradient_indicator->gather_evaluate(*velocity_gradient_indicator,
+                                                     dealii::EvaluationFlags::values);
+    }
+
     for(unsigned int q = 0; q < n_q_points_cell; ++q)
     {
       for(unsigned int i = 0; i < n_variables; ++i)
@@ -279,7 +375,21 @@ public:
         cell_solution_gradient[index(q, i)] = integrator_solution[i]->get_gradient(q);
       }
 
-      tensor const velocity_gradient = integrator_velocity->get_gradient(q);
+      // gradient of the transferred velocity field; in enriched cells (indicator = 1) the exact
+      // gradient grad(U_bar + psi U_tilde) of the wall model instead (the projected field
+      // overestimates the production in large wall cells)
+      tensor velocity_gradient = integrator_velocity->get_gradient(q);
+
+      if(velocity_gradient_enriched != nullptr)
+      {
+        scalar const indicator = integrator_gradient_indicator->get_value(q);
+        for(unsigned int v = 0; v < scalar::size(); ++v)
+          if(indicator[v] > Number(0.5))
+            for(unsigned int i = 0; i < dim; ++i)
+              for(unsigned int j = 0; j < dim; ++j)
+                velocity_gradient[i][j][v] =
+                  integrator_gradient_enriched[i * dim + j]->get_value(q)[v];
+      }
 
       // pointwise eddy viscosity nu_t(Q) and d nu_t / d Q_j, used by all terms (explicit and
       // implicit treatment)
@@ -297,7 +407,16 @@ public:
       for(unsigned int j = 0; j < n_variables; ++j)
         cell_viscosity_derivative[index(q, j)] = viscosity_derivative[j] * solution_derivative[j];
 
+      // wall model: upper bound of nu_t in the turbulent diffusion
+      if(eddy_viscosity_wall_law != nullptr)
+        apply_wall_law_viscosity_bound(q, integrator_wall_law->get_value(q));
+
       compute_production(q, velocity_gradient);
+
+      // wall model: upper bound of the k production
+      if(eddy_viscosity_wall_law != nullptr)
+        apply_wall_law_production_bound(q, integrator_wall_law->get_value(q), velocity_gradient);
+
       compute_dissipation(q, velocity_gradient);
       compute_square_gradient(q);
     }
@@ -370,18 +489,7 @@ public:
 
     dealii::types::boundary_id const boundary_id = matrix_free->get_boundary_id(face);
 
-    for(unsigned int i = 0; i < n_variables; ++i)
-    {
-      BoundaryType const boundary_type = data.bc[i]->get_boundary_type(boundary_id);
-
-      AssertThrow(boundary_type == BoundaryType::Dirichlet or
-                    boundary_type == BoundaryType::Neumann,
-                  dealii::ExcMessage(
-                    "Turbulent diffusion: only Dirichlet and (zero flux) Neumann boundaries are "
-                    "implemented."));
-
-      face_dirichlet[i] = (boundary_type == BoundaryType::Dirichlet);
-    }
+    set_face_dirichlet(boundary_id);
 
     for(unsigned int q = 0; q < n_q_points_face; ++q)
     {
@@ -419,6 +527,77 @@ public:
 
     tau = face_integrator_solution[0][0]->read_cell_data(array_penalty_parameter) *
           IP::get_penalty_factor<dim, Number>(degree, element_type, data.IP_factor);
+  }
+
+  /*
+     * Storage of the linearization point. The Newton_Explicit right-hand side loops compute the data
+     * of a cell / face at the linearization point (reinit_cell(), reinit_face(),
+     * reinit_boundary_face()) and keep them with store_cell() / store_face(). The Newton_Implicit
+     * loops, called in every iteration of the linear solver, read them with reinit_cell_stored(),
+     * reinit_face_stored(), reinit_boundary_face_stored() instead of computing them again. Only the
+     * data used by the Newton_Implicit fluxes are stored.
+     */
+  void
+  store_cell(unsigned int const cell) const
+  {
+    copy_to_storage(cell_solution_gradient, stored_cell_solution_gradient, cell);
+    copy_to_storage(cell_viscosity, stored_cell_viscosity, cell);
+    copy_to_storage(cell_viscosity_derivative, stored_cell_viscosity_derivative, cell);
+    copy_to_storage(cell_production_jacobian, stored_cell_production_jacobian, cell);
+    copy_to_storage(cell_dissipation_jacobian, stored_cell_dissipation_jacobian, cell);
+    copy_to_storage(cell_square_gradient_jacobian, stored_cell_square_gradient_jacobian, cell);
+    copy_to_storage(cell_square_gradient_gradient_jacobian,
+                    stored_cell_square_gradient_gradient_jacobian,
+                    cell);
+  }
+
+  void
+  reinit_cell_stored(unsigned int const cell) const
+  {
+    copy_from_storage(stored_cell_solution_gradient, cell_solution_gradient, cell);
+    copy_from_storage(stored_cell_viscosity, cell_viscosity, cell);
+    copy_from_storage(stored_cell_viscosity_derivative, cell_viscosity_derivative, cell);
+    copy_from_storage(stored_cell_production_jacobian, cell_production_jacobian, cell);
+    copy_from_storage(stored_cell_dissipation_jacobian, cell_dissipation_jacobian, cell);
+    copy_from_storage(stored_cell_square_gradient_jacobian, cell_square_gradient_jacobian, cell);
+    copy_from_storage(stored_cell_square_gradient_gradient_jacobian,
+                      cell_square_gradient_gradient_jacobian,
+                      cell);
+  }
+
+  // interior and boundary faces (one numbering of face batches in matrix_free)
+  void
+  store_face(unsigned int const face) const
+  {
+    for(unsigned int side = 0; side < 2; ++side)
+    {
+      copy_to_storage(face_solution[side], stored_face_solution[side], face);
+      copy_to_storage(face_normal_gradient[side], stored_face_normal_gradient[side], face);
+      copy_to_storage(face_viscosity[side], stored_face_viscosity[side], face);
+      copy_to_storage(face_viscosity_derivative[side],
+                      stored_face_viscosity_derivative[side],
+                      face);
+    }
+
+    stored_tau[face] = tau;
+  }
+
+  void
+  reinit_face_stored(unsigned int const face) const
+  {
+    boundary_face = false;
+
+    load_face(face);
+  }
+
+  void
+  reinit_boundary_face_stored(unsigned int const face) const
+  {
+    boundary_face = true;
+
+    set_face_dirichlet(matrix_free->get_boundary_id(face));
+
+    load_face(face);
   }
 
   /*
@@ -728,6 +907,63 @@ private:
     return (q * n_variables + i) * n_variables + j;
   }
 
+  // copy the data of the current cell / face (current) into slot "batch" of storage, and back
+  template<typename T>
+  static void
+  copy_to_storage(dealii::AlignedVector<T> const & current,
+                  dealii::AlignedVector<T> &       storage,
+                  unsigned int const               batch)
+  {
+    std::copy(current.begin(), current.end(), storage.begin() + batch * current.size());
+  }
+
+  template<typename T>
+  static void
+  copy_from_storage(dealii::AlignedVector<T> const & storage,
+                    dealii::AlignedVector<T> &       current,
+                    unsigned int const               batch)
+  {
+    std::copy(storage.begin() + batch * current.size(),
+              storage.begin() + (batch + 1) * current.size(),
+              current.begin());
+  }
+
+  // face data of both sides and tau of face batch "face" from the storage (see store_face())
+  void
+  load_face(unsigned int const face) const
+  {
+    for(unsigned int side = 0; side < 2; ++side)
+    {
+      copy_from_storage(stored_face_solution[side], face_solution[side], face);
+      copy_from_storage(stored_face_normal_gradient[side], face_normal_gradient[side], face);
+      copy_from_storage(stored_face_viscosity[side], face_viscosity[side], face);
+      copy_from_storage(stored_face_viscosity_derivative[side],
+                        face_viscosity_derivative[side],
+                        face);
+    }
+
+    tau = stored_tau[face];
+  }
+
+  // face_dirichlet[i]: true if the boundary condition of variable i on boundary_id is Dirichlet,
+  // false if it is (zero flux) Neumann or CellDirichlet (value imposed in the cell, face is zero flux)
+  void
+  set_face_dirichlet(dealii::types::boundary_id const boundary_id) const
+  {
+    for(unsigned int i = 0; i < n_variables; ++i)
+    {
+      BoundaryType const boundary_type = data.bc[i]->get_boundary_type(boundary_id);
+
+      AssertThrow(boundary_type == BoundaryType::Dirichlet or
+                  boundary_type == BoundaryType::Neumann or
+                  boundary_type == BoundaryType::CellDirichlet,
+                  dealii::ExcMessage(
+                  "Turbulent diffusion: only Dirichlet, (zero flux) Neumann and CellDirichlet boundaries are implemented."));
+
+      face_dirichlet[i] = (boundary_type == BoundaryType::Dirichlet);
+    }
+  }
+
   /*
    * Pointwise nu_t and d nu_t / d Q_j at face quadrature point q of side "side", from the
    * transported values in face_solution[side] and the velocity gradient of that side.
@@ -833,6 +1069,42 @@ private:
     }
 
     return values;
+  }
+
+  // wall model (enriched cells): nu_t -> min(nu_t, nu_t^psi); no dependence on Q where bounded
+  void
+  apply_wall_law_viscosity_bound(unsigned int const q, scalar const & nu_t_wall_law) const
+  {
+    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
+
+    scalar const free = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than>(
+      cell_viscosity[q], nu_t_wall_law, one, zero);
+
+    cell_viscosity[q] = std::min(cell_viscosity[q], nu_t_wall_law);
+    for(unsigned int j = 0; j < n_variables; ++j)
+      cell_viscosity_derivative[index(q, j)] *= free;
+  }
+
+  // wall model (enriched cells): k production nu_t G -> min(nu_t G, nu_t^psi G)
+  void
+  apply_wall_law_production_bound(unsigned int const q,
+                                  scalar const &     nu_t_wall_law,
+                                  tensor const &     velocity_gradient) const
+  {
+    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
+
+    scalar const G =
+      scalar_product(velocity_gradient + transpose(velocity_gradient), velocity_gradient);
+    scalar const bound = nu_t_wall_law * G;
+
+    scalar const free = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than>(
+      cell_production[index(q, 0)], bound, one, zero);
+
+    cell_production[index(q, 0)] = std::min(cell_production[index(q, 0)], bound);
+    for(unsigned int j = 0; j < n_variables; ++j)
+      cell_production_jacobian[index(q, 0, j)] *= free;
   }
 
   void
@@ -1067,6 +1339,19 @@ private:
   std::shared_ptr<IntegratorCellVelocity>      integrator_velocity;
   std::vector<std::shared_ptr<IntegratorCell>> integrator_solution;
 
+  // wall model: upper bound nu_t^psi of the eddy viscosity (nullptr: no bound)
+  VectorType const *              eddy_viscosity_wall_law = nullptr;
+  std::shared_ptr<IntegratorCell> integrator_wall_law;
+
+  // wall model: exact velocity gradient of u_h = U_bar + psi U_tilde in the enriched cells
+  // (component d u_i / d x_j in [i * dim + j], DG fields on the eddy viscosity DoFHandler, exact in
+  // the Gauss points) and indicator (1: enriched cell, use it; 0: use grad of the velocity field).
+  // nullptr: the gradient of the transferred velocity field is used everywhere.
+  std::vector<VectorType> const *              velocity_gradient_enriched  = nullptr;
+  VectorType const *                           velocity_gradient_indicator = nullptr;
+  std::vector<std::shared_ptr<IntegratorCell>> integrator_gradient_enriched;
+  std::shared_ptr<IntegratorCell>              integrator_gradient_indicator;
+
   // face integrators, side 0: interior side, side 1: exterior side
   std::array<std::shared_ptr<IntegratorFaceVelocity>, 2>      face_integrator_velocity;
   std::array<std::vector<std::shared_ptr<IntegratorFace>>, 2> face_integrator_solution;
@@ -1104,6 +1389,23 @@ private:
 
   // boundary face: true if the boundary condition of variable i is Dirichlet, false if Neumann
   mutable std::vector<bool> face_dirichlet;
+
+  // linearization point of the Newton_Implicit terms for all cell batches and all face batches
+  // (inner faces followed by boundary faces, as numbered by matrix_free); the data of batch b are
+  // stored at b * (size of the corresponding cell_* / face_* array), see store_cell(), store_face()
+  mutable dealii::AlignedVector<vector> stored_cell_solution_gradient;
+  mutable dealii::AlignedVector<scalar> stored_cell_viscosity;
+  mutable dealii::AlignedVector<scalar> stored_cell_viscosity_derivative;
+  mutable dealii::AlignedVector<scalar> stored_cell_production_jacobian;
+  mutable dealii::AlignedVector<scalar> stored_cell_dissipation_jacobian;
+  mutable dealii::AlignedVector<scalar> stored_cell_square_gradient_jacobian;
+  mutable dealii::AlignedVector<vector> stored_cell_square_gradient_gradient_jacobian;
+
+  mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_solution;
+  mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_normal_gradient;
+  mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_viscosity;
+  mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_viscosity_derivative;
+  mutable dealii::AlignedVector<scalar>                stored_tau;
 };
 
 } // namespace Operators
@@ -1258,6 +1560,8 @@ private:
   // terms evaluated by the right-hand side loops, set by evaluate_add_explicit() and
   // evaluate_add_newton_explicit()
   mutable Terms terms = Terms::explicit_terms;
+
+  mutable bool linearization_stored = false;
 };
 
 } // namespace ConvDiff

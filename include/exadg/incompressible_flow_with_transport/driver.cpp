@@ -280,6 +280,14 @@ Driver<dim, Number>::setup()
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(eddy_viscosity);
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
       turbulent_kinetic_energy);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      eddy_viscosity_wall_law);
+
+    velocity_gradient_enriched.resize(dim * dim);
+    for(auto & vec : velocity_gradient_enriched)
+      scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(vec);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      velocity_gradient_indicator);
   }
 
   // setup postprocessor
@@ -562,6 +570,27 @@ Driver<dim, Number>::communicate_fluid_to_all_scalars() const
     {
       AssertThrow(false, dealii::ExcMessage("Not implemented."));
     }
+  }
+
+  // wall model: upper bound of the RANS eddy viscosity on enriched cells (Spalding's law with the
+  // current tau_w), used by the turbulence source terms of the RANS scalar
+  if(rans_enabled and application->fluid->get_parameters().wall_enrichment_enabled and
+     application->fluid->get_parameters().wall_layer_nu_t_wall_law)
+  {
+    fluid_operator->compute_eddy_viscosity_wall_law(eddy_viscosity_wall_law);
+    scalar_operator[rans_scalar_index]->set_eddy_viscosity_wall_law(eddy_viscosity_wall_law);
+  }
+
+  // wall model: exact velocity gradient grad(U_bar + psi U_tilde) of the enriched cells for the
+  // cell terms of the RANS scalar (instead of the gradient of the projected velocity_total)
+  if(rans_enabled and application->fluid->get_parameters().wall_enrichment_enabled and
+     application->fluid->get_parameters().wall_layer_exact_velocity_gradient)
+  {
+    fluid_operator->compute_velocity_gradient_rans(velocity_gradient_enriched,
+                                                   velocity_gradient_indicator,
+                                                   fluid_time_integrator->get_velocity_np_enriched());
+    scalar_operator[rans_scalar_index]->set_velocity_gradient_enriched(velocity_gradient_enriched,
+                                                                       velocity_gradient_indicator);
   }
 }
 

@@ -170,6 +170,9 @@ struct TurbulenceModelData
   TurbulenceEddyViscosityModel turbulence_model{TurbulenceEddyViscosityModel::Undefined};
   bool                         is_active{false};
   bool                         use_stress_limiter{false};
+  // lower bound omega_r0 of omega from the realizability conditions (Bassi et al. 2014, eqs. (5)-(8));
+  // false: only the positivity floor 1e-6 (as in OpenFOAM's kOmega, no realizability bound)
+  bool                         use_realizability_limiter{true};
 
   std::vector<PositivityPreservingLimiter> positivity_preserving_limiter;
   std::shared_ptr<TurbulenceDataBase> turbulence_data_base;
@@ -210,6 +213,7 @@ struct TurbulenceModelData
 
         print_parameter(pcout, "Stress limiter", use_stress_limiter);
       }
+      print_parameter(pcout, "Realizability limiter", use_realizability_limiter);
       turbulence_data_base->print_coefficients(pcout);
     }
   }

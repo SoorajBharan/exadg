@@ -27,7 +27,10 @@ namespace ExaDG
 namespace ConvDiff
 {
 template<int dim, typename Number>
-CombinedOperator<dim, Number>::CombinedOperator() : scaling_factor_mass(1.0)
+CombinedOperator<dim, Number>::CombinedOperator()
+  : scaling_factor_mass(1.0),
+    cell_dirichlet_penalty(0.0),
+    current_cell_dirichlet_mask(dealii::make_vectorized_array<Number>(0.0))
 {
 }
 
@@ -68,6 +71,8 @@ CombinedOperator<dim, Number>::initialize(
 
   if(operator_data.diffusive_problem)
     this->integrator_flags = this->integrator_flags | diffusive_kernel->get_integrator_flags();
+
+  setup_cell_dirichlet();
 }
 
 template<int dim, typename Number>
@@ -101,6 +106,8 @@ CombinedOperator<dim, Number>::initialize(
 
   if(operator_data.diffusive_problem)
     this->integrator_flags = this->integrator_flags | diffusive_kernel->get_integrator_flags();
+
+  setup_cell_dirichlet();
 }
 
 template<int dim, typename Number>
@@ -157,6 +164,131 @@ CombinedOperator<dim, Number>::set_scaling_factor_mass_operator(Number const & s
 
 template<int dim, typename Number>
 void
+CombinedOperator<dim, Number>::set_cell_dirichlet_penalty(double const penalty)
+{
+  cell_dirichlet_penalty = penalty;
+}
+
+template<int dim, typename Number>
+void
+CombinedOperator<dim, Number>::setup_cell_dirichlet()
+{
+  cell_dirichlet_mask.clear();
+  cell_dirichlet_mask_per_id.clear();
+
+  if(operator_data.bc == nullptr or operator_data.bc->cell_dirichlet_bc.empty())
+    return;
+
+  dealii::MatrixFree<dim, Number> const & mf   = *this->matrix_free;
+  scalar const                            zero = dealii::make_vectorized_array<Number>(0.0);
+
+  // ghost batches included in the size (never marked) so that any cell index is valid
+  unsigned int const n_batches = mf.n_cell_batches() + mf.n_ghost_cell_batches();
+
+  cell_dirichlet_mask.assign(n_batches, zero);
+  for(auto const & [boundary_id, g] : operator_data.bc->cell_dirichlet_bc)
+  {
+    (void)g;
+    cell_dirichlet_mask_per_id[boundary_id].assign(n_batches, zero);
+  }
+
+  // a cell is marked if one of its faces lies on a CellDirichlet boundary (periodic faces excluded);
+  // one boundary ID per cell: the first CellDirichlet face found
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+    for(unsigned int v = 0; v < mf.n_active_entries_per_cell_batch(cell); ++v)
+    {
+      auto const cell_it = mf.get_cell_iterator(cell, v, operator_data.dof_index);
+
+      for(unsigned int const f : cell_it->face_indices())
+      {
+        if(not cell_it->at_boundary(f) or cell_it->has_periodic_neighbor(f))
+          continue;
+
+        auto const it = cell_dirichlet_mask_per_id.find(cell_it->face(f)->boundary_id());
+        if(it != cell_dirichlet_mask_per_id.end())
+        {
+          it->second[cell][v]          = 1.0;
+          cell_dirichlet_mask[cell][v] = 1.0;
+          break;
+        }
+      }
+    }
+
+  // the penalty needs the values of u in the cell integral (also without the mass term)
+  this->integrator_flags.cell_evaluate =
+    this->integrator_flags.cell_evaluate | dealii::EvaluationFlags::values;
+  this->integrator_flags.cell_integrate =
+    this->integrator_flags.cell_integrate | dealii::EvaluationFlags::values;
+}
+
+template<int dim, typename Number>
+void
+CombinedOperator<dim, Number>::rhs_add_cell_dirichlet(VectorType & dst) const
+{
+  // same decision on all MPI ranks (cell_loop communicates)
+  if(operator_data.bc == nullptr or operator_data.bc->cell_dirichlet_bc.empty())
+    return;
+
+  AssertThrow(cell_dirichlet_penalty > 0.0,
+              dealii::ExcMessage("CellDirichlet: penalty not set (update_time_step_size())."));
+
+  // src is not used by the loop
+  VectorType src_dummy;
+  src_dummy.reinit(dst);
+
+  this->matrix_free->cell_loop(
+    &CombinedOperator<dim, Number>::cell_loop_rhs_cell_dirichlet, this, dst, src_dummy, false);
+}
+
+template<int dim, typename Number>
+void
+CombinedOperator<dim, Number>::cell_loop_rhs_cell_dirichlet(
+  dealii::MatrixFree<dim, Number> const &       matrix_free,
+  VectorType &                                  dst,
+  VectorType const &                            src,
+  std::pair<unsigned int, unsigned int> const & range) const
+{
+  (void)src;
+
+  auto const any_lane = [](scalar const & mask) {
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      if(mask[v] != Number(0.0))
+        return true;
+    return false;
+  };
+
+  IntegratorCell integrator(matrix_free, operator_data.dof_index, operator_data.quad_index);
+
+  for(unsigned int cell = range.first; cell < range.second; ++cell)
+  {
+    if(not any_lane(cell_dirichlet_mask[cell]))
+      continue;
+
+    integrator.reinit(cell);
+
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      scalar g_value = dealii::make_vectorized_array<Number>(0.0);
+
+      for(auto const & [boundary_id, g] : operator_data.bc->cell_dirichlet_bc)
+      {
+        scalar const mask_id = cell_dirichlet_mask_per_id.find(boundary_id)->second[cell];
+
+        if(any_lane(mask_id))
+          g_value += mask_id * FunctionEvaluator<0, dim, Number>::value(*g,
+                                                                       integrator.quadrature_point(q),
+                                                                       this->time);
+      }
+
+      integrator.submit_value(cell_dirichlet_penalty * g_value, q);
+    }
+
+    integrator.integrate_scatter(dealii::EvaluationFlags::values, dst);
+  }
+}
+
+template<int dim, typename Number>
+void
 CombinedOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator,
                                                    unsigned int const cell) const
 {
@@ -164,6 +296,9 @@ CombinedOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator
 
   if(operator_data.convective_problem)
     convective_kernel->reinit_cell(cell);
+
+  if(not cell_dirichlet_mask.empty())
+    current_cell_dirichlet_mask = cell_dirichlet_mask[cell];
 }
 
 template<int dim, typename Number>
@@ -227,6 +362,12 @@ CombinedOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) con
     if(operator_data.unsteady_problem)
     {
       value_flux += mass_kernel->get_volume_flux(scaling_factor_mass, value);
+    }
+
+    // CellDirichlet: + lambda u on the marked cells (- lambda g is on the right-hand side)
+    if(not cell_dirichlet_mask.empty())
+    {
+      value_flux += (cell_dirichlet_penalty * current_cell_dirichlet_mask) * value;
     }
 
     if(operator_data.convective_problem)

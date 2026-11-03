@@ -286,9 +286,8 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
   /*
    *  Evaluate fields along lines
    */
-  if(line_plot_calculator.time_control.needs_evaluation(time, time_step_number))
-    line_plot_calculator.evaluate(velocity, pressure);
-
+  // one needs_evaluation() call only: it advances the time control counter, a second call in
+  // the same time step returns false
   if(line_plot_calculator.time_control.needs_evaluation(time, time_step_number))
   {
     // wall enrichment: velocity = U_bar only; the lines need u_h = U_bar + psi U_tilde

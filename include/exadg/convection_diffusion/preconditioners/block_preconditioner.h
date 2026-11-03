@@ -33,6 +33,7 @@
 // ExaDG
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 #include <exadg/utilities/timer_tree.h>
+#include <exadg/utilities/section_profile.h>
 
 
 namespace ExaDG
@@ -74,10 +75,18 @@ public:
   void
   vmult(BlockVectorType & dst, BlockVectorType const & src) const
   {
+#ifdef EXADG_PROFILE
+    auto t_prof = SectionProfile::Clock::now();
+#endif
+
     AssertDimension(src.n_blocks(), preconditioner.size());
 
     for(unsigned int b = 0; b < preconditioner.size(); ++b)
       preconditioner[b]->vmult(dst.block(b), src.block(b));
+
+#ifdef EXADG_PROFILE
+    SectionProfile::lap("scal 3d precond vmult", t_prof);
+#endif
   }
 
   std::shared_ptr<TimerTree>

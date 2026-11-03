@@ -417,7 +417,7 @@ TimeIntBDF<dim, Number>::recalculate_time_step_size() const
               dealii::ExcMessage(
                 "Adaptive time step is not implemented for this type of time step calculation."));
 
-  VectorType u_relative = get_velocity();
+  VectorType u_relative = param.wall_enrichment_enabled ? velocity_total : get_velocity();
   if(param.ale_formulation == true)
     u_relative -= grid_velocity;
 

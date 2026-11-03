@@ -383,6 +383,10 @@ public:
   // use 3/2 overintegration rule for convective term
   bool use_overintegration;
 
+  // CellDirichlet boundary condition: penalty lambda = cell_dirichlet_penalty_factor / dt
+  // (BDF time step). Large values impose u = g (L2 projection) in the marked cells.
+  double cell_dirichlet_penalty_factor;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                            Turbulence - eddy viscosity models                      */

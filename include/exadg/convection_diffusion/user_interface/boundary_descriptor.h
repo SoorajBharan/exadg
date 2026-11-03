@@ -39,7 +39,8 @@ enum class BoundaryType
   Undefined,
   Dirichlet,
   Neumann,
-  Mixed
+  Mixed,
+  CellDirichlet
 };
 
 template<int dim>
@@ -58,6 +59,11 @@ struct BoundaryDescriptor
 
   std::map<dealii::types::boundary_id, MixedBoundaryData<dim>> mixed_bc;
 
+  // cell Dirichlet: u -> g in every cell with a face on this boundary (penalty
+  // lambda (u - g) v, lambda = cell_dirichlet_penalty_factor / dt); the face itself is zero flux.
+  // Used for the near-wall omega of the k-omega model (OpenFOAM omegaWallFunction, first cell).
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> cell_dirichlet_bc;
+
   // returns the boundary type
   inline DEAL_II_ALWAYS_INLINE //
     BoundaryType
@@ -69,6 +75,8 @@ struct BoundaryDescriptor
       return BoundaryType::Neumann;
     else if(this->mixed_bc.find(boundary_id) != this->mixed_bc.end())
       return BoundaryType::Mixed;
+    else if(this->cell_dirichlet_bc.find(boundary_id) != this->cell_dirichlet_bc.end())
+      return BoundaryType::CellDirichlet;
 
     AssertThrow(false, dealii::ExcMessage("Boundary type of face is invalid or not implemented."));
 
@@ -89,6 +97,9 @@ struct BoundaryDescriptor
       counter++;
 
     if(mixed_bc.find(boundary_id) != mixed_bc.end())
+      counter++;
+
+    if(cell_dirichlet_bc.find(boundary_id) != cell_dirichlet_bc.end())
       counter++;
 
     if(periodic_boundary_ids.find(boundary_id) != periodic_boundary_ids.end())

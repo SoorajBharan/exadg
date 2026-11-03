@@ -53,6 +53,9 @@ TurbulenceSourceOperator<dim, Number>::evaluate_add_explicit(BlockVectorType &  
 
   terms = Terms::explicit_terms;
 
+  // the solution of the kernel is no longer the linearization point
+  linearization_stored = false;
+
   BlockVectorType src;
   if(diffusion_in_terms())
     matrix_free->loop(&This::cell_loop_terms,
@@ -86,6 +89,8 @@ TurbulenceSourceOperator<dim, Number>::evaluate_add_newton_explicit(BlockVectorT
                       src);
   else
     matrix_free->cell_loop(&This::cell_loop_terms, this, dst, src);
+  // the loops above stored the linearization point of apply_add_newton_implicit()
+  linearization_stored = true;
 }
 
 template<int dim, typename Number>
@@ -95,6 +100,11 @@ TurbulenceSourceOperator<dim, Number>::apply_add_newton_implicit(BlockVectorType
 {
   if(not has_implicit_terms())
     return;
+
+  AssertThrow(linearization_stored,
+              dealii::ExcMessage("Call evaluate_add_newton_explicit() before "
+                                 "apply_add_newton_implicit(): the linearization point is stored "
+                                 "by the Newton_Explicit loops."));
 
   if(kernel->get_data().viscosity_implicit)
     matrix_free->loop(&This::cell_loop_newton_implicit,
@@ -157,6 +167,10 @@ TurbulenceSourceOperator<dim, Number>::cell_loop_terms(
     // P, D, SG, nu_t at the solution set by set_solution_ptr()
     kernel->reinit_cell(cell);
 
+    // linearization point of the Newton_Implicit loops
+    if(terms == Terms::newton_explicit_terms)
+      kernel->store_cell(cell);
+
     for(unsigned int i = 0; i < n_variables; ++i)
     {
       integrator[i]->reinit(cell);
@@ -203,6 +217,10 @@ TurbulenceSourceOperator<dim, Number>::face_loop_terms(
   {
     // solution, nu_t on both sides at the solution set by set_solution_ptr()
     kernel->reinit_face(face);
+
+    // linearization point of the Newton_Implicit loops
+    if(terms == Terms::newton_explicit_terms)
+      kernel->store_face(face);
 
     for(unsigned int i = 0; i < n_variables; ++i)
     {
@@ -253,6 +271,10 @@ TurbulenceSourceOperator<dim, Number>::boundary_face_loop_terms(
     // interior solution, exterior values from the boundary conditions at evaluation_time
     kernel->reinit_boundary_face(face);
 
+    // linearization point of the Newton_Implicit loops
+    if(terms == Terms::newton_explicit_terms)
+      kernel->store_face(face);
+
     for(unsigned int i = 0; i < n_variables; ++i)
     {
       integrator_m[i]->reinit(face);
@@ -301,8 +323,8 @@ TurbulenceSourceOperator<dim, Number>::cell_loop_newton_implicit(
 
   for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
   {
-    // linearization point: P, D, SG, nu_t and their derivatives
-    kernel->reinit_cell(cell);
+    // linearization point: P, D, SG, nu_t and their derivatives (stored by the Newton_Explicit loop)
+    kernel->reinit_cell_stored(cell);
 
     for(unsigned int i = 0; i < n_variables; ++i)
     {
@@ -369,8 +391,8 @@ TurbulenceSourceOperator<dim, Number>::face_loop_newton_implicit(
 
   for(unsigned int face = face_range.first; face < face_range.second; ++face)
   {
-    // linearization point on both sides
-    kernel->reinit_face(face);
+    // linearization point on both sides (stored by the Newton_Explicit loop)
+    kernel->reinit_face_stored(face);
 
     for(unsigned int i = 0; i < n_variables; ++i)
     {
@@ -378,10 +400,10 @@ TurbulenceSourceOperator<dim, Number>::face_loop_newton_implicit(
       integrator_p[i]->reinit(face);
       integrator_m[i]->gather_evaluate(src.block(i),
                                        dealii::EvaluationFlags::values |
-                                         dealii::EvaluationFlags::gradients);
+                                       dealii::EvaluationFlags::gradients);
       integrator_p[i]->gather_evaluate(src.block(i),
                                        dealii::EvaluationFlags::values |
-                                         dealii::EvaluationFlags::gradients);
+                                       dealii::EvaluationFlags::gradients);
     }
 
     for(unsigned int q = 0; q < integrator_m[0]->n_q_points; ++q)
@@ -416,10 +438,10 @@ TurbulenceSourceOperator<dim, Number>::face_loop_newton_implicit(
     for(unsigned int i = 0; i < n_variables; ++i)
     {
       integrator_m[i]->integrate_scatter(dealii::EvaluationFlags::values |
-                                           dealii::EvaluationFlags::gradients,
+                                         dealii::EvaluationFlags::gradients,
                                          dst.block(i));
       integrator_p[i]->integrate_scatter(dealii::EvaluationFlags::values |
-                                           dealii::EvaluationFlags::gradients,
+                                         dealii::EvaluationFlags::gradients,
                                          dst.block(i));
     }
   }
@@ -437,8 +459,8 @@ TurbulenceSourceOperator<dim, Number>::boundary_face_loop_newton_implicit(
 
   std::vector<std::shared_ptr<IntegratorFace>> integrator_m(n_variables);
   for(auto & integrator_block : integrator_m)
-    integrator_block =
-      std::make_shared<IntegratorFace>(matrix_free, true, data.dof_index, data.quad_index);
+  integrator_block =
+    std::make_shared<IntegratorFace>(matrix_free, true, data.dof_index, data.quad_index);
 
   // increment dQ_j and its normal gradient on the interior side at the current quadrature point
   dealii::AlignedVector<scalar> values_m(n_variables);
@@ -446,8 +468,8 @@ TurbulenceSourceOperator<dim, Number>::boundary_face_loop_newton_implicit(
 
   for(unsigned int face = face_range.first; face < face_range.second; ++face)
   {
-    // linearization point; exterior values from the boundary conditions
-    kernel->reinit_boundary_face(face);
+    // linearization point (stored by the Newton_Explicit loop); exterior values from the boundary conditions
+    kernel->reinit_boundary_face_stored(face);
 
     for(unsigned int i = 0; i < n_variables; ++i)
     {

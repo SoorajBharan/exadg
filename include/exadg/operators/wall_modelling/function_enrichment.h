@@ -35,6 +35,7 @@
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/numerics/vector_tools_mean_value.h>
+#include <deal.II/lac/la_parallel_block_vector.h>
 
 #include <map>
 #include <vector>
@@ -153,6 +154,14 @@ void
                                VectorType &                            correction_bar,
                                Number const                            factor) const;
 
+  // Enriched cells: correction_bar += factor (enriched - fluid), enriched in the shadow layout,
+  // fluid in the global layout (e.g. the U_bar-U_bar viscous term with both quadratures)
+  void
+  add_enriched_cell_difference(VectorType const & enriched,
+                               VectorType const & fluid,
+                               VectorType &       correction_bar,
+                               Number const       factor) const;
+
   // Largest y+ in the enriched layer: max(y) * max(u_tau) / nu.
   // Small values: psi is (nearly) linear, the enrichment is redundant -> do not use it.
   double
@@ -223,6 +232,30 @@ void
   vector const &
   get_grad_psi_cell(unsigned int const cell, unsigned int const q) const;
 
+  // eddy viscosity consistent with the enrichment function (Spalding's law) at a quadrature point
+  // of an enriched cell: nu_t = nu (r dy+/du+ - 1), u+ = psi / kappa, r = tau(y) / tau_w (1 for a
+  // constant stress layer). 0 on lanes switched off by the y+ criterion (psi = 0 there).
+  scalar
+  get_eddy_viscosity_wall_law(unsigned int const cell, unsigned int const q) const;
+
+  // nu_t^psi in the RANS Gauss points of enriched cells as DG field on the RANS eddy viscosity
+  // DoFHandler (global layout); 1e20 (no bound) elsewhere and on switched-off lanes
+  void
+  compute_eddy_viscosity_wall_law_rans(VectorType & global_nu_t_wall_law) const;
+
+  // Exact velocity gradient of u_h = U_bar + psi U_tilde in the RANS Gauss points of the enriched
+  // cells,  grad u_h = grad U_bar + psi grad U_tilde + U_tilde (x) grad psi,  as dim*dim DG fields
+  // on the RANS eddy viscosity DoFHandler (global layout, d u_i / d x_j in gradient[i * dim + j]),
+  // exact in the RANS Gauss points. indicator = 1 in these cells, 0 elsewhere (gradient = 0 there).
+  // Lanes switched off by the y+ criterion: psi = 0, i.e. grad U_bar, indicator = 1.
+  // u_bar_global: block 0 of the fluid velocity (global DG layout), u_tilde: block 1.
+  // All vectors are initialized by the caller on the RANS eddy viscosity DoFHandler.
+  void
+  compute_velocity_gradient_rans(std::vector<VectorType> & gradient,
+                                 VectorType &              indicator,
+                                 VectorType const &        u_bar_global,
+                                 VectorType const &        u_tilde) const;
+
   scalar const &
   get_psi_cell_old(unsigned int const cell, unsigned int const q) const;
 
@@ -244,11 +277,44 @@ void
   void
   set_minimum_wall_shear_stress_fraction(double const fraction);
 
+  // y+ criterion of the enrichment (Krank et al. 2018, Sec. 3.3); y_plus_max <= 0: always enriched
+  void
+  set_y_plus_max(double const y_plus_max);
+
+  // hysteresis: an enriched cell is switched off only below y_plus_min (<= y_plus_max)
+  void
+  set_y_plus_min(double const y_plus_min);
+
+  // wall-law nu_t with a linear shear stress across the wall layer, tau(y)/tau_w = 1 + g y
+  // (g in 1/length; 0: constant stress layer; channel: -1/delta)
+  void
+  set_wall_layer_stress_gradient(double const stress_gradient);
+
+  // enrichment switched on in this cell (cell batch, SIMD lane), set by update_enrichment_function()
+  bool
+  is_enrichment_active(unsigned int const cell, unsigned int const lane) const;
+
   void
   compute_enrichment_component(VectorType &                           dst,
                                VectorType const &                     u_tilde,
                                dealii::DoFHandler<dim> const &        dof_handler_out,
                                dealii::Mapping<dim> const &           mapping) const;
+
+  // point evaluation of the enrichment (postprocessing, e.g. channel statistics):
+  // ghost values of U_tilde, y_h and tau_w,h; collective, call on all processes before
+  // add_enrichment_velocity()
+  void
+  update_ghost_values_point_evaluation(VectorType const & u_tilde) const;
+
+  // values[q] += psi(x_q) U_tilde(x_q) at the reference points unit_points of a locally owned
+  // cell, i.e. U_bar -> u_h = U_bar + psi U_tilde; returns false (values unchanged) if the cell
+  // is not enriched
+  bool
+  add_enrichment_velocity(typename dealii::Triangulation<dim>::active_cell_iterator const & cell,
+                          std::vector<dealii::Point<dim>> const &                           unit_points,
+                          dealii::Mapping<dim> const &                                      mapping,
+                          VectorType const &                                                u_tilde,
+                          std::vector<dealii::Tensor<1, dim>> &                             values) const;
 
   // Add this pointer to store the global fluid layout
   dealii::DoFHandler<dim> const * global_dof_handler;
@@ -360,12 +426,30 @@ private:
                                   unsigned char const                                     orientation,
                                   dealii::AffineConstraints<Number> & constraints) const;
 
+  // nu_t^psi = nu (r dy+/du+ - 1) of Spalding's law at u+, r = tau(y) / tau_w
+  scalar
+  eddy_viscosity_from_u_plus(scalar const & u_plus, scalar const & stress_ratio) const;
+
+  // r = tau(y) / tau_w = max(1 + wall_layer_stress_gradient * y, 0)
+  scalar
+  stress_ratio(scalar const & y) const;
+
   // psi, grad psi from y_h, grad y_h, tau_w,h, grad tau_w,h at one quadrature point
   std::pair<scalar, vector>
   evaluate_enrichment_function(scalar const & y,
                                vector const & grad_y,
                                scalar const & tau_w,
                                vector const & grad_tau_w) const;
+
+  // cell loop of compute_velocity_gradient_rans(), enriched cells, RANS Gauss points:
+  // dst[i * dim + j] = d u_i / d x_j of u_h = U_bar + psi U_tilde, dst[dim * dim] = indicator
+  // (shadow eddy viscosity layout); src.block(0) = U_bar (shadow layout), src.block(1) = U_tilde
+  void
+  cell_loop_velocity_gradient_rans(
+    dealii::MatrixFree<dim, Number> const &                         matrix_free,
+    std::vector<VectorType> &                                       dst,
+    dealii::LinearAlgebra::distributed::BlockVector<Number> const & src,
+    std::pair<unsigned int, unsigned int> const &                   range) const;
 
   unsigned int dof_index_en; 
   unsigned int dof_index_en_scalar; 
@@ -379,6 +463,10 @@ private:
   mutable unsigned int quad_index_fluid_mass =
   dealii::numbers::invalid_unsigned_int;
   unsigned int quad_index;
+  // RANS Gauss rule (degree of nu_t,h + 1 points) in matrix_free_en
+  unsigned int quad_index_rans = dealii::numbers::invalid_unsigned_int;
+  // number of leading (enriched-cell) pairs of the eddy viscosity index map
+  unsigned int n_eddy_viscosity_index_enriched = 0;
 
   const unsigned int active_fe_index = 1;
 
@@ -444,8 +532,8 @@ private:
   dealii::AffineConstraints<Number> constraint_cg_vector; // periodicity, dof_handler_cg_vector
   dealii::AffineConstraints<Number> constraint_dg;
 
-  // tau_w,h = 0 before the first wall shear stress evaluation: keeps y+ defined
-  // (same as the former u_tau >= 1e-5); afterwards the 2% minimum of Step 2 applies
+  // tau_w,h = 0 before the first wall shear stress evaluation (and tau_w -> 0 at separation):
+  // keeps y+ and grad psi finite; such cells are switched off by the y+ criterion
   static constexpr double tau_w_absolute_minimum = 1.e-10;
 
   unsigned int n_q_points_cell = 0;
@@ -455,7 +543,27 @@ private:
   dealii::AlignedVector<vector> grad_psi_cell; // same layout
   dealii::AlignedVector<scalar> psi_cell_old;
 
-  std::array<dealii::AlignedVector<scalar>, 2> psi_face;      // [0] interior, [1] exterior side
+  // y+ criterion: enrichment only if y+ > y_plus_max_enrichment in a quadrature point (<= 0: always)
+  double y_plus_max_enrichment = 0.0;
+
+  // hysteresis of the y+ criterion: an enriched cell is switched off only if y+ < y_plus_min_enrichment
+  // in all quadrature points (<= y_plus_max_enrichment)
+  double y_plus_min_enrichment = 0.0;
+
+  // linear shear stress across the wall layer, tau(y) / tau_w = 1 + g y, g in 1/length
+  // (0: constant stress layer; channel: -1/delta); used by the wall-law nu_t
+  double wall_layer_stress_gradient = 0.0;
+
+  // tau(y) / tau_w at the cell quadrature points, same layout as psi_cell
+  dealii::AlignedVector<scalar> stress_ratio_cell;
+
+  // per cell (cell batch * lanes + lane, locally owned and ghost batches): 1 = enriched
+  std::vector<unsigned char> cell_enriched;
+
+  // number of enriched cells at the last report (printed when it changes)
+  unsigned int n_enriched_cells_last = dealii::numbers::invalid_unsigned_int;
+
+  std::array<dealii::AlignedVector<scalar>, 2> psi_face;     // [0] interior, [1] exterior side
   std::array<dealii::AlignedVector<vector>, 2> grad_psi_face; // [face batch * n_q_points_face + q]
 };
 

@@ -406,6 +406,9 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   {
     function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
     function_enrichment->set_minimum_wall_shear_stress_fraction(param.wall_shear_stress_min_fraction);
+    function_enrichment->set_y_plus_max(param.wall_enrichment_y_plus_max);
+    function_enrichment->set_y_plus_min(param.wall_enrichment_y_plus_min);
+    function_enrichment->set_wall_layer_stress_gradient(param.wall_layer_stress_gradient);
     wall_dg_coupler     = std::make_shared<WallDGCoupler<dim, Number>>();
     wall_dg_coupler->set_rank_tolerance(param.wall_enrichment_rank_tolerance);
     function_enrichment->set_global_pressure_dof_handler(get_dof_handler_p());
@@ -546,6 +549,7 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   viscous_kernel_data.IP_formulation               = param.IP_formulation_viscous;
   viscous_kernel_data.viscosity_is_variable        = param.viscosity_is_variable();
   viscous_kernel_data.variable_normal_vector       = param.neumann_with_variable_normal_vector;
+  viscous_kernel_data.use_cell_based_face_loops    = param.use_cell_based_face_loops;
   viscous_kernel = std::make_shared<Operators::ViscousKernel<dim, Number>>();
   viscous_kernel->reinit(*matrix_free,
                          viscous_kernel_data,
@@ -1857,6 +1861,29 @@ SpatialOperatorBase<dim, Number>::get_enriched_momentum_operator() const
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::compute_eddy_viscosity_wall_law(VectorType & dst) const
+{
+  AssertThrow(param.wall_enrichment_enabled and param.wall_layer_nu_t_wall_law,
+              dealii::ExcMessage("compute_eddy_viscosity_wall_law: wall_layer_nu_t_wall_law off."));
+  function_enrichment->compute_eddy_viscosity_wall_law_rans(dst);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::compute_velocity_gradient_rans(std::vector<VectorType> & gradient,
+                                                                 VectorType &              indicator,
+                                                                 BlockVectorType const &   velocity) const
+{
+  AssertThrow(param.wall_enrichment_enabled and param.wall_layer_exact_velocity_gradient,
+              dealii::ExcMessage("compute_velocity_gradient_rans: wall_layer_exact_velocity_gradient off."));
+  function_enrichment->compute_velocity_gradient_rans(gradient,
+                                                      indicator,
+                                                      velocity.block(0),
+                                                      velocity.block(1));
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::apply_wall_layer_viscosity_to_kernel() const
 {
   // nu_K (component 0) and marker (component 1) in the global DG layout: enriched and halo
@@ -2692,6 +2719,9 @@ SpatialOperatorBase<dim, Number>::setup_wall_enrichment_solvers(
   enriched_momentum_operator.set_wall_penalty_factor(
     param.wall_bc_viscous == WallBoundaryConditionViscous::Weak ? param.wall_penalty_factor_viscous :
                                                                   1.0);
+  enriched_momentum_operator.set_wall_layer_nu_t_linear(param.wall_layer_nu_t_linear);
+  enriched_momentum_operator.set_wall_layer_nu_t_wall_law(param.wall_layer_nu_t_wall_law);
+  enriched_momentum_operator.set_wall_layer_nu_t_wall_law_only(param.wall_layer_nu_t_wall_law_only);
 
   if(param.wall_bc_viscous == WallBoundaryConditionViscous::Strong)
     setup_strong_wall_dofs();
