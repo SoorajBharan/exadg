@@ -27,7 +27,11 @@
 #include <deal.II/base/tensor.h>
 #include <deal.II/base/vectorization.h>
 
+// C++
+#include <memory>
+
 // ExaDG
+#include <exadg/convection_diffusion/spatial_discretization/rans_models/create_rans_model.h>
 #include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
@@ -55,34 +59,20 @@ public:
   {
     turbulence_model_data = turbulence_model_data_in;
 
-    model_coefficients = turbulence_model_data.turbulence_data_base->get_all_coefficients();
+    // the RANS model; create_rans_model() also checks one positivity preserving limiter per
+    // transport variable, and stops for k-epsilon (not implemented yet)
+    model       = create_rans_model<dim, Number>(turbulence_model_data);
+    n_variables = model->get_n_variables();
 
-    // number of transport variables of the turbulence model
-    switch(turbulence_model_data.turbulence_model)
-    {
-      case TurbulenceEddyViscosityModel::StandardKEpsilon:
-      case TurbulenceEddyViscosityModel::StandardKOmega1988:
-        n_variables = 2;
-        break;
-      default:
-        AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
-        break;
-    }
-    AssertThrow(turbulence_model_data.positivity_preserving_limiter.size() == n_variables,
-                dealii::ExcMessage(
-                  "One positivity preserving limiter per transport variable has to be specified."));
+    point_input.reinit(n_variables);
+    point_eddy_viscosity.reinit(n_variables);
+    point_diffusion_viscosity.reinit(n_variables);
   }
 
   unsigned int
   get_n_variables() const
   {
     return n_variables;
-  }
-
-  std::vector<double> const &
-  get_model_coefficients() const
-  {
-    return model_coefficients;
   }
 
   // transported values Q -> physical variables (exp for logarithmic variables) and d solution / d Q
@@ -118,172 +108,54 @@ public:
     }
   }
 
-  // nu_t and d nu_t / d solution (physical variables) at one point
+  // nu_t and d nu_t / d solution (physical variables) at one point, from the RANS model
   void
   evaluate_eddy_viscosity(dealii::ArrayView<scalar const> const & solution,
                           dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
                           scalar &                                viscosity,
                           dealii::ArrayView<scalar> const &       viscosity_derivative) const
   {
-    switch(turbulence_model_data.turbulence_model)
+    AssertDimension(solution.size(), n_variables);
+
+    for(unsigned int j = 0; j < n_variables; ++j)
+      point_input.values[j] = solution[j];
+    point_input.velocity_gradient   = velocity_gradient;
+    point_input.compute_derivatives = (viscosity_derivative.size() > 0);
+
+    model->evaluate_viscosities(point_input, point_eddy_viscosity, point_diffusion_viscosity);
+
+    viscosity = point_eddy_viscosity.value;
+
+    if(point_input.compute_derivatives)
     {
-      case TurbulenceEddyViscosityModel::StandardKEpsilon:
-        standard_k_epsilon_model(solution, viscosity, viscosity_derivative);
-        break;
-      case TurbulenceEddyViscosityModel::StandardKOmega1988:
-        standard_k_omega_1988_model(solution, velocity_gradient, viscosity, viscosity_derivative);
-        break;
-      default:
-        AssertThrow(false, dealii::ExcMessage("RANS::TurbulenceEddyViscosityModel must be specified"));
-        break;
+      AssertDimension(viscosity_derivative.size(), n_variables);
+      for(unsigned int j = 0; j < n_variables; ++j)
+        viscosity_derivative[j] = point_eddy_viscosity.derivative[j];
     }
   }
 
-  // lower bound omega_r0 of omega from the realizability conditions (Bassi et al. 2014)
-  scalar
-  compute_realizability_alpha(dealii::Tensor<2, dim, scalar> const & grad_u) const
+  // the RANS model (used directly by TurbulenceSourceKernel from step 5 on)
+  RANSModelBase<dim, Number> const &
+  get_model() const
   {
-    scalar zero = dealii::make_vectorized_array<Number>(0.0);
-
-    dealii::Tensor<2, 3, scalar> S;
-    for (unsigned int i = 0; i < 3; ++i) 
-    {
-      for (unsigned int j = 0; j < 3; ++j) 
-      {
-        S[i][j] = zero;
-      }
-    }
-
-    for (unsigned int i = 0; i < dim; ++i) 
-    {
-      for (unsigned int j = 0; j < dim; ++j) 
-      {
-        S[i][j] = dealii::make_vectorized_array<Number>(0.5) * (grad_u[i][j] + grad_u[j][i]);
-      }
-    }
-
-    scalar alpha = zero;
-    scalar three = dealii::make_vectorized_array<Number>(3.0);
-
-    // realizability limiter switched off: alpha = 0, only the positivity floor below remains
-    for (unsigned int i = 0; i < 3 and turbulence_model_data.use_realizability_limiter; ++i)
-    {
-      for (unsigned int j = i + 1; j < 3; ++j)
-      {
-        scalar B = three * (S[i][i] + S[j][j]);
-        scalar S_ij = S[i][j]; 
-
-        // Discriminant Delta = 9(Sd_ii - Sd_jj)^2 + 4(S_ij)^2
-        scalar diff = S[i][i] - S[j][j];
-        scalar delta = dealii::make_vectorized_array<Number>(9.0) * diff * diff + 
-          dealii::make_vectorized_array<Number>(36.0) * S_ij * S_ij;
-
-        delta = std::max(delta, zero);
-
-        // The largest positive root bounds alpha
-        scalar root_1 = dealii::make_vectorized_array<Number>(0.5) * (B + std::sqrt(delta));
-        scalar root_2 = dealii::make_vectorized_array<Number>(0.5) * (B - std::sqrt(delta));
-        scalar root = std::max(root_1, root_2);
-        alpha = std::max(alpha, root);
-      }
-    }
-
-    scalar alpha_safe = std::max(alpha, dealii::make_vectorized_array<Number>(1.0e-6));
-
-    if(turbulence_model_data.use_stress_limiter)
-    { 
-      scalar S_S = zero;
-      for(unsigned int i = 0; i < dim; ++i)
-        for(unsigned int j = 0; j < dim; ++j)
-          S_S += S[i][j] * S[i][j];
-
-      scalar const C_lim     = dealii::make_vectorized_array<Number>(7.0 / 8.0);
-      scalar const beta_star = dealii::make_vectorized_array<Number>(model_coefficients[2]);
-
-      alpha_safe =
-        std::max(alpha_safe,
-                 C_lim * std::sqrt(dealii::make_vectorized_array<Number>(2.0) * S_S / beta_star));
-    }
-    // scalar alpha_safe = std::max(alpha, dealii::make_vectorized_array<Number>(1.0e-6));
-
-    return alpha_safe;
+    AssertThrow(model != nullptr,
+                dealii::ExcMessage("EddyViscosityEvaluator: call initialize() first."));
+    return *model;
   }
 
 private:
-  void
-  standard_k_epsilon_model(dealii::ArrayView<scalar const> const & solution,
-                           scalar &                                viscosity,
-                           dealii::ArrayView<scalar> const &       viscosity_derivative) const
-  {
-    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
-    scalar const C_mu = dealii::make_vectorized_array<Number>(model_coefficients[3]);
-
-    scalar const tke     = solution[0];
-    scalar const epsilon = solution[1];
-
-    scalar const viscosity_unclipped = C_mu * tke * tke / epsilon;
-
-    viscosity = std::max(viscosity_unclipped, zero);
-
-    if(viscosity_derivative.size() > 0)
-    {
-      // derivative of the clipping: 1 in the SIMD lanes where the viscosity is not clipped, 0 where
-      // it is clipped to zero
-      scalar const not_clipped =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(viscosity_unclipped,
-                                                                             zero,
-                                                                             one,
-                                                                             zero);
-
-      // d nu_t / d k
-      viscosity_derivative[0] =
-        not_clipped * dealii::make_vectorized_array<Number>(2.0) * C_mu * tke / epsilon;
-      // d nu_t / d epsilon
-      viscosity_derivative[1] = -not_clipped * C_mu * tke * tke / (epsilon * epsilon);
-    }
-  }
-
-  void
-  standard_k_omega_1988_model(dealii::ArrayView<scalar const> const & solution,
-                              dealii::Tensor<2, dim, scalar> const &  velocity_gradient,
-                              scalar &                                viscosity,
-                              dealii::ArrayView<scalar> const &       viscosity_derivative) const
-  {
-    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
-
-    // realizability limiter (Bassi et al. 2014, eqs. (5)-(8)): k_bar = max(0, k),
-    // omega_r = max(omega_r0, omega)
-    scalar const omega_r0 = compute_realizability_alpha(velocity_gradient);
-
-    scalar const tke_limited   = std::max(solution[0], zero);
-    scalar const omega_limited = std::max(solution[1], omega_r0);
-
-    // nu_t = k_bar / omega_r (alpha* = 1)
-    viscosity = tke_limited / omega_limited;
-
-    if(viscosity_derivative.size() > 0)
-    {
-      // derivatives vanish where a limiter is active
-      scalar const tke_not_limited =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(solution[0], zero, one, zero);
-      scalar const omega_not_limited =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(solution[1],
-                                                                             omega_r0,
-                                                                             one,
-                                                                             zero);
-
-      viscosity_derivative[0] = tke_not_limited / omega_limited;
-      viscosity_derivative[1] = -omega_not_limited * tke_limited / (omega_limited * omega_limited);
-    }
-  }
-
   TurbulenceModelData turbulence_model_data;
 
-  std::vector<double> model_coefficients;
-
   unsigned int n_variables;
+
+  // the RANS model (create_rans_model()): the only definition of nu_t
+  std::shared_ptr<RANSModelBase<dim, Number> const> model;
+
+  // work arrays of evaluate_eddy_viscosity(), one point at a time (matrix_free runs without task
+  // parallelism, as the mutable work arrays of TurbulenceSourceKernel)
+  mutable RANSPointInput<dim, Number> point_input;
+  mutable RANSViscosity<Number>       point_eddy_viscosity;
+  mutable RANSViscosity<Number>       point_diffusion_viscosity;
 };
 
 } // namespace ConvDiff

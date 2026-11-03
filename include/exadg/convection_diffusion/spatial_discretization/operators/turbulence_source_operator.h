@@ -134,6 +134,13 @@ public:
 
     n_variables = turbulence_model_ptr->get_n_variables();
 
+    // the RANS model: nu_t, nu_D, production, dissipation at the quadrature points
+    rans_model = &turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model();
+
+    AssertThrow(rans_model->get_n_variables() == n_variables,
+                dealii::ExcMessage("Number of variables of the RANS model and of the turbulence "
+                                   "model do not match."));
+
     AssertThrow(data.eddy_viscosity_factor.size() == n_variables,
                 dealii::ExcMessage(
                 "One eddy viscosity factor per transport variable has to be specified."));
@@ -175,14 +182,17 @@ public:
     cell_square_gradient_jacobian.resize(n_q_points_cell * n_variables * n_variables);
     cell_square_gradient_gradient_jacobian.resize(n_q_points_cell * n_variables);
 
-    solution_values.resize(n_variables);
-    solution_derivative.resize(n_variables);
-    viscosity_derivative.resize(n_variables);
+    point_input.reinit(n_variables);
+    point_eddy_viscosity.reinit(n_variables);
+    point_diffusion_viscosity.reinit(n_variables);
+    point_production.reinit(n_variables);
+    point_dissipation.reinit(n_variables);
+    point_gradient_source.reinit(n_variables);
 
     // face integrators of the turbulent diffusion (SIPG face terms)
     AssertThrow(data.bc.size() == n_variables,
                 dealii::ExcMessage(
-                  "One boundary descriptor per transport variable has to be specified."));
+                "One boundary descriptor per transport variable has to be specified."));
 
     for(unsigned int side = 0; side < 2; ++side)
     {
@@ -391,33 +401,55 @@ public:
                   integrator_gradient_enriched[i * dim + j]->get_value(q)[v];
       }
 
-      // pointwise eddy viscosity nu_t(Q) and d nu_t / d Q_j, used by all terms (explicit and
-      // implicit treatment)
-      turbulence_model_ptr->get_physical_variables(
+      // input of the RANS model: physical variables (k, omega), their gradients and grad u
+      rans_model->set_physical_variables(
         dealii::ArrayView<scalar const>(cell_solution.data() + index(q, 0), n_variables),
-        dealii::make_array_view(solution_values),
-        dealii::make_array_view(solution_derivative));
+        dealii::ArrayView<vector const>(cell_solution_gradient.data() + index(q, 0), n_variables),
+        point_input);
+      point_input.velocity_gradient   = velocity_gradient;
+      point_input.compute_derivatives = true;
 
-      turbulence_model_ptr->evaluate_eddy_viscosity(dealii::make_array_view(solution_values),
-                                                    velocity_gradient,
-                                                    cell_viscosity[q],
-                                                    dealii::make_array_view(viscosity_derivative));
+      // nu_t and the diffusion viscosity nu_D with d nu / d Q_j, used by all terms (explicit and
+      // implicit treatment); cell_viscosity is nu_D (Wilcox 1988: nu_D = nu_t)
+      rans_model->evaluate_viscosities(point_input, point_eddy_viscosity, point_diffusion_viscosity);
+      rans_model->convert_to_transported_form(point_input, point_diffusion_viscosity);
 
-      // chain rule: d nu_t / d Q_j = d nu_t / d solution_j * d solution_j / d Q_j
+      cell_viscosity[q] = point_diffusion_viscosity.value;
       for(unsigned int j = 0; j < n_variables; ++j)
-        cell_viscosity_derivative[index(q, j)] = viscosity_derivative[j] * solution_derivative[j];
+        cell_viscosity_derivative[index(q, j)] = point_diffusion_viscosity.derivative[j];
 
       // wall model: upper bound of nu_t in the turbulent diffusion
       if(eddy_viscosity_wall_law != nullptr)
         apply_wall_law_viscosity_bound(q, integrator_wall_law->get_value(q));
 
-      compute_production(q, velocity_gradient);
+      // production and dissipation of the RANS model, physical -> transported form (ln k, ln omega)
+      // (gradient source: zero for Wilcox 1988, handled together with Wilcox 2006)
+      rans_model->evaluate_sources(point_input,
+                                   point_eddy_viscosity,
+                                   point_production,
+                                   point_dissipation,
+                                   point_gradient_source);
+      rans_model->convert_to_transported_form(point_input, point_production);
+      rans_model->convert_to_transported_form(point_input, point_dissipation);
+
+      for(unsigned int i = 0; i < n_variables; ++i)
+      {
+        cell_production[index(q, i)]  = point_production.value[i];
+        cell_dissipation[index(q, i)] = point_dissipation.value[i];
+
+        for(unsigned int j = 0; j < n_variables; ++j)
+        {
+          cell_production_jacobian[index(q, i, j)] =
+            point_production.jacobian[point_production.index(i, j)];
+          cell_dissipation_jacobian[index(q, i, j)] =
+            point_dissipation.jacobian[point_dissipation.index(i, j)];
+        }
+      }
 
       // wall model: upper bound of the k production
       if(eddy_viscosity_wall_law != nullptr)
         apply_wall_law_production_bound(q, integrator_wall_law->get_value(q), velocity_gradient);
 
-      compute_dissipation(q, velocity_gradient);
       compute_square_gradient(q);
     }
   }
@@ -965,110 +997,26 @@ private:
   }
 
   /*
-   * Pointwise nu_t and d nu_t / d Q_j at face quadrature point q of side "side", from the
-   * transported values in face_solution[side] and the velocity gradient of that side.
-   */
+     * Diffusion viscosity nu_D and d nu_D / d Q_j at face quadrature point q of side "side"
+     * (Wilcox 1988: nu_D = nu_t), from the transported values in face_solution[side] and the velocity
+     * gradient of that side. The face terms need no gradients of the transport variables.
+     */
   void
   compute_face_viscosity(unsigned int const side, unsigned int const q) const
   {
-    tensor const velocity_gradient = face_integrator_velocity[side]->get_gradient(q);
-
-    turbulence_model_ptr->get_physical_variables(
+    rans_model->set_physical_variables(
       dealii::ArrayView<scalar const>(face_solution[side].data() + index(q, 0), n_variables),
-      dealii::make_array_view(solution_values),
-      dealii::make_array_view(solution_derivative));
+      dealii::ArrayView<vector const>(),
+      point_input);
+    point_input.velocity_gradient   = face_integrator_velocity[side]->get_gradient(q);
+    point_input.compute_derivatives = true;
 
-    turbulence_model_ptr->evaluate_eddy_viscosity(dealii::make_array_view(solution_values),
-                                                  velocity_gradient,
-                                                  face_viscosity[side][q],
-                                                  dealii::make_array_view(viscosity_derivative));
+    rans_model->evaluate_viscosities(point_input, point_eddy_viscosity, point_diffusion_viscosity);
+    rans_model->convert_to_transported_form(point_input, point_diffusion_viscosity);
 
-    // chain rule: d nu_t / d Q_j = d nu_t / d solution_j * d solution_j / d Q_j
+    face_viscosity[side][q] = point_diffusion_viscosity.value;
     for(unsigned int j = 0; j < n_variables; ++j)
-      face_viscosity_derivative[side][index(q, j)] =
-        viscosity_derivative[j] * solution_derivative[j];
-  }
-
-  /*
-     * k-omega quantities at one quadrature point (Bassi et al. 2014, eqs. (5)-(8)), used by the
-     * k-omega production and dissipation
-     */
-  struct KOmegaValues
-  {
-    // physical values k and omega (exp of the transported value if ln is transported)
-    scalar tke;
-    scalar omega;
-
-    // realizability limiter: max(k, 0), max(omega, omega_lower_bound)
-    scalar tke_limited;
-    scalar omega_limited;
-
-    scalar inverse_tke;
-    scalar inverse_omega_limited;
-
-    // derivative of the limiters: 1 where the limiter is inactive, 0 where it is active
-    scalar tke_not_limited;
-    scalar omega_not_limited;
-
-    // (grad u + grad u^T) : grad u
-    scalar velocity_gradient_product;
-  };
-
-  KOmegaValues
-  k_omega_1988_values(unsigned int const q, tensor const & velocity_gradient) const
-  {
-    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
-
-    KOmegaValues values;
-
-    values.tke = data.k_log ? std::exp(cell_solution[index(q, 0)]) : cell_solution[index(q, 0)];
-    values.omega =
-      data.omega_log ? std::exp(cell_solution[index(q, 1)]) : cell_solution[index(q, 1)];
-
-    values.velocity_gradient_product =
-      scalar_product(velocity_gradient + transpose(velocity_gradient), velocity_gradient);
-
-    scalar const omega_lower_bound =
-      turbulence_model_ptr->compute_realizability_alpha(velocity_gradient);
-
-    // safe values: max(k, 0), max(omega, omega_lower_bound)
-    values.tke_limited = std::max(values.tke, zero);
-
-    values.tke_not_limited =
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(values.tke,
-                                                                           zero,
-                                                                           one,
-                                                                           zero);
-
-    // safe inverse of k (as safe_tke in the previous implementation)
-    values.inverse_tke = one / std::max(values.tke, dealii::make_vectorized_array<Number>(1.0e-6));
-
-    if(data.omega_log)
-    {
-      // limiter in log space: omega_r = exp(max(ln omega, ln omega_lower_bound)), no division
-      scalar const log_omega_lower_bound = std::log(omega_lower_bound);
-      scalar const log_omega_limited =
-        std::max(cell_solution[index(q, 1)], log_omega_lower_bound);
-
-      values.omega_limited         = std::exp(log_omega_limited);
-      values.inverse_omega_limited = std::exp(-log_omega_limited);
-      values.omega_not_limited =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(
-          cell_solution[index(q, 1)], log_omega_lower_bound, one, zero);
-    }
-    else
-  {
-      values.omega_limited         = std::max(values.omega, omega_lower_bound);
-      values.inverse_omega_limited = one / values.omega_limited;
-      values.omega_not_limited =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(values.omega,
-                                                                             omega_lower_bound,
-                                                                             one,
-                                                                             zero);
-    }
-
-    return values;
+      face_viscosity_derivative[side][index(q, j)] = point_diffusion_viscosity.derivative[j];
   }
 
   // wall model (enriched cells): nu_t -> min(nu_t, nu_t^psi); no dependence on Q where bounded
@@ -1105,173 +1053,6 @@ private:
     cell_production[index(q, 0)] = std::min(cell_production[index(q, 0)], bound);
     for(unsigned int j = 0; j < n_variables; ++j)
       cell_production_jacobian[index(q, 0, j)] *= free;
-  }
-
-  void
-  compute_production(unsigned int const q,
-                     tensor const &     velocity_gradient) const
-  {
-    switch(data.turbulence_model_data.turbulence_model)
-    {
-      case TurbulenceEddyViscosityModel::StandardKOmega1988:
-        k_omega_1988_production(q, velocity_gradient);
-        break;
-      default:
-        AssertThrow(false,
-                    dealii::ExcMessage("Production not implemented for this turbulence model."));
-        break;
-    }
-  }
-
-  void
-  k_omega_1988_production(unsigned int const q,
-                          tensor const &     velocity_gradient) const
-  {
-    scalar const zero  = dealii::make_vectorized_array<Number>(0.0);
-    scalar const alpha =
-      dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[0]);
-
-    KOmegaValues const values = k_omega_1988_values(q, velocity_gradient);
-    scalar const       G      = values.velocity_gradient_product;
-
-    // 1 / omega_r and its derivative w.r.t. the transported omega:
-    // d omega_r / d Q_omega = omega_not_limited (omega) or omega_not_limited * omega_r (ln omega)
-    scalar const inverse_omega = values.inverse_omega_limited;
-    scalar const omega_limited_derivative =
-      data.omega_log ? values.omega_not_limited * values.omega_limited : values.omega_not_limited;
-    scalar const inverse_omega_derivative =
-      -omega_limited_derivative * inverse_omega * inverse_omega;
-
-    // row of k
-    if(data.k_log)
-    {
-      // equation of ln k: nu_t G / k = G / omega_r (k cancels, no 1/k)
-      cell_production[index(q, 0)]             = G * inverse_omega;
-      cell_production_jacobian[index(q, 0, 0)] = zero;
-      cell_production_jacobian[index(q, 0, 1)] = G * inverse_omega_derivative;
-    }
-    else {
-      // equation of k: nu_t G = G max(k, 0) / omega_r
-      cell_production[index(q, 0)]             = G * values.tke_limited * inverse_omega;
-      cell_production_jacobian[index(q, 0, 0)] = G * values.tke_not_limited * inverse_omega;
-      cell_production_jacobian[index(q, 0, 1)] = G * values.tke_limited * inverse_omega_derivative;
-    }
-
-    // row of omega (does not depend on k)
-    cell_production_jacobian[index(q, 1, 0)] = zero;
-
-    if(data.omega_log)
-    {
-      // equation of ln omega: alpha G / omega_r
-      cell_production[index(q, 1)]             = alpha * G * inverse_omega;
-      cell_production_jacobian[index(q, 1, 1)] = alpha * G * inverse_omega_derivative;
-    }
-    else {
-      // equation of omega: alpha G max(omega, 0) / omega_r
-      // max(omega, 0): no (negative) production where omega undershoots below  zero, otherwise
-      // alpha G omega / omega_r drives omega further down (omega_r = omega_r0   there)
-
-      scalar const one = dealii::make_vectorized_array<Number>(1.0);
-
-      scalar const omega_bar = std::max(values.omega, zero);
-      scalar const omega_positive =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(values.omega,zero, one, zero);  
-
-      cell_production[index(q, 1)] = alpha * G * omega_bar * inverse_omega;
-      cell_production_jacobian[index(q, 1, 1)] =
-        alpha * G * (omega_positive * inverse_omega + omega_bar * inverse_omega_derivative);
-    }
-
-    // explicit treatment: no Jacobian
-    if(not data.production_implicit)
-    {
-      cell_production_jacobian[index(q, 0, 0)] = zero;
-      cell_production_jacobian[index(q, 0, 1)] = zero;
-      cell_production_jacobian[index(q, 1, 1)] = zero;
-    }
-  }
-
-  /*
-     * Dissipation of all transport variables at quadrature point q: value in 
-  cell_dissipation and
-     * Jacobian w.r.t. the transported values in cell_dissipation_jacobian.
-     */
-  void
-  compute_dissipation(unsigned int const q, tensor const & velocity_gradient)
-  const
-  {
-    switch(data.turbulence_model_data.turbulence_model)
-    {
-      case TurbulenceEddyViscosityModel::StandardKOmega1988:
-        k_omega_1988_dissipation(q, velocity_gradient);
-        break;
-      default:
-        AssertThrow(false,
-                    dealii::ExcMessage("Dissipation not implemented for this turbulence model."));
-        break;
-    }
-  }
-
-  void
-  k_omega_1988_dissipation(unsigned int const q, tensor const & 
-                           velocity_gradient) const
-  {
-    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
-    scalar const beta =
-      dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[1]);
-    scalar const beta_star =
-      dealii::make_vectorized_array<Number>(turbulence_model_ptr->model_coefficients[2]);
-
-    KOmegaValues const values = k_omega_1988_values(q, velocity_gradient);
-
-    scalar const omega_limited_derivative =
-      data.omega_log ? values.omega_not_limited * values.omega_limited :
-      values.omega_not_limited;
-
-    // row of k
-    if(data.k_log)
-    {
-      // equation of ln k: beta* omega_r
-      cell_dissipation[index(q, 0)]             = beta_star *
-        values.omega_limited;
-      cell_dissipation_jacobian[index(q, 0, 0)] = zero;
-      cell_dissipation_jacobian[index(q, 0, 1)] = beta_star *
-        omega_limited_derivative;
-    }
-    else {
-      // equation of k: beta* max(k, 0) omega_r
-      cell_dissipation[index(q, 0)] = beta_star * values.tke_limited *
-        values.omega_limited;
-      cell_dissipation_jacobian[index(q, 0, 0)] =
-        beta_star * values.tke_not_limited * values.omega_limited;
-      cell_dissipation_jacobian[index(q, 0, 1)] =
-        beta_star * values.tke_limited * omega_limited_derivative;
-    }
-    // row of omega (does not depend on k)
-    cell_dissipation_jacobian[index(q, 1, 0)] = zero;
-
-    if(data.omega_log)
-    {
-      // equation of ln omega: beta omega_r
-      cell_dissipation[index(q, 1)]             = beta * values.omega_limited;
-      cell_dissipation_jacobian[index(q, 1, 1)] = beta *
-        omega_limited_derivative;
-    }
-    else
-  {
-      // equation of omega: beta omega omega_r
-      cell_dissipation[index(q, 1)] = beta * values.omega * values.omega_limited;
-      cell_dissipation_jacobian[index(q, 1, 1)] =
-        beta * (values.omega_limited + values.omega * omega_limited_derivative);
-    }
-
-    // explicit treatment: no Jacobian
-    if(not data.dissipation_implicit)
-    {
-      cell_dissipation_jacobian[index(q, 0, 0)] = zero;
-      cell_dissipation_jacobian[index(q, 0, 1)] = zero;
-      cell_dissipation_jacobian[index(q, 1, 1)] = zero;
-    }
   }
 
   void
@@ -1336,6 +1117,18 @@ private:
   mutable lazy_ptr<VectorType> velocity;
   mutable lazy_ptr<BlockVectorType> solution;
 
+  // the RANS model (owned by the EddyViscosityEvaluator of turbulence_model_ptr, alive as long as
+  // turbulence_model_ptr)
+  RANSModelBase<dim, Number> const * rans_model = nullptr;
+
+  // work structs of the model at one quadrature point (physical variables), sized in reinit()
+  mutable RANSPointInput<dim, Number> point_input;
+  mutable RANSViscosity<Number>       point_eddy_viscosity;
+  mutable RANSViscosity<Number>       point_diffusion_viscosity;
+  mutable RANSSourceTerm<dim, Number> point_production;
+  mutable RANSSourceTerm<dim, Number> point_dissipation;
+  mutable RANSSourceTerm<dim, Number> point_gradient_source;
+
   std::shared_ptr<IntegratorCellVelocity>      integrator_velocity;
   std::vector<std::shared_ptr<IntegratorCell>> integrator_solution;
 
@@ -1375,10 +1168,6 @@ private:
   mutable dealii::AlignedVector<scalar> cell_dissipation_jacobian;
   mutable dealii::AlignedVector<scalar> cell_square_gradient_jacobian;
   mutable dealii::AlignedVector<vector> cell_square_gradient_gradient_jacobian;
-
-  mutable dealii::AlignedVector<scalar> solution_values;
-  mutable dealii::AlignedVector<scalar> solution_derivative;
-  mutable dealii::AlignedVector<scalar> viscosity_derivative;
 
   // face data at the solution set by set_solution_ptr(), at the quadrature points of the current
   // face, [side] (side 0: e-, side 1: e+ or the exterior boundary values)

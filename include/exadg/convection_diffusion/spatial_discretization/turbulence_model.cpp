@@ -57,8 +57,6 @@ TurbulenceModel<dim, Number>::initialize(dealii::MatrixFree<dim, Number> const &
 
   turbulence_model_data = turbulence_model_data_in;
 
-  model_coefficients = turbulence_model_data_in.turbulence_data_base->get_all_coefficients();
-
   evaluator.initialize(turbulence_model_data);
   n_variables = evaluator.get_n_variables();
 
@@ -252,14 +250,6 @@ EddyViscosityEvaluator<dim, Number> const &
 TurbulenceModel<dim, Number>::get_eddy_viscosity_evaluator() const
 {
   return evaluator;
-}
-
-template<int dim, typename Number>
-typename TurbulenceModel<dim, Number>::scalar
-TurbulenceModel<dim, Number>::compute_realizability_alpha(
-  dealii::Tensor<2, dim, scalar> const & grad_u) const
-{
-  return evaluator.compute_realizability_alpha(grad_u);
 }
 
 template<int dim, typename Number>

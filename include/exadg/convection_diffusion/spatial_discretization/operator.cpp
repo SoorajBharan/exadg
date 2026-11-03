@@ -283,28 +283,22 @@ Operator<dim, Number>::setup_operators()
                                      get_dof_index_velocity(),
                                      get_quad_index(),
                                      get_quad_index_eddy_velocity());
-    turbulence_model_ptr->model_coefficients       = param.turbulence_model_data.turbulence_data_base->get_all_coefficients();
   }
 
   std::vector<double> eddy_viscosity_factor(n_blocks, 0.0);
 
   if(param.turbulence_model_data.is_active)
   {
-    std::vector<double> const & coefficients =
-      turbulence_model_ptr->model_coefficients;
+    // sigma_i of the turbulent diffusion, from the RANS model (Wilcox 1988: sigma* for k, sigma for
+    // omega)
+    auto const & rans_model = turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model();
 
-    if(param.turbulence_model_data.turbulence_model ==
-      TurbulenceEddyViscosityModel::StandardKEpsilon)
-    {  
-      eddy_viscosity_factor = {1.0 / coefficients[0],  // 1/sigma_k
-        1.0 / coefficients[4]}; // 1/sigma_epsilon
-    }
-    else if(param.turbulence_model_data.turbulence_model ==
-      TurbulenceEddyViscosityModel::StandardKOmega1988)
-    {
-      eddy_viscosity_factor = {coefficients[4],  // sigma*
-        coefficients[3]}; // sigma
-    }
+    AssertThrow(rans_model.get_n_variables() == n_blocks,
+                dealii::ExcMessage("Number of transport variables and of RANS model variables "
+                                   "do not match."));
+
+    for(unsigned int b = 0; b < n_blocks; ++b)
+      eddy_viscosity_factor[b] = rans_model.get_diffusion_factor(b);
   }
 
   // diffusive operator

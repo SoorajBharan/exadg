@@ -102,9 +102,6 @@ public:
                          dealii::ArrayView<scalar> const &       solution,
                          dealii::ArrayView<scalar> const &       solution_derivative) const;
 
-  scalar
-  compute_realizability_alpha(dealii::Tensor<2, dim, scalar> const & grad_u) const;
-
   void
   get_turbulent_kinetic_energy(VectorType & dst, BlockVectorType const & solution) const;
 
@@ -117,8 +114,6 @@ public:
   double       diffusivity;
   unsigned int quad_index;
   unsigned int quad_index_eddy_velocity;
-
-  std::vector<double> model_coefficients;
 
   // pointwise eddy viscosity and its derivative w.r.t. the transport variables (also used by the
   // TurbulenceSourceKernel at the quadrature points)
