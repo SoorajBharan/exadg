@@ -42,11 +42,19 @@ class KOmega1988Model : public RANSModelBase<dim, Number>
 private:
   typedef RANSModelBase<dim, Number>     Base;
   typedef typename Base::scalar          scalar;
+  typedef typename Base::vector          vector;
   typedef dealii::Tensor<2, dim, scalar> tensor;
+
+  bool const k_log;
+  bool const omega_log;
 
 public:
   KOmega1988Model(TurbulenceModelData const & turbulence_model_data_in)
-  : Base(turbulence_model_data_in)
+    : Base(turbulence_model_data_in),
+    k_log(turbulence_model_data_in.positivity_preserving_limiter.at(0) ==
+          PositivityPreservingLimiter::LogarithmicTransportVariable),
+    omega_log(turbulence_model_data_in.positivity_preserving_limiter.at(1) ==
+              PositivityPreservingLimiter::LogarithmicTransportVariable)
   {
   }
 
@@ -62,6 +70,12 @@ public:
   {
     AssertIndexRange(i, 2);
     return (i == 0) ? this->coefficients[4] : this->coefficients[3];
+  }
+
+  bool
+  sources_in_transported_form() const override
+  {
+    return true;
   }
 
   /*
@@ -84,10 +98,10 @@ public:
     // omega_r = max(omega_r0, omega)
     scalar const omega_r0      = compute_realizability_alpha(input.velocity_gradient);
     scalar const tke_limited   = std::max(tke, zero);
-    scalar const omega_limited = std::max(omega, omega_r0);
+    scalar const omega_r = std::max(omega, omega_r0);
 
     // nu_t = k_bar / omega_r (alpha* = 1)
-    eddy_viscosity.value = tke_limited / omega_limited;
+    eddy_viscosity.value = tke_limited / omega_r;
 
     if(input.compute_derivatives)
     {
@@ -100,9 +114,9 @@ public:
                                                                              one,
                                                                              zero);
 
-      eddy_viscosity.derivative[0] = tke_not_limited / omega_limited;
+      eddy_viscosity.derivative[0] = tke_not_limited / omega_r;
       eddy_viscosity.derivative[1] =
-        -omega_not_limited * tke_limited / (omega_limited * omega_limited);
+        -omega_not_limited * tke_limited / (omega_r * omega_r);
     }
 
     // nu_D = nu_t
@@ -113,23 +127,128 @@ public:
   }
 
   /*
-     * All source terms of Wilcox 1988 in physical form. The model has no gradient source
-     * (no cross-diffusion); the |grad ln omega|^2 term of the ln omega equation comes from the
-     * variable transformation and is added by the kernel. nu_t is not needed: P_k is computed as
-     * G k_bar / omega_r, as in the previous implementation.
+     * Source terms of Wilcox 1988, all in the transported form (one branch per variable choice, see
+     * compute_production(), compute_dissipation(), evaluate_square_gradient()). No cross-diffusion in
+     * any case: it stays zero.
      */
   void
   evaluate_sources(RANSPointInput<dim, Number> const & input,
                    RANSViscosity<Number> const &       eddy_viscosity,
                    RANSSourceTerm<dim, Number> &       production,
                    RANSSourceTerm<dim, Number> &       dissipation,
-                   RANSSourceTerm<dim, Number> &       gradient_source) const override
+                   RANSSourceTerm<dim, Number> &       cross_diffusion) const override
   {
     (void)eddy_viscosity;
 
     compute_production(input, production);
     compute_dissipation(input, dissipation);
-    gradient_source.set_zero();
+    cross_diffusion.set_zero();
+  }
+
+  /*
+       * Square-gradient term of a log equation (it comes from dividing the equation by phi):
+       * SG_i = (nu + sigma_i nu_D) |grad Q_i|^2 with grad Q_i = grad phi_i / phi_i. A linear variable has
+       * no square-gradient term.
+       *
+       *   Case 1 (k, omega)       : none
+       *   Case 2 (ln k, ln omega) : SG_K = (nu + sigma* nu_D) |grad K|^2,  SG_W = (nu + sigma nu_D) |grad W|^2
+       *   Case 3 (k, ln omega)    : SG_W = (nu + sigma nu_D) |grad W|^2
+       *   Case 4 (ln k, omega)    : SG_K = (nu + sigma* nu_D) |grad K|^2
+       *
+       * Jacobian: d SG_i / d Q_j = sigma_i |grad Q_i|^2 d nu_D / d Q_j, and
+       * d SG_i / d grad Q_i = 2 (nu + sigma_i nu_D) grad Q_i, stored at gradient_jacobian(i, i).
+       * diffusion_viscosity: nu_D and d nu_D / d Q_j as used by the kernel (after the wall-law bound).
+       */
+  void
+  evaluate_square_gradient(RANSPointInput<dim, Number> const & input,
+                           scalar const &                      molecular_viscosity,
+                           RANSViscosity<Number> const &       diffusion_viscosity,
+                           RANSSourceTerm<dim, Number> &       square_gradient) const override
+  {
+    scalar const one        = dealii::make_vectorized_array<Number>(1.0);
+    scalar const two        = dealii::make_vectorized_array<Number>(2.0);
+    scalar const sigma      = dealii::make_vectorized_array<Number>(this->coefficients[3]);
+    scalar const sigma_star = dealii::make_vectorized_array<Number>(this->coefficients[4]);
+
+    scalar const nu   = molecular_viscosity;
+    scalar const nu_D = diffusion_viscosity.value;
+
+    square_gradient.set_zero();
+
+    if(not k_log and not omega_log)
+    {
+      // Case 1: k, omega: no square-gradient term, everything stays zero
+    }
+    else if(k_log and omega_log)
+    {
+      // Case 2: K = ln k, W = ln omega
+      vector const grad_K           = (one / input.values[0]) * input.gradients[0];
+      vector const grad_W           = (one / input.values[1]) * input.gradients[1];
+      scalar const grad_K_square    = grad_K * grad_K;
+      scalar const grad_W_square    = grad_W * grad_W;
+      scalar const coefficient_K    = nu + sigma_star * nu_D;
+      scalar const coefficient_W    = nu + sigma * nu_D;
+
+      square_gradient.value[0] = coefficient_K * grad_K_square;
+      square_gradient.value[1] = coefficient_W * grad_W_square;
+
+      if(input.compute_derivatives)
+      {
+        square_gradient.jacobian[square_gradient.index(0, 0)] =
+          sigma_star * grad_K_square * diffusion_viscosity.derivative[0];
+        square_gradient.jacobian[square_gradient.index(0, 1)] =
+          sigma_star * grad_K_square * diffusion_viscosity.derivative[1];
+        square_gradient.jacobian[square_gradient.index(1, 0)] =
+          sigma * grad_W_square * diffusion_viscosity.derivative[0];
+        square_gradient.jacobian[square_gradient.index(1, 1)] =
+          sigma * grad_W_square * diffusion_viscosity.derivative[1];
+
+        square_gradient.gradient_jacobian[square_gradient.index(0, 0)] =
+          two * coefficient_K * grad_K;
+        square_gradient.gradient_jacobian[square_gradient.index(1, 1)] =
+          two * coefficient_W * grad_W;
+      }
+    }
+    else if(not k_log and omega_log)
+    {
+      // Case 3: k, W = ln omega: only the omega equation
+      vector const grad_W        = (one / input.values[1]) * input.gradients[1];
+      scalar const grad_W_square = grad_W * grad_W;
+      scalar const coefficient_W = nu + sigma * nu_D;
+
+      square_gradient.value[1] = coefficient_W * grad_W_square;
+
+      if(input.compute_derivatives)
+      {
+        square_gradient.jacobian[square_gradient.index(1, 0)] =
+          sigma * grad_W_square * diffusion_viscosity.derivative[0];
+        square_gradient.jacobian[square_gradient.index(1, 1)] =
+          sigma * grad_W_square * diffusion_viscosity.derivative[1];
+
+        square_gradient.gradient_jacobian[square_gradient.index(1, 1)] =
+          two * coefficient_W * grad_W;
+      }
+    }
+    else
+  {
+      // Case 4: K = ln k, omega: only the k equation
+      vector const grad_K        = (one / input.values[0]) * input.gradients[0];
+      scalar const grad_K_square = grad_K * grad_K;
+      scalar const coefficient_K = nu + sigma_star * nu_D;
+
+      square_gradient.value[0] = coefficient_K * grad_K_square;
+
+      if(input.compute_derivatives)
+      {
+        square_gradient.jacobian[square_gradient.index(0, 0)] =
+          sigma_star * grad_K_square * diffusion_viscosity.derivative[0];
+        square_gradient.jacobian[square_gradient.index(0, 1)] =
+          sigma_star * grad_K_square * diffusion_viscosity.derivative[1];
+
+        square_gradient.gradient_jacobian[square_gradient.index(0, 0)] =
+          two * coefficient_K * grad_K;
+      }
+    }
   }
 
 private:
@@ -198,16 +317,18 @@ private:
   }
 
   /*
-     * Production in physical form (Bassi et al. 2014, eqs. (3)-(4)) and its Jacobian with respect to
-     * the physical k and omega; the linear-k / linear-omega branches of
-     * TurbulenceSourceKernel::k_omega_1988_production(), unchanged:
-     *
-     *   k     : P_k = G k_bar / omega_r                 (= nu_t G)
-     *   omega : P_w = alpha G max(omega, 0) / omega_r
-     *
-     * with G = (grad u + grad u^T) : grad u. The ln k / ln omega forms follow from
-     * convert_to_transported_form() in the kernel.
-     */
+       * Production (Bassi et al. 2014, eqs. (3)-(4)) in the transported form, one branch per variable
+       * choice. G = (grad u + grad u^T) : grad u, k_bar = max(k, 0), omega_r = max(omega, omega_r0).
+       * input.values are always the physical k and omega.
+       *
+       *   Case 1 (k, omega)       : P_k = G k_bar / omega_r,   P_w = alpha G omega_bar / omega_r
+       *   Case 2 (ln k, ln omega) : P_K = G / omega_r,         P_W = alpha G / omega_r
+       *   Case 3 (k, ln omega)    : P_k = G k_bar / omega_r,   P_W = alpha G / omega_r
+       *   Case 4 (ln k, omega)    : P_K = G / omega_r,         P_w = alpha G omega_bar / omega_r
+       *
+       * Jacobian with respect to the transported variables: d / d(ln phi) = phi d / d phi.
+       * Entries that are not assigned stay zero from set_zero().
+       */
   void
   compute_production(RANSPointInput<dim, Number> const & input,
                      RANSSourceTerm<dim, Number> &       production) const
@@ -224,55 +345,103 @@ private:
 
     // realizability limiter: k_bar = max(k, 0), omega_r = max(omega, omega_r0)
     scalar const omega_r0      = compute_realizability_alpha(grad_u);
-    scalar const tke_limited   = std::max(tke, zero);
-    scalar const omega_limited = std::max(omega, omega_r0);
-    scalar const inverse_omega = one / omega_limited;
-
-    // max(omega, 0): no (negative) production where omega undershoots below zero, otherwise
-    // alpha G omega / omega_r drives omega further down (only possible for linear omega)
-    scalar const omega_bar = std::max(omega, zero);
+    scalar const tke_positive   = std::max(tke, zero);
+    scalar const omega_r = std::max(omega, omega_r0);
+    scalar const omega_limited_square = omega_r * omega_r;
 
     production.set_zero();
-    production.value[0] = G * tke_limited * inverse_omega;
-    production.value[1] = alpha * G * omega_bar * inverse_omega;
 
-    if(not input.compute_derivatives)
-      return;
-
-    // 1 where the limiter / clipping is inactive, 0 where it is active
-    scalar const tke_not_limited =
+    scalar const tke_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero);
-    scalar const omega_not_limited =
+    scalar const omega_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega,
                                                                            omega_r0,
                                                                            one,
-                                                                           zero);
-    scalar const omega_positive =
+                                                                             zero);
+
+    // linear omega: omega_bar = max(omega, 0) in P_w (no negative production where omega
+    // undershoots below zero), with d omega_bar / d omega
+    scalar const omega_positive = std::max(omega, zero);
+    scalar const omega_positive_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega, zero, one, zero);
 
-    // d (1 / omega_r) / d omega
-    scalar const inverse_omega_derivative = -omega_not_limited * inverse_omega * inverse_omega;
+    if(not k_log and not omega_log)
+    {
+      // Case 1: k, omega
+      production.value[0] = G * tke_positive / omega_r;
+      production.value[1] = alpha * G * omega_positive / omega_r;
 
-    // row of k
-    production.jacobian[production.index(0, 0)] = G * tke_not_limited * inverse_omega;
-    production.jacobian[production.index(0, 1)] = G * tke_limited * inverse_omega_derivative;
+      if(input.compute_derivatives)
+      {
+        production.jacobian[production.index(0, 0)] = G * tke_derivative_sign / omega_r;
+        production.jacobian[production.index(0, 1)] =
+          -G * tke_positive * omega_derivative_sign / omega_limited_square;
+        production.jacobian[production.index(1, 1)] =
+          alpha * G *
+          (omega_positive_derivative_sign / omega_r -
+           omega_positive * omega_derivative_sign / omega_limited_square);
+      }
+    }
+    else if(k_log and omega_log)
+    {
+      // Case 2: K = ln k, W = ln omega (k > 0, omega > 0)
+      production.value[0] = G / omega_r;
+      production.value[1] = alpha * G / omega_r;
 
-    // row of omega (does not depend on k: index(1, 0) stays zero from set_zero())
-    production.jacobian[production.index(1, 1)] =
-      alpha * G * (omega_positive * inverse_omega + omega_bar * inverse_omega_derivative);
+      if(input.compute_derivatives)
+      {
+        production.jacobian[production.index(0, 1)] =
+          -G * omega_derivative_sign * omega / omega_limited_square;
+        production.jacobian[production.index(1, 1)] =
+          -alpha * G * omega_derivative_sign * omega / omega_limited_square;
+      }
+    }
+    else if(not k_log and omega_log)
+    {
+      // Case 3: k, W = ln omega (omega > 0)
+      production.value[0] = G * tke_positive / omega_r;
+      production.value[1] = alpha * G / omega_r;
+
+      if(input.compute_derivatives)
+      {
+        production.jacobian[production.index(0, 0)] = G * tke_derivative_sign / omega_r;
+        production.jacobian[production.index(0, 1)] =
+          -G * tke_positive * omega_derivative_sign * omega / omega_limited_square;
+        production.jacobian[production.index(1, 1)] =
+          -alpha * G * omega_derivative_sign * omega / omega_limited_square;
+      }
+    }
+    else
+    {
+      // Case 4: K = ln k (k > 0), omega
+      production.value[0] = G / omega_r;
+      production.value[1] = alpha * G * omega_positive / omega_r;
+
+      if(input.compute_derivatives)
+      {
+        production.jacobian[production.index(0, 1)] =
+          -G * omega_derivative_sign / omega_limited_square;
+        production.jacobian[production.index(1, 1)] =
+          alpha * G *
+          (omega_positive_derivative_sign / omega_r -
+           omega_positive * omega_derivative_sign / omega_limited_square);
+      }
+    }
   }
 
   /*
-     * Dissipation in physical form (Bassi et al. 2014, eqs. (3)-(4)) and its Jacobian with respect
-     * to the physical k and omega; the linear-k / linear-omega branches of
-     * TurbulenceSourceKernel::k_omega_1988_dissipation(), unchanged:
-     *
-     *   k     : D_k = beta* k_bar omega_r
-     *   omega : D_w = beta omega omega_r
-     *
-     * The ln k / ln omega forms (beta* omega_r, beta omega_r) follow from convert_to_transported_form()
-     * in the kernel.
-     */
+       * Dissipation (Bassi et al. 2014, eqs. (3)-(4)) in the transported form, one branch per variable
+       * choice. k_bar = max(k, 0), omega_r = max(omega, omega_r0). input.values are always the
+       * physical k and omega.
+       *
+       *   Case 1 (k, omega)       : D_k = beta* k_bar omega_r,   D_w = beta omega omega_r
+       *   Case 2 (ln k, ln omega) : D_K = beta* omega_r,         D_W = beta omega_r
+       *   Case 3 (k, ln omega)    : D_k = beta* k_bar omega_r,   D_W = beta omega_r
+       *   Case 4 (ln k, omega)    : D_K = beta* omega_r,         D_w = beta omega omega_r
+       *
+       * Jacobian with respect to the transported variables: d / d(ln phi) = phi d / d phi.
+       * Entries that are not assigned stay zero from set_zero().
+       */
   void
   compute_dissipation(RANSPointInput<dim, Number> const & input,
                       RANSSourceTerm<dim, Number> &       dissipation) const
@@ -287,33 +456,73 @@ private:
 
     // realizability limiter: k_bar = max(k, 0), omega_r = max(omega, omega_r0)
     scalar const omega_r0      = compute_realizability_alpha(input.velocity_gradient);
-    scalar const tke_limited   = std::max(tke, zero);
-    scalar const omega_limited = std::max(omega, omega_r0);
+    scalar const tke_positive   = std::max(tke, zero);
+    scalar const omega_r = std::max(omega, omega_r0);
 
-    dissipation.set_zero();
-    dissipation.value[0] = beta_star * tke_limited * omega_limited;
-    dissipation.value[1] = beta * omega * omega_limited;
-
-
-    if(not input.compute_derivatives)
-      return;
-
-    // 1 where the limiter / clipping is inactive, 0 where it is active
-    scalar const tke_not_limited =
+    scalar const tke_derivative_sign = 
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero);
-    scalar const omega_not_limited =
+    scalar const omega_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega,
                                                                            omega_r0,
                                                                            one,
                                                                            zero);
+    dissipation.set_zero();
+    if(not k_log and not omega_log)
+    {
+      // Case 1: k, omega
+      dissipation.value[0] = beta_star * tke_positive * omega_r;
+      dissipation.value[1] = beta * omega * omega_r;
 
-    // row of k
-    dissipation.jacobian[dissipation.index(0, 0)] = beta_star * tke_not_limited * omega_limited;
-    dissipation.jacobian[dissipation.index(0, 1)] = beta_star * tke_limited * omega_not_limited;
+      if(input.compute_derivatives)
+      {
+        dissipation.jacobian[dissipation.index(0, 0)] =
+          beta_star * tke_derivative_sign * omega_r;
+        dissipation.jacobian[dissipation.index(0, 1)] =
+          beta_star * tke_positive * omega_derivative_sign;
+        dissipation.jacobian[dissipation.index(1, 1)] =
+          beta * (omega_r + omega * omega_derivative_sign);
+      }
+    }
+    else if(k_log and omega_log)
+    {
+      // Case 2: K = ln k, W = ln omega (k > 0, omega > 0)
+      dissipation.value[0] = beta_star * omega_r;
+      dissipation.value[1] = beta * omega_r;
 
-    // row of omega (does not depend on k: index(1, 0) stays zero from set_zero())
-    dissipation.jacobian[dissipation.index(1, 1)] =
-      beta * (omega_limited + omega * omega_not_limited);
+      if(input.compute_derivatives)
+      {
+        dissipation.jacobian[dissipation.index(0, 1)] = beta_star * omega_derivative_sign * omega;
+        dissipation.jacobian[dissipation.index(1, 1)] = beta * omega_derivative_sign * omega;
+      }
+    }
+    else if(not k_log and omega_log)
+    {
+      // Case 3: k, W = ln omega (omega > 0)
+      dissipation.value[0] = beta_star * tke_positive * omega_r;
+      dissipation.value[1] = beta * omega_r;
+
+      if(input.compute_derivatives)
+      {
+        dissipation.jacobian[dissipation.index(0, 0)] =
+          beta_star * tke_derivative_sign * omega_r;
+        dissipation.jacobian[dissipation.index(0, 1)] =
+          beta_star * tke_positive * omega_derivative_sign * omega;
+        dissipation.jacobian[dissipation.index(1, 1)] = beta * omega_derivative_sign * omega;
+      }
+    }
+    else
+  {
+      // Case 4: K = ln k (k > 0), omega
+      dissipation.value[0] = beta_star * omega_r;
+      dissipation.value[1] = beta * omega * omega_r;
+
+      if(input.compute_derivatives)
+      {
+        dissipation.jacobian[dissipation.index(0, 1)] = beta_star * omega_derivative_sign;
+        dissipation.jacobian[dissipation.index(1, 1)] =
+          beta * (omega_r + omega * omega_derivative_sign);
+      }
+    }
   }
 };
 

@@ -396,6 +396,7 @@ public:
   TreatmentOfVariableViscosity treatment_of_variable_viscosity;
   TreatmentOfProduction        treatment_of_production;
   TreatmentOfDissipation       treatment_of_dissipation;
+  TreatmentOfCrossDiffusion    treatment_of_cross_diffusion;
   TreatmentOfSquareGradient    treatment_of_square_gradient;
   TurbulenceModelData          turbulence_model_data;
 

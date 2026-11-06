@@ -105,6 +105,7 @@ Parameters::Parameters()
     treatment_of_variable_viscosity(TreatmentOfVariableViscosity::Undefined),
     treatment_of_production(TreatmentOfProduction::Undefined),
     treatment_of_dissipation(TreatmentOfDissipation::Undefined),
+  treatment_of_cross_diffusion(TreatmentOfCrossDiffusion::Undefined),
     treatment_of_square_gradient(TreatmentOfSquareGradient::Undefined),
     modal_filter_is_active(false),
     gradient_threshold(0.0),
@@ -374,6 +375,8 @@ Parameters::check() const
                 dealii::ExcMessage("Parameter treatment_of_production must be defined."));
     AssertThrow(treatment_of_dissipation != TreatmentOfDissipation::Undefined,
                 dealii::ExcMessage("Parameter treatment_of_dissipation must be defined."));
+    AssertThrow(treatment_of_cross_diffusion != TreatmentOfCrossDiffusion::Undefined,
+                dealii::ExcMessage("Parameter treatment_of_cross_diffusion must be defined."));
     AssertThrow(treatment_of_square_gradient != TreatmentOfSquareGradient::Undefined,
                 dealii::ExcMessage("Parameter treatment_of_square_gradient must be defined."));
     AssertThrow(turbulence_model_data.positivity_preserving_limiter.size() ==
@@ -484,6 +487,7 @@ Parameters::print(dealii::ConditionalOStream const & pcout, std::string const & 
     print_parameter(pcout, "Treatment of variable viscosity", treatment_of_variable_viscosity);
     print_parameter(pcout, "Treatment of production term", treatment_of_production);
     print_parameter(pcout, "Treatment of dissipation term", treatment_of_dissipation);
+    print_parameter(pcout, "Treatment of cross-diffusion term", treatment_of_cross_diffusion);
     print_parameter(pcout, "Treatment of square gradient term", treatment_of_square_gradient);
   }
 

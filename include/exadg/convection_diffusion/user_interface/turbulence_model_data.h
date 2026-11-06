@@ -38,7 +38,8 @@ enum class TurbulenceEddyViscosityModel
 {
   Undefined,
   StandardKEpsilon,
-  StandardKOmega1988
+  StandardKOmega1988,
+  StandardKOmega2006
 };
 
 enum class VaryingViscosityType
@@ -161,6 +162,68 @@ struct StandardKOmega1988Data : public TurbulenceDataBase
   }
 };
 
+/*
+   * Wilcox (2006) k-omega model, constants of the NASA Turbulence Modeling Resource
+   * (tmbwg.github.io/turbmodels/wilcox.html): alpha (gamma there) = 13/25, beta_0 = 0.0708,
+   * beta* = 0.09, sigma (omega) = 1/2, sigma* (k, sigma_k there) = 3/5, sigma_d0 = 1/8,
+   * C_lim = 7/8. The first five coefficients are in the same order as in StandardKOmega1988Data.
+   */
+struct StandardKOmega2006Data : public TurbulenceDataBase
+{
+  StandardKOmega2006Data()
+    : alpha(13.0 / 25.0),
+    beta_0(0.0708),
+    beta_star(0.09),
+    sigma(0.5),
+    sigma_star(0.6),
+    sigma_d0(0.125),
+    C_lim(0.875)
+  {
+  }
+
+  double alpha;
+  double beta_0;
+  double beta_star;
+  double sigma;
+  double sigma_star;
+  double sigma_d0;
+  double C_lim;
+
+  virtual void
+  set_all_coefficients(std::vector<double> const & coefficients) override
+  {
+    AssertThrow(coefficients.size() == 7,
+                dealii::ExcMessage("Wilcox 2006: 7 coefficients expected (alpha, beta_0, beta*, "
+                                   "sigma, sigma*, sigma_d0, C_lim)."));
+
+    alpha      = coefficients[0];
+    beta_0     = coefficients[1];
+    beta_star  = coefficients[2];
+    sigma      = coefficients[3];
+    sigma_star = coefficients[4];
+    sigma_d0   = coefficients[5];
+    C_lim      = coefficients[6];
+  }
+
+  virtual std::vector<double>
+  get_all_coefficients() const override
+  {
+    return {alpha, beta_0, beta_star, sigma, sigma_star, sigma_d0, C_lim};
+  }
+
+  virtual void
+  print_coefficients(dealii::ConditionalOStream const & pcout) const override
+  {
+    print_parameter(pcout, "alpha", alpha);
+    print_parameter(pcout, "beta_0", beta_0);
+    print_parameter(pcout, "beta*", beta_star);
+    print_parameter(pcout, "sigma", sigma);
+    print_parameter(pcout, "sigma*", sigma_star);
+    print_parameter(pcout, "sigma_d0", sigma_d0);
+    print_parameter(pcout, "C_lim", C_lim);
+  }
+};
+
 struct TurbulenceModelData
 {
   TurbulenceModelData()
@@ -228,6 +291,9 @@ struct TurbulenceModelData
         break;
       case TurbulenceEddyViscosityModel::StandardKOmega1988:
         return std::make_shared<StandardKOmega1988Data>();
+        break;
+      case TurbulenceEddyViscosityModel::StandardKOmega2006:
+        return std::make_shared<StandardKOmega2006Data>();
         break;
       case TurbulenceEddyViscosityModel::Undefined:
       default:

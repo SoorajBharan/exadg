@@ -119,6 +119,13 @@ enum class TreatmentOfDissipation
   Implicit
 };
 
+enum class TreatmentOfCrossDiffusion
+{ 
+  Undefined,
+  Explicit,
+  Implicit
+};
+
 /**************************************************************************************/
 /*                                                                                    */
 /*                                 PHYSICAL QUANTITIES                                */

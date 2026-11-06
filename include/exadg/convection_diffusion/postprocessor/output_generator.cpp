@@ -202,7 +202,9 @@ OutputGenerator<dim, Number>::get_solution_names(unsigned int const n_blocks) co
       TurbulenceEddyViscosityModel::StandardKEpsilon)
       variable_names = {"tke", "epsilon"};
     else if(turbulence_model_data.turbulence_model ==
-        TurbulenceEddyViscosityModel::StandardKOmega1988)
+        TurbulenceEddyViscosityModel::StandardKOmega1988 or
+        turbulence_model_data.turbulence_model ==
+        TurbulenceEddyViscosityModel::StandardKOmega2006)
       variable_names = {"tke", "omega"};
 
     if(variable_names.size() == n_blocks)

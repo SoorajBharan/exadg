@@ -317,7 +317,8 @@ TurbulenceModel<dim, Number>::cell_loop_extract_tke(
 
   // block 0 is the turbulent kinetic energy k (or ln k) in all two-equation models
   if(turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKEpsilon or
-     turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988)
+    turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega1988 or
+    turbulence_model_data.turbulence_model == TurbulenceEddyViscosityModel::StandardKOmega2006)
   {
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
     {

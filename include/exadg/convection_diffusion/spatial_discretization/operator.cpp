@@ -25,6 +25,7 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/preconditioners/multigrid_preconditioner.h>
+#include <exadg/convection_diffusion/preconditioners/turbulence_block_jacobi_preconditioner.h>
 #include <exadg/convection_diffusion/spatial_discretization/operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/project_velocity.h>
 #include <exadg/grid/mapping_dof_vector.h>
@@ -382,6 +383,9 @@ Operator<dim, Number>::setup_operators()
       param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
     turbulence_source_kernel_data.square_gradient_implicit =
       param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
+    turbulence_source_kernel_data.cross_diffusion_implicit =
+      turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model().has_cross_diffusion() and
+      param.treatment_of_cross_diffusion == TreatmentOfCrossDiffusion::Implicit;
     turbulence_source_kernel_data.viscosity_implicit =
       param.treatment_of_variable_viscosity == TreatmentOfVariableViscosity::Implicit;
 
@@ -596,8 +600,32 @@ Operator<dim, Number>::setup_preconditioner()
   }
   else if(param.preconditioner == Preconditioner::BlockJacobi)
   {
-    for(unsigned int b = 0; b < n_blocks; ++b)
-      preconditioner[b] = std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, Number>>>(*combined_operator[b], false);
+    // matrix-free block Jacobi that includes the turbulence Newton_Implicit terms (no matrices)
+    bool const use_turbulence_block_jacobi =
+      param.implement_block_diagonal_preconditioner_matrix_free and
+      param.turbulence_model_data.is_active and turbulence_source_operator.has_implicit_terms();
+
+    if(use_turbulence_block_jacobi)
+    {
+      Elementwise::IterativeSolverData solver_data;
+      solver_data.solver_type = param.solver_block_diagonal;
+      solver_data.solver_data = param.solver_data_block_diagonal;
+
+      for(unsigned int b = 0; b < n_blocks; ++b)
+        preconditioner[b] =
+          std::make_shared<TurbulenceBlockJacobiPreconditioner<dim, Number>>(
+            *combined_operator[b],
+            turbulence_source_operator,
+            b,
+            param.preconditioner_block_diagonal,
+            solver_data);
+    }
+    else
+  {
+      for(unsigned int b = 0; b < n_blocks; ++b)
+        preconditioner[b] =
+          std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, Number>>>(*combined_operator[b], false);
+    }
   }
   else if(param.preconditioner == Preconditioner::Multigrid)
   {

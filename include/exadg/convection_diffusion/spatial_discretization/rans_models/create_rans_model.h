@@ -27,6 +27,7 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/spatial_discretization/rans_models/k_omega_1988.h>
+#include <exadg/convection_diffusion/spatial_discretization/rans_models/k_omega_2006.h>
 #include <exadg/convection_diffusion/spatial_discretization/rans_models/rans_model_base.h>
 
 namespace ExaDG
@@ -47,9 +48,12 @@ create_rans_model(TurbulenceModelData const & turbulence_model_data)
   std::shared_ptr<RANSModelBase<dim, Number> const> model;
 
   switch(turbulence_model_data.turbulence_model)
-  {   
+  {
     case TurbulenceEddyViscosityModel::StandardKOmega1988:
       model = std::make_shared<KOmega1988Model<dim, Number> const>(turbulence_model_data);
+      break;
+    case TurbulenceEddyViscosityModel::StandardKOmega2006:
+      model = std::make_shared<KOmega2006Model<dim, Number> const>(turbulence_model_data);
       break;
     case TurbulenceEddyViscosityModel::StandardKEpsilon:
       AssertThrow(false, dealii::ExcMessage("RANS model k-epsilon: not implemented yet."));

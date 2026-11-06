@@ -63,6 +63,7 @@ struct TurbulenceSourceKernelData
     production_implicit(false),
     dissipation_implicit(false),
     square_gradient_implicit(false),
+    cross_diffusion_implicit(false),
     viscosity_implicit(false),
     k_log(false),
     omega_log(false)
@@ -91,6 +92,7 @@ struct TurbulenceSourceKernelData
   bool production_implicit;
   bool dissipation_implicit;
   bool square_gradient_implicit;
+  bool cross_diffusion_implicit;
 
   // turbulent diffusion -div(sigma_i nu_t grad Q_i): Implicit (Newton linearization) or Explicit
   bool viscosity_implicit;
@@ -181,13 +183,17 @@ public:
     cell_dissipation_jacobian.resize(n_q_points_cell * n_variables * n_variables);
     cell_square_gradient_jacobian.resize(n_q_points_cell * n_variables * n_variables);
     cell_square_gradient_gradient_jacobian.resize(n_q_points_cell * n_variables);
+    cell_cross_diffusion.resize(n_q_points_cell * n_variables);
+    cell_cross_diffusion_jacobian.resize(n_q_points_cell * n_variables * n_variables);
+    cell_cross_diffusion_gradient_jacobian.resize(n_q_points_cell * n_variables * n_variables);
 
     point_input.reinit(n_variables);
     point_eddy_viscosity.reinit(n_variables);
     point_diffusion_viscosity.reinit(n_variables);
     point_production.reinit(n_variables);
     point_dissipation.reinit(n_variables);
-    point_gradient_source.reinit(n_variables);
+    point_cross_diffusion.reinit(n_variables);
+    point_square_gradient.reinit(n_variables);
 
     // face integrators of the turbulent diffusion (SIPG face terms)
     AssertThrow(data.bc.size() == n_variables,
@@ -235,6 +241,8 @@ public:
                                                 cell_square_gradient_jacobian.size());
     stored_cell_square_gradient_gradient_jacobian.resize(
       n_cell_batches * cell_square_gradient_gradient_jacobian.size());
+    stored_cell_cross_diffusion_jacobian.resize(n_cell_batches * cell_cross_diffusion_jacobian.size());
+    stored_cell_cross_diffusion_gradient_jacobian.resize(n_cell_batches * cell_cross_diffusion_gradient_jacobian.size());
 
     for(unsigned int side = 0; side < 2; ++side)
     {
@@ -319,8 +327,6 @@ public:
   {
     AssertThrow(integrator_wall_law != nullptr,
                 dealii::ExcMessage("Set dof_index_eddy_viscosity in TurbulenceSourceKernelData."));
-    AssertThrow(not data.k_log,
-                dealii::ExcMessage("Wall-law bound of the k production: only for linear k."));
 
     eddy_viscosity_wall_law = &eddy_viscosity_wall_law_in;
   }
@@ -423,19 +429,24 @@ public:
         apply_wall_law_viscosity_bound(q, integrator_wall_law->get_value(q));
 
       // production and dissipation of the RANS model, physical -> transported form (ln k, ln omega)
-      // (gradient source: zero for Wilcox 1988, handled together with Wilcox 2006)
+      // (cross-diffusion: zero for Wilcox 1988, Wilcox 2006 only)
       rans_model->evaluate_sources(point_input,
                                    point_eddy_viscosity,
                                    point_production,
                                    point_dissipation,
-                                   point_gradient_source);
-      rans_model->convert_to_transported_form(point_input, point_production);
-      rans_model->convert_to_transported_form(point_input, point_dissipation);
+                                   point_cross_diffusion);
+      if(not rans_model->sources_in_transported_form())
+      {
+        rans_model->convert_to_transported_form(point_input, point_production);
+        rans_model->convert_to_transported_form(point_input, point_dissipation);
+        rans_model->convert_to_transported_form(point_input, point_cross_diffusion);
+      }
 
       for(unsigned int i = 0; i < n_variables; ++i)
       {
         cell_production[index(q, i)]  = point_production.value[i];
         cell_dissipation[index(q, i)] = point_dissipation.value[i];
+        cell_cross_diffusion[index(q, i)] = point_cross_diffusion.value[i];
 
         for(unsigned int j = 0; j < n_variables; ++j)
         {
@@ -443,6 +454,10 @@ public:
             point_production.jacobian[point_production.index(i, j)];
           cell_dissipation_jacobian[index(q, i, j)] =
             point_dissipation.jacobian[point_dissipation.index(i, j)];
+          cell_cross_diffusion_jacobian[index(q, i, j)] =
+            point_cross_diffusion.jacobian[point_cross_diffusion.index(i, j)];
+          cell_cross_diffusion_gradient_jacobian[index(q, i, j)] =
+            point_cross_diffusion.gradient_jacobian[point_cross_diffusion.index(i, j)];
         }
       }
 
@@ -450,6 +465,30 @@ public:
       if(eddy_viscosity_wall_law != nullptr)
         apply_wall_law_production_bound(q, integrator_wall_law->get_value(q), velocity_gradient);
 
+      if(rans_model->sources_in_transported_form())
+      {
+        // nu_D after the wall-law bound, with d nu_D / d Q_j
+        point_diffusion_viscosity.value = cell_viscosity[q];
+        for(unsigned int j = 0; j < n_variables; ++j)
+          point_diffusion_viscosity.derivative[j] = cell_viscosity_derivative[index(q, j)];
+
+        rans_model->evaluate_square_gradient(point_input,
+                                             dealii::make_vectorized_array<Number>(
+                                             data.diffusivity),
+                                             point_diffusion_viscosity,
+                                             point_square_gradient);
+
+        for(unsigned int i = 0; i < n_variables; ++i)
+        {
+          cell_square_gradient[index(q, i)] = point_square_gradient.value[i];
+          cell_square_gradient_gradient_jacobian[index(q, i)] =
+            point_square_gradient.gradient_jacobian[point_square_gradient.index(i, i)];
+          for(unsigned int j = 0; j < n_variables; ++j)
+            cell_square_gradient_jacobian[index(q, i, j)] =
+              point_square_gradient.jacobian[point_square_gradient.index(i, j)];
+        }
+      }
+      else
       compute_square_gradient(q);
     }
   }
@@ -581,6 +620,10 @@ public:
     copy_to_storage(cell_square_gradient_gradient_jacobian,
                     stored_cell_square_gradient_gradient_jacobian,
                     cell);
+    copy_to_storage(cell_cross_diffusion_jacobian, stored_cell_cross_diffusion_jacobian, cell);
+    copy_to_storage(cell_cross_diffusion_gradient_jacobian,
+                    stored_cell_cross_diffusion_gradient_jacobian,
+                    cell);
   }
 
   void
@@ -594,6 +637,10 @@ public:
     copy_from_storage(stored_cell_square_gradient_jacobian, cell_square_gradient_jacobian, cell);
     copy_from_storage(stored_cell_square_gradient_gradient_jacobian,
                       cell_square_gradient_gradient_jacobian,
+                      cell);
+    copy_from_storage(stored_cell_cross_diffusion_jacobian, cell_cross_diffusion_jacobian, cell);
+    copy_from_storage(stored_cell_cross_diffusion_gradient_jacobian,
+                      cell_cross_diffusion_gradient_jacobian,
                       cell);
   }
 
@@ -679,6 +726,8 @@ public:
       value -= cell_dissipation[index(q, block)];
     if(not data.square_gradient_implicit)
       value += cell_square_gradient[index(q, block)];
+    if(not data.cross_diffusion_implicit)
+      value += cell_cross_diffusion[index(q, block)];
 
     return value;
   }
@@ -698,19 +747,21 @@ public:
       value -= cell_dissipation[index(q, block)];
     if(data.square_gradient_implicit)
       value += cell_square_gradient[index(q, block)];
+    if(data.cross_diffusion_implicit)
+      value += cell_cross_diffusion[index(q, block)];
 
     return value;
   }
 
   /*
-   * Newton_Implicit part of the source terms P, D, SG treated Implicit, at quadrature point q, row
-   * "block" (equation of transport variable "block"), all columns j:
-   *
-   *   values[j]    : dQ_j at q
-   *   gradients[j] : grad dQ_j at q
-   *
-   * Left-hand side signs: -P', +D', -SG'.
-   */
+     * Newton_Implicit part of the source terms P, D, CD (cross-diffusion), SG treated Implicit, at
+     * quadrature point q, row "block" (equation of transport variable "block"), all columns j:
+     *
+     *   values[j]    : dQ_j at q
+     *   gradients[j] : grad dQ_j at q
+     * 
+     * Left-hand side signs: -P', +D', -CD', -SG'.
+     */
   scalar
   get_source_newton_implicit(dealii::ArrayView<scalar const> const & values,
                              dealii::ArrayView<vector const> const & gradients,
@@ -727,6 +778,12 @@ public:
         flux += cell_dissipation_jacobian[index(q, block, j)] * values[j];
       if(data.square_gradient_implicit)
         flux -= cell_square_gradient_jacobian[index(q, block, j)] * values[j];
+
+      // CD_i depends on Q_j and on grad Q_j of all variables (omega equation: grad k and
+      // grad omega): d CD_i / d Q_j dQ_j + d CD_i / d grad Q_j . grad dQ_j
+      if(data.cross_diffusion_implicit)
+        flux -= cell_cross_diffusion_jacobian[index(q, block, j)] * values[j] +
+          cell_cross_diffusion_gradient_jacobian[index(q, block, j)] * gradients[j];
     }
 
     // SG_i = (nu + sigma_i nu_t) |grad Q_i|^2 also depends on grad Q_i (own variable only):
@@ -1053,6 +1110,9 @@ private:
     cell_production[index(q, 0)] = std::min(cell_production[index(q, 0)], bound);
     for(unsigned int j = 0; j < n_variables; ++j)
       cell_production_jacobian[index(q, 0, j)] *= free;
+
+    if(data.k_log)
+      cell_production_jacobian[index(q, 0, 0)] -= (one - free) * bound;
   }
 
   void
@@ -1127,7 +1187,8 @@ private:
   mutable RANSViscosity<Number>       point_diffusion_viscosity;
   mutable RANSSourceTerm<dim, Number> point_production;
   mutable RANSSourceTerm<dim, Number> point_dissipation;
-  mutable RANSSourceTerm<dim, Number> point_gradient_source;
+  mutable RANSSourceTerm<dim, Number> point_cross_diffusion;
+  mutable RANSSourceTerm<dim, Number> point_square_gradient;
 
   std::shared_ptr<IntegratorCellVelocity>      integrator_velocity;
   std::vector<std::shared_ptr<IntegratorCell>> integrator_solution;
@@ -1168,6 +1229,9 @@ private:
   mutable dealii::AlignedVector<scalar> cell_dissipation_jacobian;
   mutable dealii::AlignedVector<scalar> cell_square_gradient_jacobian;
   mutable dealii::AlignedVector<vector> cell_square_gradient_gradient_jacobian;
+  mutable dealii::AlignedVector<scalar> cell_cross_diffusion;
+  mutable dealii::AlignedVector<scalar> cell_cross_diffusion_jacobian;
+  mutable dealii::AlignedVector<vector> cell_cross_diffusion_gradient_jacobian;
 
   // face data at the solution set by set_solution_ptr(), at the quadrature points of the current
   // face, [side] (side 0: e-, side 1: e+ or the exterior boundary values)
@@ -1189,6 +1253,9 @@ private:
   mutable dealii::AlignedVector<scalar> stored_cell_dissipation_jacobian;
   mutable dealii::AlignedVector<scalar> stored_cell_square_gradient_jacobian;
   mutable dealii::AlignedVector<vector> stored_cell_square_gradient_gradient_jacobian;
+  mutable dealii::AlignedVector<scalar> stored_cell_cross_diffusion_jacobian;
+  mutable dealii::AlignedVector<vector> stored_cell_cross_diffusion_gradient_jacobian;
+
 
   mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_solution;
   mutable std::array<dealii::AlignedVector<scalar>, 2> stored_face_normal_gradient;
@@ -1279,6 +1346,19 @@ public:
    */
   void
   apply_add_newton_implicit(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  /*
+     * dst += diagonal block "block" of the Newton_Implicit cell terms applied to src, on one cell
+     * batch only (element-local, no neighbors): d(-P + D - SG - CD)/dQ_block dQ_block and the cell
+     * part sigma (nu_t grad dQ_block + eta grad Q_block) of the turbulent diffusion, linearized at the last evaluate_add_newton_explicit() call. dst, src: dof values of variable "block" on cell
+     * batch "cell". Same signs as apply_add_newton_implicit(). Used by the matrix-free block Jacobi
+     * preconditioner (no matrices are stored).
+     */
+  void
+  apply_add_block_diagonal_elementwise(unsigned int const block,
+                                       unsigned int const cell,
+                                       scalar * const     dst,
+                                         scalar const * const src) const;
 
   /*
    * true if at least one term is treated Implicit

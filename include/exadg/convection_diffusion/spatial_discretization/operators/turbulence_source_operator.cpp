@@ -118,13 +118,76 @@ TurbulenceSourceOperator<dim, Number>::apply_add_newton_implicit(BlockVectorType
 }
 
 template<int dim, typename Number>
+void
+TurbulenceSourceOperator<dim, Number>::apply_add_block_diagonal_elementwise(
+  unsigned int const   block,
+  unsigned int const   cell,
+  scalar * const       dst,
+  scalar const * const src) const
+{
+  if(not has_implicit_terms())
+    return;
+
+  AssertThrow(linearization_stored,
+              dealii::ExcMessage("Call evaluate_add_newton_explicit() before apply_add_block_diagonal_elementwise(): the linearization point is stored by the Newton_Explicit loops."));
+
+  AssertThrow(block < kernel->get_n_variables(), dealii::ExcMessage("block out of range"));
+
+  unsigned int const n_variables = kernel->get_n_variables();
+  bool const         diffusion   = kernel->get_data().viscosity_implicit;
+
+  IntegratorCell integrator(*matrix_free, data.dof_index, data.quad_index);
+  integrator.reinit(cell);
+
+  // linearization point (stored by the Newton_Explicit loop)
+  kernel->reinit_cell_stored(cell);
+
+  // element vector of variable "block"
+  for(unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+    integrator.begin_dof_values()[i] = src[i];
+
+  integrator.evaluate(dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
+
+  dealii::EvaluationFlags::EvaluationFlags integration_flags = dealii::EvaluationFlags::values;
+  if(diffusion)
+    integration_flags = integration_flags | dealii::EvaluationFlags::gradients;
+
+  // increment: only variable "block" is non-zero, so the kernel gives d(...)/dQ_block only
+  dealii::AlignedVector<scalar> values(n_variables, dealii::make_vectorized_array<Number>(0.0));
+  dealii::AlignedVector<vector> gradients(n_variables);
+
+  for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+  {
+    values[block]    = integrator.get_value(q);
+    gradients[block] = integrator.get_gradient(q);
+
+    integrator.submit_value(kernel->get_source_newton_implicit(dealii::make_array_view(values),
+                                                               dealii::make_array_view(gradients),
+                                                               q,
+                                                               block), q);
+
+    if(diffusion)
+      integrator.submit_gradient(kernel->get_diffusion_cell_flux_newton_implicit(
+        dealii::make_array_view(values),
+        dealii::make_array_view(gradients),
+        q,
+        block), q);
+  }
+  integrator.integrate(integration_flags);
+
+  for(unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+    dst[i] += integrator.begin_dof_values()[i];
+}
+
+template<int dim, typename Number>
 bool
 TurbulenceSourceOperator<dim, Number>::has_implicit_terms() const
 {
   Operators::TurbulenceSourceKernelData<dim> const & kernel_data = kernel->get_data();
 
   return kernel_data.production_implicit or kernel_data.dissipation_implicit or
-         kernel_data.square_gradient_implicit or kernel_data.viscosity_implicit;
+  kernel_data.square_gradient_implicit or kernel_data.cross_diffusion_implicit or
+  kernel_data.viscosity_implicit;
 }
 
 template<int dim, typename Number>

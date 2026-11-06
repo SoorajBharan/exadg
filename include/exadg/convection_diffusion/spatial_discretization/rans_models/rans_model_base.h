@@ -96,7 +96,7 @@ struct RANSViscosity
 };
 
 /*
-   * One group of source terms (production, dissipation or gradient source) at one quadrature point,
+   * One group of source terms (production, dissipation or cross-diffusion) at one quadrature point,
    * for all equations i, with the Jacobians needed by the Newton linearization.
    */
 template<int dim, typename Number>
@@ -178,6 +178,32 @@ public:
   virtual double
   get_diffusion_factor(unsigned int const i) const = 0;
 
+  virtual bool
+  has_cross_diffusion() const
+  {
+    return false;
+  }
+
+  virtual bool
+  sources_in_transported_form() const
+  {
+    return false;
+  }
+
+  virtual void
+  evaluate_square_gradient(RANSPointInput<dim, Number> const & input,
+                           scalar const &                      molecular_viscosity,
+                           RANSViscosity<Number> const &       diffusion_viscosity,
+                           RANSSourceTerm<dim, Number> &       square_gradient) const
+  {
+    (void)input;
+    (void)molecular_viscosity;
+    (void)diffusion_viscosity;
+    (void)square_gradient;
+    AssertThrow(false,
+                dealii::ExcMessage("evaluate_square_gradient() is not implemented for this model."));
+  }
+
   // nu_t (momentum equation) and nu_D (turbulent diffusion), with d nu / d phi_j
   virtual void
   evaluate_viscosities(RANSPointInput<dim, Number> const & input,
@@ -191,7 +217,7 @@ public:
                    RANSViscosity<Number> const &       eddy_viscosity,
                    RANSSourceTerm<dim, Number> &       production,
                    RANSSourceTerm<dim, Number> &       dissipation,
-                   RANSSourceTerm<dim, Number> &       gradient_source) const = 0;
+                   RANSSourceTerm<dim, Number> &       cross_diffusion) const = 0;
 
   /*
      * Transported -> physical: phi_j = Q_j (linear) or exp(Q_j) (logarithmic), and
