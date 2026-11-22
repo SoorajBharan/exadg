@@ -788,6 +788,40 @@ SpatialOperatorBase<dim, Number>::setup_after_coarsening_and_refinement()
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & vectors_pressure)
+{ 
+  // the vectors must already have the size of the new mesh (allocate_vectors()),  and they must be
+  // in the same order as in prepare_coarsening_and_refinement()
+  solution_transfer_u->interpolate_after_coarsening_and_refinement(vectors_velocity);
+  solution_transfer_p->interpolate_after_coarsening_and_refinement(vectors_pressure);
+
+  // the transfer objects belong to one refinement step only
+  solution_transfer_u.reset();
+  solution_transfer_p.reset();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & vectors_pressure)
+{ 
+  // one transfer object per DoFHandler, created on the old mesh
+  solution_transfer_u = std::make_shared<ExaDG::SolutionTransfer<dim,
+    VectorType>>(dof_handler_u);
+  solution_transfer_p = std::make_shared<ExaDG::SolutionTransfer<dim,
+    VectorType>>(dof_handler_p);
+
+  // register the vectors of the old mesh; the data is packed per cell during
+  // execute_coarsening_and_refinement() of the triangulation
+  solution_transfer_u->prepare_coarsening_and_refinement(vectors_velocity);
+  solution_transfer_p->prepare_coarsening_and_refinement(vectors_pressure);
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::setup(
   std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
   std::shared_ptr<MatrixFreeData<dim, Number> const>     matrix_free_data_in,

@@ -50,6 +50,7 @@
 #include <exadg/operators/inverse_mass_operator.h>
 #include <exadg/operators/mass_operator.h>
 #include <exadg/operators/navier_stokes_calculators.h>
+#include <exadg/operators/solution_transfer.h>
 #include <exadg/poisson/preconditioners/multigrid_preconditioner.h>
 #include <exadg/poisson/spatial_discretization/laplace_operator.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
@@ -137,6 +138,14 @@ public:
 
   void
   setup_after_coarsening_and_refinement();
+
+  void
+  prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
+                                    std::vector<VectorType *> & vectors_pressure);
+
+  void
+  interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
+                                              std::vector<VectorType *> & vectors_pressure);
 
 protected:
   /*
@@ -787,6 +796,13 @@ private:
    */
   std::shared_ptr<FunctionEnrichment<dim, Number>> function_enrichment;
   std::shared_ptr<WallDGCoupler<dim, Number>>      wall_dg_coupler;
+
+  /*
+     * Adaptive mesh refinement: transfer of the velocity and pressure vectors to 
+  the new mesh
+     */
+  std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_u;
+  std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_p;
 
 protected:
   /*
