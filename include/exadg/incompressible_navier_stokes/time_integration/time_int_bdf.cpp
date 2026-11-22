@@ -166,6 +166,46 @@ TimeIntBDF<dim, Number>::prepare_vectors_for_next_timestep()
 
 template<int dim, typename Number>
 void
+TimeIntBDF<dim, Number>::get_vectors_for_transfer(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & /*vectors_pressure */)
+{
+  if(needs_vector_convective_term and param.ale_formulation == false)
+  {
+    for(unsigned int i = 0; i < vec_convective_term.size(); ++i)
+    {
+      vectors_velocity.push_back(&vec_convective_term[i]);
+    }
+    vectors_velocity.push_back(&convective_term_np);
+  }
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
+{
+  std::vector<VectorType *> vectors_velocity;
+  std::vector<VectorType *> vectors_pressure;
+  get_vectors_for_transfer(vectors_velocity, vectors_pressure);
+
+  operator_base->prepare_coarsening_and_refinement(vectors_velocity, vectors_pressure);
+}
+
+template<int dim, typename Number>
+void
+TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
+{
+  this->allocate_vectors();
+
+  std::vector<VectorType *> vectors_velocity;
+  std::vector<VectorType *> vectors_pressure;
+  get_vectors_for_transfer(vectors_velocity, vectors_pressure);
+
+  operator_base->interpolate_after_coarsening_and_refinement(vectors_velocity, vectors_pressure);
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDF<dim, Number>::ale_update()
 {
   // and compute grid coordinates at the end of the current time step t_{n+1}

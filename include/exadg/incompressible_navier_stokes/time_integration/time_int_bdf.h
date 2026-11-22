@@ -112,6 +112,16 @@ public:
   bool
   print_solver_info() const final;
 
+  /*
+     * Adaptive mesh refinement: called by the driver before and after
+     * execute_coarsening_and_refinement() of the triangulation.
+     */
+  void
+  prepare_coarsening_and_refinement() final;
+
+  void
+  interpolate_after_coarsening_and_refinement() final;
+
 protected:
   void
   allocate_vectors() override;
@@ -127,6 +137,10 @@ protected:
 
   void
   prepare_vectors_for_next_timestep() override;
+
+  virtual void
+  get_vectors_for_transfer(std::vector<VectorType *> & vectors_velocity,
+                             std::vector<VectorType *> & vectors_pressure);
 
   Parameters const & param;
 
