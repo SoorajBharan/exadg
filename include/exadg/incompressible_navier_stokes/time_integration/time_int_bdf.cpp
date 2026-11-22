@@ -19,6 +19,7 @@
  *  ______________________________________________________________________
  */
 
+#include <deal.II/base/exceptions.h>
 #include <exadg/incompressible_navier_stokes/postprocessor/postprocessor_interface.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/spatial_operator_base.h>
 #include <exadg/incompressible_navier_stokes/time_integration/time_int_bdf.h>
@@ -184,6 +185,9 @@ template<int dim, typename Number>
 void
 TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 {
+  AssertThrow(not store_solution,
+              dealii::ExcMessage("AMR is not implemented for strongly-coupled partitioned solution(FSI)"));
+
   std::vector<VectorType *> vectors_velocity;
   std::vector<VectorType *> vectors_pressure;
   get_vectors_for_transfer(vectors_velocity, vectors_pressure);

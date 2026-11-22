@@ -96,6 +96,10 @@ private:
   write_restart_vectors(boost::archive::binary_oarchive & oa) const final;
 
   void
+  get_vectors_for_transfer(std::vector<VectorType *> & vectors_velocity,
+                           std::vector<VectorType *> & vectors_pressure) final;
+
+  void
   initialize_pressure_on_boundary();
 
   void

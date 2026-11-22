@@ -245,6 +245,36 @@ TimeIntBDFDualSplitting<dim, Number>::allocate_vectors()
   }
 }
 
+template<int dim, typename Number>
+void
+TimeIntBDFDualSplitting<dim, Number>::get_vectors_for_transfer(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & vectors_pressure)
+{
+  Base::get_vectors_for_transfer(vectors_velocity, vectors_pressure);
+
+  // velocity: history u_{n-i} and u_{n+1}; block 1 (U_tilde) only exists with wall enrichment,
+  // which is not allowed together with adaptive mesh refinement
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+  {
+    vectors_velocity.push_back(&velocity[i].block(0));
+  }
+  vectors_velocity.push_back(&velocity_np.block(0));
+
+  // Dirichlet velocity at t_{n-i} and t_{n+1} (time derivative in the pressure Neumann BC)
+  for(unsigned int i = 0; i < velocity_dbc.size(); ++i)
+  {
+    vectors_velocity.push_back(&velocity_dbc[i]);
+  }
+  vectors_velocity.push_back(&velocity_dbc_np);
+
+  // pressure: history p_{n-i} (extrapolation) and p_{n+1}
+  for(unsigned int i = 0; i < pressure.size(); ++i)
+  {
+    vectors_pressure.push_back(&pressure[i]);
+  }
+  vectors_pressure.push_back(&pressure_np);
+}
 
 template<int dim, typename Number>
 void

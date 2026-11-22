@@ -200,6 +200,37 @@ TimeIntBDFPressureCorrection<dim, Number>::allocate_vectors()
     pde_operator->initialize_vector_pressure(pressure_dbc[i]);
 }
 
+template<int dim, typename Number>
+void
+TimeIntBDFPressureCorrection<dim, Number>::get_vectors_for_transfer(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & vectors_pressure)
+{ 
+  // vectors of the base class (explicit convective term)
+  Base::get_vectors_for_transfer(vectors_velocity, vectors_pressure);
+
+  // velocity: history u_{n-i} and u_{n+1}; block 1 (U_tilde) only exists with   wall enrichment,
+  // which is not allowed together with adaptive mesh refinement
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+  {
+    vectors_velocity.push_back(&velocity[i].block(0));
+  }
+  vectors_velocity.push_back(&velocity_np.block(0));
+
+  // pressure: history p_{n-i} and p_{n+1}
+  for(unsigned int i = 0; i < pressure.size(); ++i)
+  {
+    vectors_pressure.push_back(&pressure[i]);
+  }
+  vectors_pressure.push_back(&pressure_np);
+
+  // Dirichlet pressure at t_{n-i} (extrapolation of the pressure Dirichlet BC); pressure_dbc[0] is
+  // overwritten in post_solve(), the older entries are kept
+  for(unsigned int i = 0; i < pressure_dbc.size(); ++i)
+  {
+    vectors_pressure.push_back(&pressure_dbc[i]);
+  }
+}
 
 template<int dim, typename Number>
 void
