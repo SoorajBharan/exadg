@@ -152,6 +152,12 @@ private:
   void
   mark_cells_coarsening_and_refinement() const;
 
+  void
+  setup_after_coarsening_and_refinement() const;
+
+  void
+  do_adaptive_refinement() const;
+
   // MPI communicator
   MPI_Comm const mpi_comm;
 

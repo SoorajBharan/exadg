@@ -342,6 +342,8 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
   // update scaling factor of continuity equation
   if(this->param.use_scaling_continuity == true)
   {
+    if(this->param.enable_adaptivity)
+      characteristic_element_length = pde_operator->get_characteristic_element_length();
     scaling_factor_continuity = this->param.scaling_factor_continuity *
                                 characteristic_element_length / this->get_time_step_size();
     pde_operator->set_scaling_factor_continuity(scaling_factor_continuity);

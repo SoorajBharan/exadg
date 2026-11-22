@@ -20,9 +20,13 @@
  */
 
 // likwid
+#include "exadg/operators/adaptive_mesh_refinement.h"
 #ifdef EXADG_WITH_LIKWID
 #  include <likwid.h>
 #endif
+
+// deal.II
+#include <deal.II/fe/mapping_q_cache.h>
 
 // ExaDG
 #include <exadg/incompressible_navier_stokes/driver.h>
@@ -30,6 +34,8 @@
 #include <exadg/incompressible_navier_stokes/time_integration/create_time_integrator.h>
 #include <exadg/operators/throughput_parameters.h>
 #include <exadg/utilities/print_solver_results.h>
+
+#include <exadg/grid/grid_utilities.h>
 
 namespace ExaDG
 {
@@ -226,6 +232,59 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
 
 template<int dim, typename Number>
 void
+Driver<dim, Number>::setup_after_coarsening_and_refinement() const
+{ 
+  // a dealii::MappingQCache stores the mapping per cell of the old mesh and is not updated here
+  std::shared_ptr<dealii::MappingQCache<dim>> const mapping_q_cache =
+    std::dynamic_pointer_cast<dealii::MappingQCache<dim>>(mapping);
+  AssertThrow(mapping_q_cache.get() == nullptr,
+              dealii::ExcMessage("Combination of adaptive mesh refinement and dealii::MappingQCache not implemented."));
+
+  // new DoFs, constraints, MatrixFree, operators, preconditioners and solvers
+  pde_operator->setup_after_coarsening_and_refinement();
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::do_adaptive_refinement() const
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  Parameters const & param = application->get_parameters();
+
+  limit_coarsening_and_refinement(*grid->triangulation, param.amr_data);
+
+  if(any_cells_flagged_for_coarsening_or_refinement(*grid->triangulation))
+  {
+    grid->triangulation->prepare_coarsening_and_refinement();
+
+    time_integrator->prepare_coarsening_and_refinement();
+
+    grid->triangulation->execute_coarsening_and_refinement();
+
+    if(param.involves_h_multigrid())
+    {
+      GridUtilities::create_coarse_triangulations_after_coarsening_and_refinement(
+        *grid->triangulation,
+        grid->periodic_face_pairs,
+        grid->coarse_triangulations,
+        grid->coarse_periodic_face_pairs,
+        param.grid,
+        param.amr_data.preserve_boundary_cells);
+    }
+
+    setup_after_coarsening_and_refinement();
+
+    time_integrator->interpolate_after_coarsening_and_refinement();
+  }
+
+  timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement"},
+                    timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
 Driver<dim, Number>::solve() const
 {
   if(application->get_parameters().problem_type == ProblemType::Unsteady)
@@ -243,6 +302,24 @@ Driver<dim, Number>::solve() const
 
         time_integrator->advance_one_timestep_solve();
 
+        time_integrator->advance_one_timestep_post_solve();
+      }
+    }
+    else if(application->get_parameters().enable_adaptivity)
+    {
+      while(not(time_integrator->finished()))
+      {
+        time_integrator->advance_one_timestep_pre_solve(true);
+
+        time_integrator->advance_one_timestep_solve();
+        
+        if(trigger_coarsening_and_refinement_now(application->get_parameters().amr_data.trigger_every_n_time_steps,
+                                                 time_integrator->get_number_of_time_steps()))
+        {
+          mark_cells_coarsening_and_refinement();
+
+          do_adaptive_refinement();
+        }
         time_integrator->advance_one_timestep_post_solve();
       }
     }
