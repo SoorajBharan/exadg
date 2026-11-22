@@ -218,6 +218,9 @@ template<int dim, typename Number>
 void
 Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
 {
+  dealii::Timer timer;
+  timer.restart();
+
   // Kelly estimator on the velocity u_{n+1} of the time step that has just been solved; refine
   // and coarsen fixed fractions of the cells (amr_data)
   mark_cells_kelly_error_estimator(*grid->triangulation,
@@ -228,6 +231,9 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
                                    application->get_parameters().degree_u +
                                    1 /* n_face_quadrature_points */,
                                    application->get_parameters().amr_data);
+
+  timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement", "Mark cells (Kelly)"},
+                    timer.wall_time());
 }
 
 template<int dim, typename Number>
@@ -281,7 +287,7 @@ Driver<dim, Number>::do_adaptive_refinement() const
     time_integrator->interpolate_after_coarsening_and_refinement();
   }
 
-  timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement"},
+  timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement", "Refine and transfer"},
                     timer.wall_time());
 }
 
@@ -318,9 +324,16 @@ Driver<dim, Number>::solve() const
         if(trigger_coarsening_and_refinement_now(application->get_parameters().amr_data.trigger_every_n_time_steps,
                                                  time_integrator->get_number_of_time_steps()))
         {
+          // total cost of adaptive mesh refinement (marking + refinement and transfer)
+          dealii::Timer timer_amr;
+          timer_amr.restart();
+
           mark_cells_coarsening_and_refinement();
 
           do_adaptive_refinement();
+
+          timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement"},
+                            timer_amr.wall_time());
         }
         time_integrator->advance_one_timestep_post_solve();
       }
