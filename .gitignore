@@ -6,3 +6,5 @@
 build/
 programs/
 *exadg_revision.h
+.cache/
+compile_commands.json
