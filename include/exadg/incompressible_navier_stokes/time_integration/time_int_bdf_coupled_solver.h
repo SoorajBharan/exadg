@@ -79,6 +79,10 @@ private:
   allocate_vectors() final;
 
   void
+  get_vectors_for_transfer(std::vector<VectorType *> & vectors_velocity,
+                           std::vector<VectorType *> & vectors_pressure) final;
+
+  void
   setup_derived() final;
 
   void

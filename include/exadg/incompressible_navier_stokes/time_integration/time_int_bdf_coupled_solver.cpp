@@ -83,6 +83,25 @@ TimeIntBDFCoupled<dim, Number>::allocate_vectors()
 
 template<int dim, typename Number>
 void
+TimeIntBDFCoupled<dim, Number>::get_vectors_for_transfer(
+  std::vector<VectorType *> & vectors_velocity,
+  std::vector<VectorType *> & vectors_pressure)
+{ 
+  // vectors of the base class (explicit convective term)
+  Base::get_vectors_for_transfer(vectors_velocity, vectors_pressure);
+
+  // solution = (velocity, pressure): block 0 lives on dof_handler_u, block 1 on dof_handler_p
+  for(unsigned int i = 0; i < solution.size(); ++i)
+  {
+    vectors_velocity.push_back(&solution[i].block(0));
+    vectors_pressure.push_back(&solution[i].block(1));
+  }
+  vectors_velocity.push_back(&solution_np.block(0));
+  vectors_pressure.push_back(&solution_np.block(1));
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDFCoupled<dim, Number>::initialize_velocity_enriched(BlockVectorType & velocity) const
 {
   velocity.reinit(2);
