@@ -26,6 +26,8 @@
 #include <exadg/incompressible_navier_stokes/user_interface/parameters.h>
 #include <exadg/utilities/print_functions.h>
 #include "enum_types.h"
+#include "exadg/grid/grid_data.h"
+#include "exadg/operators/adaptive_mesh_refinement.h"
 
 namespace ExaDG
 {
@@ -94,6 +96,9 @@ Parameters::Parameters()
     // mapping
     mapping_degree(1),
     mapping_degree_coarse_grids(1),
+
+    enable_adaptivity(false),
+    amr_data(AdaptiveMeshRefinementData()),
 
     // finite element
     spatial_discretization(SpatialDiscretization::L2),
@@ -359,6 +364,41 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
   // SPATIAL DISCRETIZATION
 
   grid.check();
+
+  if(enable_adaptivity)
+  {
+    AssertThrow(problem_type == ProblemType::Unsteady and solver_type == SolverType::Unsteady,
+                dealii::ExcMessage("AMR is only implemented for Unsteady problems solved with unsteady solver"));
+
+    AssertThrow(temporal_discretization == TemporalDiscretization::BDFDualSplittingScheme or
+                temporal_discretization == TemporalDiscretization::BDFPressureCorrection or
+                temporal_discretization == TemporalDiscretization::BDFCoupledSolution,
+                dealii::ExcMessage("AMR is only implemented for BDF schemes(Dual Splitting, Pressure Correction and Coupled)"));
+
+    AssertThrow(not ale_formulation,
+                dealii::ExcMessage("Combination of AMR with ALE is not implemented"));
+
+    AssertThrow(spatial_discretization == SpatialDiscretization::L2,
+                dealii::ExcMessage("AMR is only implemented for SpatialDiscretization::L2"));
+
+    AssertThrow(grid.element_type == ElementType::Hypercube,
+                dealii::ExcMessage("AMR is implemented only for hypercube elements"));
+
+    AssertThrow(grid.triangulation_type != TriangulationType::FullyDistributed,
+                dealii::ExcMessage("AMR is not possible with TriangulationType::FullyDistributed"));
+
+    AssertThrow(not use_cell_based_face_loops,
+                dealii::ExcMessage("Cell-based face loops do not support locally refined meshes. Set use_cell_based_face_loops = false."));
+
+    AssertThrow(not restart_data.write_restart,
+                dealii::ExcMessage("Writing restart files is not implemented together with adaptive mesh refinement."));
+
+    AssertThrow(not wall_enrichment_enabled,
+                dealii::ExcMessage("Combination of adaptive mesh refinement and wall enrichment not implemented yet."));
+
+    AssertThrow(not turbulence_model_data.rans_model,
+                dealii::ExcMessage("Combination of adaptive mesh refinement and RANS models not implemented yet."));
+  }
 
   // For the coupled solution approach, degree_p = 0 is allowed in principle.
   // For projection-type methods, degree_p > 0 has to be fulfilled (the SIPG discretization
@@ -973,6 +1013,11 @@ Parameters::print_parameters_spatial_discretization(dealii::ConditionalOStream c
   }
 
   print_parameter(pcout, "Polynomial degree pressure", degree_p);
+
+  if(enable_adaptivity)
+  {
+    amr_data.print(pcout);
+  }
 
   // nothing to print if we bypass the PDE solver by
   // TemporalDiscretization::InterpolateAnalyticalSolution
