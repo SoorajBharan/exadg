@@ -772,6 +772,22 @@ SpatialOperatorBase<dim, Number>::setup()
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::setup_after_coarsening_and_refinement()
+{
+  constraint_u.clear();
+  constraint_p.clear();
+  constraint_u_scalar.clear();
+  constraint_enrichment.clear();
+
+  initialize_dof_handler_and_constraints();
+
+  initialization_pure_dirichlet_bc();
+
+  setup();
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::setup(
   std::shared_ptr<dealii::MatrixFree<dim, Number> const> matrix_free_in,
   std::shared_ptr<MatrixFreeData<dim, Number> const>     matrix_free_data_in,

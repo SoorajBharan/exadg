@@ -135,6 +135,9 @@ public:
         std::string const &                                    dof_index_temperature = "",
         std::string const &                                    dof_index_eddy_viscosity = "");
 
+  void
+  setup_after_coarsening_and_refinement();
+
 protected:
   /*
    * This function initializes operators, preconditioners, and solvers related to the solution of
