@@ -35,6 +35,7 @@
 #include <exadg/incompressible_navier_stokes/time_integration/time_int_bdf_pressure_correction.h>
 #include <exadg/incompressible_navier_stokes/user_interface/application_base.h>
 #include <exadg/matrix_free/matrix_free_data.h>
+#include <exadg/operators/adaptive_mesh_refinement.h>
 #include <exadg/operators/finite_element.h>
 #include <exadg/utilities/print_general_infos.h>
 
@@ -147,6 +148,9 @@ private:
 
   void
   ale_update() const;
+
+  void
+  mark_cells_coarsening_and_refinement() const;
 
   // MPI communicator
   MPI_Comm const mpi_comm;

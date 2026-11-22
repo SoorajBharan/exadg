@@ -208,6 +208,21 @@ Driver<dim, Number>::ale_update() const
   timer_tree.insert({"Incompressible flow", "ALE"}, timer.wall_time());
 }
 
+template<int dim, typename Number>
+void
+Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
+{
+  // Kelly estimator on the velocity u_{n+1} of the time step that has just been solved; refine
+  // and coarsen fixed fractions of the cells (amr_data)
+  mark_cells_kelly_error_estimator(*grid->triangulation,
+                                   pde_operator->get_dof_handler_u(),
+                                   pde_operator->get_constraint_u(),
+                                   *pde_operator->get_mapping(),
+                                   time_integrator->get_velocity_np(),
+                                   application->get_parameters().degree_u +
+                                   1 /* n_face_quadrature_points */,
+                                   application->get_parameters().amr_data);
+}
 
 template<int dim, typename Number>
 void
