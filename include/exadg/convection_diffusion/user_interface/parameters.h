@@ -25,6 +25,8 @@
 // deal.II
 #include <deal.II/base/exceptions.h>
 
+#include <vector>
+
 // ExaDG
 #include <exadg/convection_diffusion/user_interface/enum_types.h>
 #include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
@@ -324,6 +326,14 @@ public:
 
   // Newton solver: halve the increment until the residual norm decreases (line search)
   bool newton_damping;
+
+  // debug build only: Newton diagnostics in the log (residual parts, |r| / |Q| per iteration,
+  // Jacobian check, growth ratios, wall layer of the enriched variables). Off: no extra cost.
+  bool newton_diagnostics;
+
+  // debug build, with newton_diagnostics: x stations of the term balance in the enriched wall cells
+  // (every 10th time step); empty: no term balance
+  std::vector<double> newton_diagnostics_x_stations;
 
   // Implement block diagonal (block Jacobi) preconditioner in a matrix-free way
   // by solving the block Jacobi problems elementwise using iterative solvers and

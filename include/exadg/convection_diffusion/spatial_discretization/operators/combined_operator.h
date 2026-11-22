@@ -26,6 +26,8 @@
 #include <exadg/convection_diffusion/spatial_discretization/operators/diffusive_operator.h>
 #include <exadg/operators/mass_kernel.h>
 
+#include <functional>
+
 namespace ExaDG
 {
 namespace ConvDiff
@@ -107,6 +109,14 @@ public:
 
   void
   set_scaling_factor_mass_operator(Number const & scaling_factor);
+
+  /*
+   * Enrichment of RANS variables: the molecular diffusion is switched off on the cells for which
+   * masked(global active cell index) is true (enriched wall cells) and on their faces; there it is
+   * part of the enriched turbulence terms (TurbulenceSourceOperator::evaluate_add_enriched)
+   */
+  void
+  set_diffusion_mask(std::function<bool(dealii::types::global_cell_index)> const & masked);
 
   // CellDirichlet: penalty lambda = cell_dirichlet_penalty_factor / dt of the current time step
   void
@@ -191,6 +201,18 @@ private:
 
   // mask of the cell batch of the last reinit_cell_derived(), read in do_cell_integral()
   mutable scalar current_cell_dirichlet_mask;
+
+  // enrichment of RANS variables: cells without molecular diffusion (empty: none)
+  std::function<bool(dealii::types::global_cell_index)> diffusion_masked;
+
+  // per SIMD lane: 1 = molecular diffusion, 0 = switched off; of the cell batch / face batch of
+  // the last reinit_*_derived(), read in the integrals
+  mutable scalar current_diffusion_mask_cell = dealii::make_vectorized_array<Number>(1.0);
+  mutable scalar current_diffusion_mask_face = dealii::make_vectorized_array<Number>(1.0);
+
+  // lane mask of a cell index (batch * lanes + lane) of the MatrixFree: 0 if masked
+  Number
+  diffusion_mask_of_cell_index(unsigned int const cell_index) const;
 };
 
 } // namespace ConvDiff

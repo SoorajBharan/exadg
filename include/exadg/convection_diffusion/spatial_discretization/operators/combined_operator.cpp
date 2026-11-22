@@ -299,6 +299,11 @@ CombinedOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator
 
   if(not cell_dirichlet_mask.empty())
     current_cell_dirichlet_mask = cell_dirichlet_mask[cell];
+
+  // enrichment of RANS variables: molecular diffusion of the enriched cells switched off
+  if(diffusion_masked)
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      current_diffusion_mask_cell[v] = diffusion_mask_of_cell_index(cell * scalar::size() + v);
 }
 
 template<int dim, typename Number>
@@ -311,6 +316,16 @@ CombinedOperator<dim, Number>::reinit_face_derived(IntegratorFace &   integrator
     convective_kernel->reinit_face(face);
   if(operator_data.diffusive_problem)
     diffusive_kernel->reinit_face(integrator_m, integrator_p, operator_data.dof_index);
+
+  // enrichment of RANS variables: faces of enriched cells (either side) switched off
+  if(diffusion_masked)
+  {
+    auto const & info = this->matrix_free->get_face_info(face);
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      current_diffusion_mask_face[v] =
+        std::min(diffusion_mask_of_cell_index(info.cells_interior[v]),
+                 diffusion_mask_of_cell_index(info.cells_exterior[v]));
+  }
 }
 
 template<int dim, typename Number>
@@ -322,6 +337,14 @@ CombinedOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   i
     convective_kernel->reinit_boundary_face(face);
   if(operator_data.diffusive_problem)
     diffusive_kernel->reinit_boundary_face(integrator_m, operator_data.dof_index);
+
+  // enrichment of RANS variables: boundary faces of enriched cells switched off
+  if(diffusion_masked)
+  {
+    auto const & info = this->matrix_free->get_face_info(face);
+    for(unsigned int v = 0; v < scalar::size(); ++v)
+      current_diffusion_mask_face[v] = diffusion_mask_of_cell_index(info.cells_interior[v]);
+  }
 }
 
 template<int dim, typename Number>
@@ -340,6 +363,25 @@ CombinedOperator<dim, Number>::reinit_face_cell_based_derived(
                                              integrator_m,
                                              integrator_p,
                                              operator_data.dof_index);
+
+  // enrichment of RANS variables: faces of enriched cells (cell or neighbor) switched off
+  if(diffusion_masked)
+  {
+    current_diffusion_mask_face = dealii::make_vectorized_array<Number>(1.0);
+    for(unsigned int v = 0; v < this->matrix_free->n_active_entries_per_cell_batch(cell); ++v)
+    {
+      auto const cell_it = this->matrix_free->get_cell_iterator(cell, v);
+      bool masked        = diffusion_masked(cell_it->global_active_cell_index());
+      if(not masked and (not cell_it->at_boundary(face) or cell_it->has_periodic_neighbor(face)))
+      {
+        auto const neighbor = cell_it->neighbor_or_periodic_neighbor(face);
+        if(neighbor->is_active())
+          masked = diffusion_masked(neighbor->global_active_cell_index());
+      }
+      if(masked)
+        current_diffusion_mask_face[v] = 0.0;
+    }
+  }
 }
 
 template<int dim, typename Number>
@@ -392,7 +434,7 @@ CombinedOperator<dim, Number>::do_cell_integral(IntegratorCell & integrator) con
 
     if(operator_data.diffusive_problem)
     {
-      gradient_flux += diffusive_kernel->get_volume_flux(integrator, q);
+      gradient_flux += current_diffusion_mask_cell * diffusive_kernel->get_volume_flux(integrator, q);
     }
 
     if(this->integrator_flags.cell_integrate & dealii::EvaluationFlags::values)
@@ -436,8 +478,8 @@ CombinedOperator<dim, Number>::do_face_integral(IntegratorFace & integrator_m,
                                                                  value_m,
                                                                  value_p);
 
-      value_flux_m += -value_flux;
-      value_flux_p += value_flux; // + sign since n⁺ = -n⁻
+      value_flux_m += -current_diffusion_mask_face * value_flux;
+      value_flux_p += current_diffusion_mask_face * value_flux; // + sign since n⁺ = -n⁻
     }
 
     integrator_m.submit_value(value_flux_m, q);
@@ -445,7 +487,8 @@ CombinedOperator<dim, Number>::do_face_integral(IntegratorFace & integrator_m,
 
     if(operator_data.diffusive_problem)
     {
-      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      scalar gradient_flux =
+        current_diffusion_mask_face * diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
       integrator_p.submit_normal_derivative(gradient_flux, q);
     }
@@ -481,17 +524,19 @@ CombinedOperator<dim, Number>::do_face_int_integral(IntegratorFace & integrator_
       scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
       scalar normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
-      value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
-                                                            normal_gradient_p,
-                                                            value_m,
-                                                            value_p);
+      value_flux += -current_diffusion_mask_face *
+                    diffusive_kernel->calculate_value_flux(normal_gradient_m,
+                                                           normal_gradient_p,
+                                                           value_m,
+                                                           value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      scalar gradient_flux =
+        current_diffusion_mask_face * diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -536,17 +581,19 @@ CombinedOperator<dim, Number>::do_face_int_integral_cell_based(IntegratorFace & 
       scalar normal_gradient_m = integrator_m.get_normal_derivative(q);
       scalar normal_gradient_p = dealii::make_vectorized_array<Number>(0.0);
 
-      value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
-                                                            normal_gradient_p,
-                                                            value_m,
-                                                            value_p);
+      value_flux += -current_diffusion_mask_face *
+                    diffusive_kernel->calculate_value_flux(normal_gradient_m,
+                                                           normal_gradient_p,
+                                                           value_m,
+                                                           value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      scalar gradient_flux =
+        current_diffusion_mask_face * diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
@@ -583,17 +630,19 @@ CombinedOperator<dim, Number>::do_face_ext_integral(IntegratorFace & integrator_
       // minus sign to get the correct normal vector n⁺ = -n⁻
       scalar normal_gradient_p = -integrator_p.get_normal_derivative(q);
 
-      value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_p,
-                                                            normal_gradient_m,
-                                                            value_p,
-                                                            value_m);
+      value_flux += -current_diffusion_mask_face *
+                    diffusive_kernel->calculate_value_flux(normal_gradient_p,
+                                                           normal_gradient_m,
+                                                           value_p,
+                                                           value_m);
     }
 
     integrator_p.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_p, value_m);
+      scalar gradient_flux =
+        current_diffusion_mask_face * diffusive_kernel->calculate_gradient_flux(value_p, value_m);
       // opposite sign since n⁺ = -n⁻
       integrator_p.submit_normal_derivative(-gradient_flux, q);
     }
@@ -646,20 +695,45 @@ CombinedOperator<dim, Number>::do_boundary_integral(
                                                                     operator_data.bc,
                                                                     this->time);
 
-      value_flux += -diffusive_kernel->calculate_value_flux(normal_gradient_m,
-                                                            normal_gradient_p,
-                                                            value_m,
-                                                            value_p);
+      value_flux += -current_diffusion_mask_face *
+                    diffusive_kernel->calculate_value_flux(normal_gradient_m,
+                                                           normal_gradient_p,
+                                                           value_m,
+                                                           value_p);
     }
 
     integrator_m.submit_value(value_flux, q);
 
     if(operator_data.diffusive_problem)
     {
-      scalar gradient_flux = diffusive_kernel->calculate_gradient_flux(value_m, value_p);
+      scalar gradient_flux =
+        current_diffusion_mask_face * diffusive_kernel->calculate_gradient_flux(value_m, value_p);
       integrator_m.submit_normal_derivative(gradient_flux, q);
     }
   }
+}
+
+template<int dim, typename Number>
+void
+CombinedOperator<dim, Number>::set_diffusion_mask(
+  std::function<bool(dealii::types::global_cell_index)> const & masked)
+{
+  diffusion_masked = masked;
+}
+
+template<int dim, typename Number>
+Number
+CombinedOperator<dim, Number>::diffusion_mask_of_cell_index(unsigned int const cell_index) const
+{
+  unsigned int const lanes = scalar::size();
+  if(cell_index == dealii::numbers::invalid_unsigned_int or
+     cell_index % lanes >= this->matrix_free->n_active_entries_per_cell_batch(cell_index / lanes))
+    return Number(1.0);
+
+  return diffusion_masked(this->matrix_free->get_cell_iterator(cell_index / lanes, cell_index % lanes)
+                            ->global_active_cell_index()) ?
+           Number(0.0) :
+           Number(1.0);
 }
 
 template class CombinedOperator<2, float>;

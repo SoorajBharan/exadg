@@ -56,6 +56,10 @@ write_output(OutputDataBase const &          output_data,
 
   for(unsigned int b = 0; b < solution_vector.n_blocks(); ++b)
   {
+    // only blocks on this DoFHandler (enrichment blocks, e.g. omega_tilde, live on another layout)
+    if(solution_vector.block(b).size() != dof_handler.n_dofs())
+      continue;
+
     data_out.add_data_vector(dof_handler,
                              solution_vector.block(b),
                              solution_names[b]);

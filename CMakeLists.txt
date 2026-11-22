@@ -96,6 +96,7 @@ SET(TARGET_SRC
      include/exadg/operators/rhs_operator.cpp
      include/exadg/operators/navier_stokes_calculators.cpp
      include/exadg/operators/wall_modelling/function_enrichment.cpp
+     include/exadg/operators/wall_modelling/function_enrichment_rans.cpp
      include/exadg/operators/wall_modelling/wall_law_evaluator.cpp
      include/exadg/operators/wall_modelling/coupler.cpp
      include/exadg/operators/vandermonde_matrix.cpp

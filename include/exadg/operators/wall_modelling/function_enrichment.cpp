@@ -373,6 +373,7 @@ FunctionEnrichment<dim, Number>::initialize(
     n_q_points_enrichment});
   std::shared_ptr<dealii::Quadrature<dim>> quad = create_quadrature<dim>(ExaDG::ElementType::Hypercube, n_q_1d);
   std::vector<dealii::Quadrature<dim>> quadratures = { *quad };
+  n_q_points_1d = n_q_1d;
 
   // Gauss rule of the RANS operator (degree of nu_t,h + 1 points): nu_t^psi is interpolated in
   // these points (compute_eddy_viscosity_wall_law_rans)
@@ -1437,6 +1438,29 @@ FunctionEnrichment<dim, Number>::get_active_fe_index() const
 }
 
 template<int dim, typename Number>
+dealii::AffineConstraints<Number> const &
+FunctionEnrichment<dim, Number>::get_constraint_cg_scalar() const
+{
+  return constraint_cg_scalar;
+}
+
+template<int dim, typename Number>
+bool
+FunctionEnrichment<dim, Number>::is_enrichment_active_cell(
+  dealii::types::global_cell_index const cell_index) const
+{
+  auto const it = enrichment_active_cell.find(cell_index);
+  return it != enrichment_active_cell.end() and it->second;
+}
+
+template<int dim, typename Number>
+unsigned int
+FunctionEnrichment<dim, Number>::get_n_q_points_1d() const
+{
+  return n_q_points_1d;
+}
+
+template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::set_global_pressure_dof_handler(
   dealii::DoFHandler<dim> const & dof_handler_p_in)
@@ -1999,6 +2023,8 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
         bool const enriched =
           (y_plus_max_enrichment <= 0.0) or (y_plus_cell[v] > y_plus_switch);
         cell_enriched[cell * lanes + v] = enriched ? 1 : 0;
+        if(v < mf.n_active_entries_per_cell_batch(cell))
+          enrichment_active_cell[mf.get_cell_iterator(cell, v)->global_active_cell_index()] = enriched;
 
         if(not enriched)
           for(unsigned int q = 0; q < n_q_points_cell; ++q)
@@ -2236,6 +2262,73 @@ FunctionEnrichment<dim, Number>::compute_eddy_viscosity_wall_law_rans(
   for(unsigned int i = 0; i < n_eddy_viscosity_index_enriched; ++i)
     global_nu_t_wall_law.local_element(eddy_viscosity_index_global[i]) =
       wall_nu_t_wall_law.local_element(eddy_viscosity_index_shadow[i]);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::compute_tke_production_from_wall_law_rans(
+  VectorType & global_tke_production_from_wall_law,
+  VectorType & global_wall_cell_indicator) const
+{
+  typedef dealii::FEEvaluation<dim, -1, 0, 1, Number> CellIntegratorScalar;
+
+  AssertThrow(has_eddy_viscosity() and quad_index_rans != dealii::numbers::invalid_unsigned_int,
+              dealii::ExcMessage("compute_tke_production_from_wall_law_rans: RANS eddy viscosity DoFHandler not set."));
+
+  global_tke_production_from_wall_law = 0.0;
+  global_wall_cell_indicator          = 0.0;
+
+  auto const & mf = *matrix_free_en;
+
+  wall_distance.update_ghost_values();
+  wall_shear_stress.update_ghost_values();
+
+  CellIntegratorScalar y_eval(mf, dof_index_en_scalar, quad_index_rans, 0, active_fe_index);
+  CellIntegratorScalar tau_eval(mf, dof_index_cg_scalar, quad_index_rans, 0, active_fe_index);
+  CellIntegratorScalar p_eval(mf, dof_index_shadow_eddy_viscosity, quad_index_rans, 0, active_fe_index);
+
+  dealii::MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, 1, Number> inverse_mass(p_eval);
+
+  VectorType wall_tke_production_from_wall_law;
+  mf.initialize_dof_vector(wall_tke_production_from_wall_law, dof_index_shadow_eddy_viscosity);
+
+  scalar const nu = dealii::make_vectorized_array<Number>(kinematic_viscosity);
+  scalar const tau_min = dealii::make_vectorized_array<Number>(tau_w_absolute_minimum);
+
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+  {
+    if(mf.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+      continue;
+
+    y_eval.reinit(cell);
+    tau_eval.reinit(cell);
+    p_eval.reinit(cell);
+    y_eval.gather_evaluate(wall_distance, dealii::EvaluationFlags::values);
+    tau_eval.gather_evaluate(wall_shear_stress, dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < p_eval.n_q_points; ++q)
+    {
+      scalar const y = y_eval.get_value(q);
+      scalar const u_tau = std::sqrt(std::max(tau_eval.get_value(q), tau_min));
+      scalar const u_plus = wall_law_eval.get_value(y * u_tau / nu);
+
+      scalar const dy_plus_du_plus = SpaldingLaw()(u_plus).second;
+      scalar const du_dy = u_tau * u_tau / (nu * dy_plus_du_plus);
+
+      scalar const nu_t = eddy_viscosity_from_u_plus(u_plus, stress_ratio(y));
+
+      p_eval.begin_values()[q] = nu_t * du_dy * du_dy;
+    }
+    inverse_mass.transform_from_q_points_to_basis(1,
+                                                  p_eval.begin_values(),
+                                                  p_eval.begin_dof_values());
+    p_eval.set_dof_values(wall_tke_production_from_wall_law);
+  }
+  for(unsigned int i = 0; i < n_eddy_viscosity_index_enriched; ++i)
+  {
+    global_tke_production_from_wall_law.local_element(eddy_viscosity_index_global[i]) = wall_tke_production_from_wall_law.local_element(eddy_viscosity_index_shadow[i]);
+    global_wall_cell_indicator.local_element(eddy_viscosity_index_global[i]) = 1.0;
+  }
 }
 
 template<int dim, typename Number>

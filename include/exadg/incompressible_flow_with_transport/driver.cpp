@@ -276,12 +276,15 @@ Driver<dim, Number>::setup()
   // energy, both live on the eddy viscosity DoFHandler of the RANS scalar)
   if(rans_enabled)
   {
-    scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(eddy_viscosity);
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
       turbulent_kinetic_energy);
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
       eddy_viscosity_wall_law);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      tke_production_from_wall_law);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      wall_cell_indicator);
 
     velocity_gradient_enriched.resize(dim * dim);
     for(auto & vec : velocity_gradient_enriched)
@@ -289,6 +292,57 @@ Driver<dim, Number>::setup()
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
       velocity_gradient_indicator);
   }
+
+  // Enrichment of omega in the wall cells of the velocity enrichment:
+  //   omega_h = omega_bar + psi_omega omega_tilde,  W_h = W_bar + ln(psi_omega) W_tilde (ln omega)
+  if(rans_enabled and
+     application->scalars[rans_scalar_index]->get_parameters().turbulence_model_data.omega_enrichment)
+  {
+    auto const & turbulence_data =
+      application->scalars[rans_scalar_index]->get_parameters().turbulence_model_data;
+
+    AssertThrow(fluid_operator->get_wall_enrichment_enabled(),
+                dealii::ExcMessage("omega_enrichment requires the wall enrichment of the fluid."));
+
+    // model coefficients: [1] beta (beta_0 for 2006), [2] beta*
+    std::vector<double> const coefficients =
+      turbulence_data.turbulence_data_base->get_all_coefficients();
+
+    using EnrichmentRANS = FunctionEnrichmentRANS<dim, Number>;
+
+    typename EnrichmentRANS::Variable omega;
+    omega.rans_index = 1;
+    omega.shape      = EnrichmentRANS::Shape::Omega;
+    omega.log_form   = turbulence_data.positivity_preserving_limiter.at(1) ==
+                     ConvDiff::PositivityPreservingLimiter::LogarithmicTransportVariable;
+    omega.omega_wall_law.beta          = coefficients.at(1);
+    omega.omega_wall_law.beta_star     = coefficients.at(2);
+    omega.omega_wall_law.cap           = turbulence_data.omega_wall_cap;
+    omega.omega_wall_law.y_plus_shift  = turbulence_data.omega_wall_cap_y_plus_shift;
+    omega.omega_wall_law.menter_factor = turbulence_data.omega_wall_cap_menter_factor;
+    omega.omega_wall_law.y_plus_cap    = turbulence_data.omega_wall_cap_y_plus;
+    omega.wall_condition               = turbulence_data.omega_enrichment_wall_condition;
+    omega.face_formulation             = turbulence_data.omega_enrichment_face_formulation;
+
+    auto function_enrichment_rans =
+      std::make_shared<EnrichmentRANS>(*fluid_operator->get_function_enrichment(),
+                                       application->fluid->get_parameters().viscosity);
+    function_enrichment_rans->add_variable(omega);
+    function_enrichment_rans->set_rank_tolerance(turbulence_data.omega_enrichment_rank_tolerance);
+    function_enrichment_rans->set_k_criterion(turbulence_data.omega_enrichment_k_plus_on,
+                                              turbulence_data.omega_enrichment_k_plus_off,
+                                              turbulence_data.omega_enrichment_off_wall_condition);
+    function_enrichment_rans->initialize(*grid->triangulation,
+                                         scalar_operator[rans_scalar_index]->get_mapping(),
+                                         scalar_operator[rans_scalar_index]->get_dof_handler(),
+                                         scalar_operator[rans_scalar_index]->get_dof_handler_eddy_viscosity());
+
+    scalar_operator[rans_scalar_index]->set_function_enrichment_rans(function_enrichment_rans);
+  }
+
+  // after set_function_enrichment_rans(): same blocks as the solution of the time integrator
+  if(rans_enabled)
+    scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
 
   // setup postprocessor
   fluid_postprocessor = application->fluid->create_postprocessor();
@@ -375,6 +429,26 @@ Driver<dim, Number>::setup()
     AssertThrow(application->scalars[i]->get_parameters().analytical_velocity_field == false,
                 dealii::ExcMessage(
                   "An analytical velocity field can not be used for this coupled solver."));
+  }
+
+  // enrichment of RANS variables: initial psi and block inverse mass (with the initial u_tau);
+  // the first update_enrichment_space() then projects with psi_old = psi (identity)
+  if(rans_enabled and scalar_operator[rans_scalar_index]->get_function_enrichment_rans())
+  {
+    // velocity of the fluid for the exact grad u_h of the wall-cell source terms
+    scalar_operator[rans_scalar_index]->get_function_enrichment_rans()->set_velocity(
+      fluid_time_integrator->get_velocity_np_enriched());
+
+    // k of the initial RANS solution: k criterion of the omega enrichment for the first psi
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_rans_setup =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(
+        scalar_time_integrator[rans_scalar_index]);
+    AssertThrow(time_int_rans_setup != nullptr,
+                dealii::ExcMessage("Enrichment of RANS variables requires the BDF time integrator."));
+    time_int_rans_setup->set_enrichment_turbulent_kinetic_energy();
+
+    scalar_operator[rans_scalar_index]->get_function_enrichment_rans()->update();
+    scalar_operator[rans_scalar_index]->get_function_enrichment_rans()->precompute_inverse_mass();
   }
 
   // Initialize member variable use_adaptive_time_stepping
@@ -579,6 +653,35 @@ Driver<dim, Number>::communicate_fluid_to_all_scalars() const
   {
     fluid_operator->compute_eddy_viscosity_wall_law(eddy_viscosity_wall_law);
     scalar_operator[rans_scalar_index]->set_eddy_viscosity_wall_law(eddy_viscosity_wall_law);
+  }
+
+  // enrichment of RANS variables: new psi from the new u_tau of the fluid step; stored RANS
+  // solutions and explicit-term histories are re-expressed in the new space before the RANS solve
+  if(rans_enabled and scalar_operator[rans_scalar_index]->get_function_enrichment_rans())
+  {
+    auto const & function_enrichment_rans =
+      scalar_operator[rans_scalar_index]->get_function_enrichment_rans();
+
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> time_int_rans =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(
+        scalar_time_integrator[rans_scalar_index]);
+    AssertThrow(time_int_rans != nullptr,
+                dealii::ExcMessage("Enrichment of RANS variables requires the BDF time integrator."));
+
+    // velocity of the fluid at the new time for the exact grad u_h of the wall-cell source terms
+    function_enrichment_rans->set_velocity(fluid_time_integrator->get_velocity_np_enriched());
+
+    time_int_rans->update_enrichment_space([&]() {
+      function_enrichment_rans->update();
+      function_enrichment_rans->precompute_inverse_mass();
+    });
+  }
+
+  if(rans_enabled and application->fluid->get_parameters().wall_enrichment_enabled and application->fluid->get_parameters().wall_layer_tke_production_from_wall_law)
+  {
+    fluid_operator->compute_tke_production_from_wall_law(tke_production_from_wall_law,
+                                                         wall_cell_indicator);
+    scalar_operator[rans_scalar_index]->set_tke_production_from_wall_law(tke_production_from_wall_law, wall_cell_indicator);
   }
 
   // wall model: exact velocity gradient grad(U_bar + psi U_tilde) of the enriched cells for the

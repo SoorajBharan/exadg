@@ -26,6 +26,8 @@
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/la_parallel_block_vector.h>
 
+#include <functional>
+
 // ExaDG
 #include <exadg/time_integration/lambda_functions_ale.h>
 #include <exadg/time_integration/time_int_bdf_base.h>
@@ -72,6 +74,25 @@ public:
 
   void
   ale_update();
+
+  /*
+   * Enrichment of RANS variables: new enrichment space (new psi from the new u_tau) at the
+   * beginning of a time step. The stored solutions and the explicit-term histories are
+   * re-expressed in the new space:
+   *   (1) histories (tested with the old psi) -> fields with the old block inverse mass
+   *   (2) update_psi(): new psi and new block inverse mass
+   *   (3) solutions and history fields: projection onto the new space
+   *   (4) history fields -> tested with the new psi (new block mass)
+   */
+  void
+  update_enrichment_space(std::function<void()> const & update_psi);
+
+  // enrichment of RANS variables: k of Q^n to the enrichment (k criterion of the omega enrichment)
+  void
+  set_enrichment_turbulent_kinetic_energy() const
+  {
+    pde_operator->set_enrichment_turbulent_kinetic_energy(solution[0]);
+  }
 
   virtual void
   print_iterations() const;
@@ -160,6 +181,9 @@ protected:
   // solution vectors
   BlockVectorType              solution_np;
   std::vector<BlockVectorType> solution;
+
+  // enrichment of RANS variables: initial values of the enrichment set (first update)
+  bool enrichment_initialized = false;
   std::vector<BlockVectorType> vec_convective_term;
   BlockVectorType              convective_term_np;
 

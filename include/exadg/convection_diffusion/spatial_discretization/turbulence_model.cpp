@@ -85,7 +85,7 @@ template<int dim, typename Number>
 void
 TurbulenceModel<dim, Number>::set_viscosity(BlockVectorType const & solution)
 {
-  AssertThrow(solution.n_blocks() == n_variables,
+  AssertThrow(solution.n_blocks() >= n_variables,
               dealii::ExcMessage("Number of solution blocks does not match the turbulence model."));
 
   VectorType rhs_viscosity;
@@ -95,10 +95,17 @@ TurbulenceModel<dim, Number>::set_viscosity(BlockVectorType const & solution)
   if(compute_derivative)
     eddy_viscosity_derivative.zero_out_ghost_values();
 
-  matrix_free->cell_loop(&This::cell_loop,
-                         this,
-                         rhs_viscosity,
-                         solution);
+  // enrichment blocks: the loop sees the RANS variables only
+  if(solution.n_blocks() > n_variables)
+    matrix_free->cell_loop(&This::cell_loop,
+                           this,
+                           rhs_viscosity,
+                           copy_leading_blocks(solution, n_variables));
+  else
+    matrix_free->cell_loop(&This::cell_loop,
+                           this,
+                           rhs_viscosity,
+                           solution);
 
   eddy_viscosity = rhs_viscosity;
   // inverse_mass_viscosity.apply(eddy_viscosity, rhs_viscosity);
@@ -119,6 +126,18 @@ TurbulenceModel<dim, Number>::set_viscosity(BlockVectorType const & solution)
 
   if(compute_derivative)
     eddy_viscosity_derivative.update_ghost_values();
+}
+
+template<int dim, typename Number>
+void
+TurbulenceModel<dim, Number>::set_enrichment_nodal(unsigned int const variable,
+                                                   VectorType const * field)
+{
+  if(enrichment_nodal.size() != n_variables)
+    enrichment_nodal.assign(n_variables, nullptr);
+
+  AssertIndexRange(variable, n_variables);
+  enrichment_nodal[variable] = field;
 }
 
 template<int dim, typename Number>
@@ -144,6 +163,12 @@ TurbulenceModel<dim, Number>::cell_loop(
   }
 
   IntegratorCell integrator_viscosity(matrix_free, dof_index_viscosity, quad_index);
+
+  // enrichment of RANS variables: nodal fields psi W_tilde (same DoFHandler as the solution)
+  std::vector<std::shared_ptr<IntegratorCell>> integrator_enrichment(n_variables);
+  for(unsigned int i = 0; i < enrichment_nodal.size(); ++i)
+    if(enrichment_nodal[i] != nullptr)
+      integrator_enrichment[i] = std::make_shared<IntegratorCell>(matrix_free, dof_index, quad_index);
 
   std::vector<std::shared_ptr<IntegratorCell>> integrator_derivative;
   if(compute_derivative)
@@ -171,6 +196,13 @@ TurbulenceModel<dim, Number>::cell_loop(
       integrator_solution[i]->read_dof_values(src.block(i));
     }
 
+    for(unsigned int i = 0; i < n_variables; ++i)
+      if(integrator_enrichment[i])
+      {
+        integrator_enrichment[i]->reinit(cell);
+        integrator_enrichment[i]->read_dof_values(*enrichment_nodal[i]);
+      }
+
     integrator_viscosity.reinit(cell);
 
     for(auto & integrator : integrator_derivative)
@@ -185,6 +217,11 @@ TurbulenceModel<dim, Number>::cell_loop(
     {
       for(unsigned int i = 0; i < n_variables; ++i)
         transported_values[i] = integrator_solution[i]->get_dof_value(dof);
+
+      // enrichment: W_node = W_bar_node + (psi W_tilde)_node
+      for(unsigned int i = 0; i < n_variables; ++i)
+        if(integrator_enrichment[i])
+          transported_values[i] += integrator_enrichment[i]->get_dof_value(dof);
 
       get_physical_variables(dealii::make_array_view(transported_values),
                              dealii::make_array_view(solution),
@@ -298,10 +335,17 @@ void
 TurbulenceModel<dim, Number>::get_turbulent_kinetic_energy(VectorType & dst,
                                                            BlockVectorType const & solution) const
 {
-  matrix_free->cell_loop(&This::cell_loop_extract_tke,
-                         this,
-                         dst,
-                         solution);
+  // enrichment blocks: the loop sees the RANS variables only
+  if(solution.n_blocks() > n_variables)
+    matrix_free->cell_loop(&This::cell_loop_extract_tke,
+                           this,
+                           dst,
+                           copy_leading_blocks(solution, n_variables));
+  else
+    matrix_free->cell_loop(&This::cell_loop_extract_tke,
+                           this,
+                           dst,
+                           solution);
 }
 
 template<int dim, typename Number>
@@ -351,6 +395,18 @@ template<int dim, typename Number>
 void
 TurbulenceModel<dim, Number>::enforce_positivity(BlockVectorType & solution) const
 {
+  // enrichment blocks: limiter on the RANS variables only, the enrichment blocks unchanged
+  if(solution.n_blocks() > n_variables)
+  {
+    BlockVectorType const rans = copy_leading_blocks(solution, n_variables);
+    BlockVectorType       tmp;
+    tmp.reinit(rans);
+
+    matrix_free->cell_loop(&This::cell_loop_enforce_positivity, this, tmp, rans);
+    copy_back_leading_blocks(tmp, solution);
+    return;
+  }
+
   BlockVectorType tmp;
   tmp.reinit(solution);
 

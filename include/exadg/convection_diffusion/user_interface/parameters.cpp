@@ -88,6 +88,7 @@ Parameters::Parameters()
     preconditioner_update_tolerance(0.2),
     preconditioner_update_max_time_steps(10),
     newton_damping(false),
+    newton_diagnostics(true),
     implement_block_diagonal_preconditioner_matrix_free(false),
     solver_block_diagonal(Elementwise::Solver::Undefined),
     preconditioner_block_diagonal(Elementwise::Preconditioner::InverseMassMatrix),
@@ -658,6 +659,7 @@ Parameters::print_parameters_solver(dealii::ConditionalOStream const & pcout) co
                     "Preconditioner update max time steps",
                     preconditioner_update_max_time_steps);
     print_parameter(pcout, "Newton damping", newton_damping);
+    print_parameter(pcout, "Newton diagnostics (debug)", newton_diagnostics);
   }
 
   print_parameter(pcout,

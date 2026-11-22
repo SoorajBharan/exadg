@@ -476,6 +476,8 @@ public:
   // the projected velocity (which overestimates the production in large wall cells)
   bool wall_layer_exact_velocity_gradient;
 
+  bool wall_layer_tke_production_from_wall_law;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                              NUMERICAL PARAMETERS                                  */

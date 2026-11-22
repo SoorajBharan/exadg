@@ -112,6 +112,86 @@ struct SpaldingLaw
   }
 };
 
+// condition of the enriched omega at the wall face
+enum class OmegaEnrichmentWallCondition
+{
+  ZeroFlux,     // no condition at the wall face; the equations set the amplitude omega_tilde
+  WeakDirichlet // omega_h = (u_tau^2 / nu) psi_omega(0) (ln of it for ln omega), SIPG
+};
+
+enum class OmegaEnrichmentFaceFormulation
+{
+  NIPG,
+  SIPG
+};
+
+// omega wall condition of wall cells whose omega enrichment is switched off by the k criterion
+enum class OmegaEnrichmentOffWallCondition
+{
+  ZeroFlux,    // no wall value for omega (as the lanes switched off by the y+ criterion)
+  WallFunction // omega Dirichlet: omega_wf = (u_tau^2 / nu) psi_omega at y = a y_c (as U enriched only)
+};
+
+// cap of psi_omega at the wall (psi_omega -> infinity for y+ -> 0)
+enum class OmegaWallCap
+{
+  ShiftedWallDistance, // psi_omega(y+ + y+_0)
+  MenterWallValue      // min(psi_omega(y+), F 6 / (beta y+_cap^2))
+};
+
+// blended omega wall law in wall units (omega+ = omega nu / u_tau^2):
+//   psi_omega = sqrt(omega_vis+^2 + omega_log+^2)
+//   omega_vis+ = 6 / (beta y+^2),  omega_log+ = 1 / (sqrt(beta*) kappa y+)
+// returns psi_omega and d psi_omega / d y+
+struct OmegaWallLaw
+{
+  double kappa     = 0.41;
+  double beta      = 0.075; // k-omega 1988: 3/40
+  double beta_star = 0.09;
+
+  OmegaWallCap cap           = OmegaWallCap::ShiftedWallDistance;
+  double       y_plus_shift  = 0.5;  // y+_0
+  double       menter_factor = 10.0; // F
+  double       y_plus_cap    = 1.0;  // y+_cap
+
+  template<typename Number>
+  std::pair<dealii::VectorizedArray<Number>, dealii::VectorizedArray<Number>>
+  operator()(dealii::VectorizedArray<Number> const y_plus) const
+  {
+    using scalar = dealii::VectorizedArray<Number>;
+
+    Number const a = 6.0 / beta;
+    Number const b = 1.0 / (std::sqrt(beta_star) * kappa);
+
+    // y+ used in the blend; floor: no division by zero at the wall
+    scalar Y = y_plus;
+    if(cap == OmegaWallCap::ShiftedWallDistance)
+      Y = Y + Number(y_plus_shift);
+    Y = std::max(Y, dealii::make_vectorized_array<Number>(1.0e-6));
+
+    scalar const Y2 = Y * Y;
+
+    // psi_omega = sqrt(a^2 + b^2 Y^2) / Y^2
+    scalar psi = std::sqrt(a * a + b * b * Y2) / Y2;
+
+    // d psi_omega / dY = -(2 a^2 / Y^5 + b^2 / Y^3) / psi_omega
+    scalar dpsi = -(2.0 * a * a / (Y2 * Y2 * Y) + b * b / (Y2 * Y)) / psi;
+
+    if(cap == OmegaWallCap::MenterWallValue)
+    {
+      scalar const psi_cap =
+        dealii::make_vectorized_array<Number>(menter_factor * a / (y_plus_cap * y_plus_cap));
+      scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+
+      // capped lanes: psi = psi_cap,
+      dpsi = dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(psi, psi_cap, zero, dpsi);
+      psi  = dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(psi, psi_cap, psi_cap, psi);
+    }
+
+    return std::make_pair(psi, dpsi);
+  }
+};
+
 template<int dim, typename Number>
 class WallLawEvaluator
 {

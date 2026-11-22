@@ -23,6 +23,7 @@
 #define INCLUDE_EXADG_CONVECTION_DIFFUSION_PRECONDITIONERS_BLOCK_PRECONDITIONER_H_
 
 // C/C++
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,17 @@ public:
     preconditioner = preconditioner_in;
   }
 
+  /*
+   * Enrichment of RANS variables: preconditioner of the blocks after the RANS variables
+   * (W_tilde of the enriched variables), dst = P^{-1} src for these blocks only
+   */
+  void
+  set_enrichment_preconditioner(
+    std::function<void(BlockVectorType &, BlockVectorType const &)> const & enrichment_vmult_in)
+  {
+    enrichment_vmult = enrichment_vmult_in;
+  }
+
   bool
   needs_update() const
   {
@@ -79,10 +91,25 @@ public:
     auto t_prof = SectionProfile::Clock::now();
 #endif
 
-    AssertDimension(src.n_blocks(), preconditioner.size());
+    AssertThrow(src.n_blocks() >= preconditioner.size(),
+                dealii::ExcMessage("BlockPreconditioner: fewer blocks than preconditioners."));
 
+    // RANS variables; no preconditioner (None): identity
     for(unsigned int b = 0; b < preconditioner.size(); ++b)
-      preconditioner[b]->vmult(dst.block(b), src.block(b));
+    {
+      if(preconditioner[b])
+        preconditioner[b]->vmult(dst.block(b), src.block(b));
+      else
+        dst.block(b) = src.block(b);
+    }
+
+    // enrichment blocks
+    if(src.n_blocks() > preconditioner.size())
+    {
+      AssertThrow(enrichment_vmult,
+                  dealii::ExcMessage("BlockPreconditioner: no preconditioner of the enrichment blocks."));
+      enrichment_vmult(dst, src);
+    }
 
 #ifdef EXADG_PROFILE
     SectionProfile::lap("scal 3d precond vmult", t_prof);
@@ -104,6 +131,9 @@ public:
 
 private:
   std::vector<std::shared_ptr<PreconditionerBase<Number>>> preconditioner;
+
+  // enrichment blocks (set_enrichment_preconditioner)
+  std::function<void(BlockVectorType &, BlockVectorType const &)> enrichment_vmult;
 };
 
   } // namespace ConvDiff

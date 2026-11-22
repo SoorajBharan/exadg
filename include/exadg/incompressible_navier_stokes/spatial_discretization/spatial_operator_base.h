@@ -530,6 +530,10 @@ public:
   void
   compute_eddy_viscosity_wall_law(VectorType & dst) const;
 
+  void
+  compute_tke_production_from_wall_law(VectorType & tke_production,
+                                       VectorType & wall_cell_indicator) const;
+
   // RANS: exact velocity gradient grad(U_bar + psi U_tilde) in the RANS Gauss points of the
   // enriched cells (dim*dim DG fields + indicator on the eddy viscosity DoFHandler of the RANS
   // scalar); velocity = fluid velocity (block 0: U_bar, block 1: U_tilde)

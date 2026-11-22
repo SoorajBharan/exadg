@@ -97,7 +97,8 @@ public:
     // realizability limiter (Bassi et al. 2014, eqs. (5)-(8)): k_bar = max(0, k),
     // omega_r = max(omega_r0, omega)
     scalar const omega_r0      = compute_realizability_alpha(input.velocity_gradient);
-    scalar const tke_limited   = std::max(tke, zero);
+    auto const   tke_bar       = limited_tke(tke);
+    scalar const tke_limited   = tke_bar.first;
     scalar const omega_r = std::max(omega, omega_r0);
 
     // nu_t = k_bar / omega_r (alpha* = 1)
@@ -106,8 +107,7 @@ public:
     if(input.compute_derivatives)
     {
       // derivatives vanish where a limiter is active
-      scalar const tke_not_limited =
-        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero);
+      scalar const tke_not_limited = tke_bar.second; // d k_bar / d k
       scalar const omega_not_limited =
         dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega,
                                                                              omega_r0,
@@ -253,6 +253,28 @@ public:
 
 private:
   /*
+   * k_bar of nu_t, production and dissipation, and d k_bar / d k:
+   *   k_smoothing = 0: k_bar = max(0, k), derivative 0 / 1 (jumps at k = 0)
+   *   k_smoothing = eps > 0: k_bar = (k + sqrt(k^2 + eps^2)) / 2 (smooth approximation of max(0, k)),
+   *                          derivative (1 + k / sqrt(k^2 + eps^2)) / 2, continuous in (0, 1)
+   */
+  std::pair<scalar, scalar>
+  limited_tke(scalar const & tke) const
+  {
+    scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+    scalar const one  = dealii::make_vectorized_array<Number>(1.0);
+
+    double const eps = this->turbulence_model_data.k_smoothing;
+    if(eps <= 0.0)
+      return std::make_pair(
+        std::max(tke, zero),
+        dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero));
+
+    scalar const root = std::sqrt(tke * tke + Number(eps * eps));
+    return std::make_pair(Number(0.5) * (tke + root), Number(0.5) * (one + tke / root));
+  }
+
+  /*
      * Lower bound omega_r0 of omega (Bassi et al. 2014, eqs. (5)-(8)): 3 times the largest
      * eigenvalue of the 2x2 blocks of S, at least 1e-6; with use_stress_limiter also at least
      * C_lim sqrt(2 S:S / beta*). Copied unchanged from
@@ -345,14 +367,14 @@ private:
 
     // realizability limiter: k_bar = max(k, 0), omega_r = max(omega, omega_r0)
     scalar const omega_r0      = compute_realizability_alpha(grad_u);
-    scalar const tke_positive   = std::max(tke, zero);
+    auto const   tke_bar        = limited_tke(tke);
+    scalar const tke_positive   = tke_bar.first;
     scalar const omega_r = std::max(omega, omega_r0);
     scalar const omega_limited_square = omega_r * omega_r;
 
     production.set_zero();
 
-    scalar const tke_derivative_sign =
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero);
+    scalar const tke_derivative_sign = tke_bar.second; // d k_bar / d k
     scalar const omega_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega,
                                                                            omega_r0,
@@ -456,11 +478,16 @@ private:
 
     // realizability limiter: k_bar = max(k, 0), omega_r = max(omega, omega_r0)
     scalar const omega_r0      = compute_realizability_alpha(input.velocity_gradient);
-    scalar const tke_positive   = std::max(tke, zero);
+    auto const   tke_bar        = limited_tke(tke);
+    scalar const tke_positive   = tke_bar.first;
     scalar const omega_r = std::max(omega, omega_r0);
 
-    scalar const tke_derivative_sign = 
-      dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(tke, zero, one, zero);
+    scalar const tke_derivative_sign = tke_bar.second; // d k_bar / d k
+
+    // k in the k dissipation: k_bar, or k itself with signed_k_dissipation (derivative 1)
+    bool const   signed_dissipation = this->turbulence_model_data.signed_k_dissipation;
+    scalar const tke_dissipation    = signed_dissipation ? tke : tke_positive;
+    scalar const tke_dissipation_derivative = signed_dissipation ? one : tke_derivative_sign;
     scalar const omega_derivative_sign =
       dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than>(omega,
                                                                            omega_r0,
@@ -470,15 +497,16 @@ private:
     if(not k_log and not omega_log)
     {
       // Case 1: k, omega
-      dissipation.value[0] = beta_star * tke_positive * omega_r;
+      // signed_k_dissipation: beta* k omega_r (negative k damped back to 0), otherwise k_bar
+      dissipation.value[0] = beta_star * tke_dissipation * omega_r;
       dissipation.value[1] = beta * omega * omega_r;
 
       if(input.compute_derivatives)
       {
         dissipation.jacobian[dissipation.index(0, 0)] =
-          beta_star * tke_derivative_sign * omega_r;
+          beta_star * tke_dissipation_derivative * omega_r;
         dissipation.jacobian[dissipation.index(0, 1)] =
-          beta_star * tke_positive * omega_derivative_sign;
+          beta_star * tke_dissipation * omega_derivative_sign;
         dissipation.jacobian[dissipation.index(1, 1)] =
           beta * (omega_r + omega * omega_derivative_sign);
       }
@@ -498,15 +526,15 @@ private:
     else if(not k_log and omega_log)
     {
       // Case 3: k, W = ln omega (omega > 0)
-      dissipation.value[0] = beta_star * tke_positive * omega_r;
+      dissipation.value[0] = beta_star * tke_dissipation * omega_r;
       dissipation.value[1] = beta * omega_r;
 
       if(input.compute_derivatives)
       {
         dissipation.jacobian[dissipation.index(0, 0)] =
-          beta_star * tke_derivative_sign * omega_r;
+          beta_star * tke_dissipation_derivative * omega_r;
         dissipation.jacobian[dissipation.index(0, 1)] =
-          beta_star * tke_positive * omega_derivative_sign * omega;
+          beta_star * tke_dissipation * omega_derivative_sign * omega;
         dissipation.jacobian[dissipation.index(1, 1)] = beta * omega_derivative_sign * omega;
       }
     }

@@ -24,6 +24,7 @@
 #include <deal.II/fe/fe_values.h>
 #include <exadg/operators/quadrature.h>
 #include <exadg/utilities/section_profile.h>
+#include <iostream>
 #include <type_traits>
 
 namespace ExaDG
@@ -328,9 +329,13 @@ EnrichedMomentumOperator<dim, Number>::initialize_vertex_interpolation() const
     for(unsigned int j = 0; j < fe_nu_t.n_dofs_per_cell(); ++j)
       support_values_nu_t(i, j) = fe_nu_t.shape_value(j, support_points[i]);
 
-  AssertThrow(wall_layer_nu_t_linear or fe_nu_t.degree <= fe_nu_K.degree,
-              dealii::ExcMessage("wall_layer_nu_t_linear = false: the degree of nu_t must not "
-                                 "exceed the velocity degree (nu_t,h is interpolated into nu_K)."));
+  // wall_layer_nu_t_linear = false: nu_t,h is interpolated into nu_K at the support points of
+  // nu_K (velocity degree). A nu_t,h of higher degree than the velocity (RANS degree > velocity
+  // degree) is reduced to its interpolant of the velocity degree on the wall layer only; all
+  // other cells use nu_t,h itself.
+  if(not wall_layer_nu_t_linear and fe_nu_t.degree > fe_nu_K.degree)
+    std::cout << "  [wall layer] nu_t,h of degree " << fe_nu_t.degree
+              << " interpolated into nu_K of degree " << fe_nu_K.degree << std::endl;
 
   auto const & bc = momentum_operator->get_data().bc;
 

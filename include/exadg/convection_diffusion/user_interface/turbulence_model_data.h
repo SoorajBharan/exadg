@@ -24,6 +24,7 @@
 
 // ExaDG
 #include <exadg/utilities/print_functions.h>
+#include <exadg/operators/wall_modelling/wall_law_evaluator.h>
 
 namespace ExaDG
 {
@@ -236,6 +237,32 @@ struct TurbulenceModelData
   // lower bound omega_r0 of omega from the realizability conditions (Bassi et al. 2014, eqs. (5)-(8));
   // false: only the positivity floor 1e-6 (as in OpenFOAM's kOmega, no realizability bound)
   bool                         use_realizability_limiter{true};
+  // k_bar of nu_t, production and dissipation (k-omega 1988): 0 = max(0, k); eps > 0 = smooth
+  // approximation (k + sqrt(k^2 + eps^2)) / 2 (differentiable at k = 0, for Newton)
+  double                       k_smoothing{0.0};
+  // k dissipation beta* k omega with the signed k (negative k damped back to 0) instead of k_bar
+  bool                         signed_k_dissipation{false};
+
+  bool                         omega_enrichment{false};
+  OmegaWallCap                 omega_wall_cap{OmegaWallCap::ShiftedWallDistance};
+  double                       omega_wall_cap_y_plus_shift{0.5};
+  double                       omega_wall_cap_menter_factor{10.0};
+  double                       omega_wall_cap_y_plus{1.0};
+  // enrichment modes of a wall cell with Schur eigenvalue <= tolerance are removed
+  double                       omega_enrichment_rank_tolerance{1.e-6};
+  // condition of the enriched omega at the wall face (turbulent and molecular diffusion)
+  OmegaEnrichmentWallCondition omega_enrichment_wall_condition{
+    OmegaEnrichmentWallCondition::WeakDirichlet};
+
+  OmegaEnrichmentFaceFormulation omega_enrichment_face_formulation{
+    OmegaEnrichmentFaceFormulation::NIPG};
+  // k criterion of the omega enrichment, k+ = k_bar / u_tau^2 of the wall cell (k_bar: cell average
+  // of max(0, k)): on for k+ >= k_plus_on, off for k+ < k_plus_off (hysteresis); 0: no criterion
+  double omega_enrichment_k_plus_on{0.0};
+  double omega_enrichment_k_plus_off{0.0};
+  // omega wall condition of the wall cells switched off by the k criterion
+  OmegaEnrichmentOffWallCondition omega_enrichment_off_wall_condition{
+    OmegaEnrichmentOffWallCondition::WallFunction};
 
   std::vector<PositivityPreservingLimiter> positivity_preserving_limiter;
   std::shared_ptr<TurbulenceDataBase> turbulence_data_base;
@@ -256,6 +283,19 @@ struct TurbulenceModelData
     AssertThrow(is_active, dealii::ExcMessage("Turbulence model is inactive."));
     AssertThrow(positivity_preserving_limiter.size() > 0,
                 dealii::ExcMessage("Positivity Limiter flags are not specified."));
+
+    if(omega_enrichment)
+    {
+      AssertThrow(omega_wall_cap_y_plus_shift > 0.0,
+                  dealii::ExcMessage("omega_wall_cap_y_plus_shift must be > 0."));
+      AssertThrow(omega_wall_cap_menter_factor > 0.0 and omega_wall_cap_y_plus > 0.0,
+                  dealii::ExcMessage("omega_wall_cap_menter_factor and omega_wall_cap_y_plus must be > 0."));
+      AssertThrow(omega_enrichment_rank_tolerance > 0.0 and omega_enrichment_rank_tolerance < 1.0,
+                  dealii::ExcMessage("omega_enrichment_rank_tolerance must be in (0, 1)."));
+      AssertThrow(omega_enrichment_k_plus_off >= 0.0 and
+                    omega_enrichment_k_plus_off <= omega_enrichment_k_plus_on,
+                  dealii::ExcMessage("omega enrichment k criterion: 0 <= k_plus_off <= k_plus_on."));
+    }
   }
 
   void
@@ -277,6 +317,47 @@ struct TurbulenceModelData
         print_parameter(pcout, "Stress limiter", use_stress_limiter);
       }
       print_parameter(pcout, "Realizability limiter", use_realizability_limiter);
+      print_parameter(pcout, "k smoothing (k_bar)", k_smoothing);
+      print_parameter(pcout, "Signed k dissipation", signed_k_dissipation);
+
+      print_parameter(pcout, "Omega enrichment", omega_enrichment);
+      if(omega_enrichment)
+      {
+        print_parameter(pcout,
+                        "Omega wall cap",
+                        std::string(omega_wall_cap == OmegaWallCap::ShiftedWallDistance ?
+                                    "ShiftedWallDistance" :
+                                    "MenterWallValue"));
+        if(omega_wall_cap == OmegaWallCap::ShiftedWallDistance)
+          print_parameter(pcout, "Omega wall cap y+ shift", omega_wall_cap_y_plus_shift);
+        else
+        {
+          print_parameter(pcout, "Omega wall cap Menter factor", omega_wall_cap_menter_factor);
+          print_parameter(pcout, "Omega wall cap y+", omega_wall_cap_y_plus);
+        }
+        print_parameter(pcout, "Omega enrichment rank tolerance", omega_enrichment_rank_tolerance);
+        print_parameter(pcout,
+                        "Omega enrichment wall condition",
+                        std::string(omega_enrichment_wall_condition ==
+                                        OmegaEnrichmentWallCondition::ZeroFlux ?
+                                      "ZeroFlux" :
+                                      "WeakDirichlet"));
+        print_parameter(pcout, "Omega enrichment k criterion k+ on", omega_enrichment_k_plus_on);
+        print_parameter(pcout, "Omega enrichment k criterion k+ off", omega_enrichment_k_plus_off);
+        print_parameter(pcout,
+                        "Omega enrichment off wall condition",
+                        std::string(omega_enrichment_off_wall_condition ==
+                                        OmegaEnrichmentOffWallCondition::ZeroFlux ?
+                                      "ZeroFlux" :
+                                      "WallFunction"));
+        print_parameter(pcout,
+                        "Omega enrichment face formulation",
+                        std::string(omega_enrichment_face_formulation ==
+                                    OmegaEnrichmentFaceFormulation::NIPG ?
+                                    "NIPG" :
+                                    "SIPG"));
+      }
+
       turbulence_data_base->print_coefficients(pcout);
     }
   }

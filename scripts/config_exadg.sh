@@ -46,4 +46,7 @@ cmake \
     -D LIKWID_INCLUDE="$LIKWID/include" \
     -D BUILD_SHARED_LIBS=ON \
     -D PICKUP_TESTS=ON \
+    -D CMAKE_EXPORT_COMPILE_COMMANDS=ON \
     ../
+
+ln -sf "$PWD/compile_commands.json" ../compile_commands.json

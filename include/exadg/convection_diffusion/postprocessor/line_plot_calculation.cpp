@@ -89,7 +89,12 @@ LinePlotCalculator<dim, Number>::evaluate(
     {
       if((*quantity)->type == QuantityType::RANSTransportVariables)
       {
-        unsigned int const n_blocks = solution.n_blocks();
+        // RANS variables only: leading blocks on this DoFHandler (enrichment blocks, e.g.
+        // omega_tilde, live on another layout)
+        unsigned int n_blocks = 0;
+        while(n_blocks < solution.n_blocks() and
+              solution.block(n_blocks).size() == dof_handler->n_dofs())
+          ++n_blocks;
 
           std::vector<std::vector<Number>> solution_vector(n_points, std::vector<Number>(n_blocks)); 
           

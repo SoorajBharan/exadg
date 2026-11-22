@@ -83,6 +83,43 @@ private:
                     BlockVectorType const & constant_part,
                     VectorType const &      velocity_np) const;
 
+#ifdef EXADG_DEBUG
+  /*
+   * Jacobian check (once, first Newton step): J d against the finite difference
+   * -(r(Q + eps d) - r(Q)) / eps for a fixed direction d, relative difference per block. The
+   * linearization point Q is restored afterwards.
+   * direction_in: direction d (nullptr: the fixed direction); eps_scale: eps = eps_scale max(1, |Q|_inf)
+   */
+  void
+  check_jacobian(BlockVectorType const & residual,
+                 BlockVectorType const & constant_part,
+                 VectorType const &      velocity_np,
+                 BlockVectorType const * direction_in = nullptr,
+                 double const            eps_scale    = 1.e-6) const;
+
+  /*
+   * Where the residual sits (diagnostics of a slow Newton iteration): norm of each RANS block on
+   * enriched cells with active / switched-off enrichment, halo cells (face neighbours of enriched
+   * cells) and all other cells, and the cell centre and category of the largest entry.
+   */
+  void
+  print_residual_location(BlockVectorType const & residual) const;
+
+  // print the parts of the residual in the next evaluate_residual() (first one of a time step)
+  mutable bool print_residual_decomposition = false;
+
+  // number of time steps with a Jacobian check (the first three)
+  mutable unsigned int n_jacobian_checks = 0;
+
+  // residual and solution norms per block of a Newton iteration
+  void
+  // iteration > 0: also the step length after damping and the GMRES iterations of this iteration
+  print_newton_debug(unsigned int const      iteration,
+                     BlockVectorType const & residual,
+                     double const            step_length       = 1.0,
+                     unsigned int const      linear_iterations = 0) const;
+#endif
+
   // number of time steps since the last preconditioner update (Eq. 43)
   unsigned int time_steps_since_preconditioner_update;
 

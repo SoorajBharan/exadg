@@ -1870,6 +1870,18 @@ SpatialOperatorBase<dim, Number>::compute_eddy_viscosity_wall_law(VectorType & d
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::compute_tke_production_from_wall_law(
+  VectorType & tke_production,
+  VectorType & wall_cell_indicator) const
+{
+  AssertThrow(param.wall_enrichment_enabled and param.wall_layer_tke_production_from_wall_law,
+              dealii::ExcMessage("compute_tke_production_from_wall_law : wall_layer_tke_production_from_wall_law off."));
+  function_enrichment->compute_tke_production_from_wall_law_rans(tke_production,
+                                                                 wall_cell_indicator);
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::compute_velocity_gradient_rans(std::vector<VectorType> & gradient,
                                                                  VectorType &              indicator,
                                                                  BlockVectorType const &   velocity) const

@@ -240,6 +240,7 @@ Parameters::Parameters()
     wall_layer_nu_t_wall_law(false),
     wall_layer_nu_t_wall_law_only(false),
     wall_layer_exact_velocity_gradient(false),
+    wall_layer_tke_production_from_wall_law(false),
     enrichment_quadrature_points(15)
 {
 }
@@ -593,6 +594,10 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
                 dealii::ExcMessage("wall_enrichment_y_plus_min must be in [0, wall_enrichment_y_plus_max]."));
     AssertThrow(not wall_layer_nu_t_wall_law_only or wall_layer_nu_t_wall_law,
                 dealii::ExcMessage("wall_layer_nu_t_wall_law_only requires wall_layer_nu_t_wall_law."));
+    AssertThrow(not wall_layer_tke_production_from_wall_law or
+                (turbulence_model_data.rans_model and wall_enrichment_layers == 1),
+                dealii::ExcMessage("wall_layer_tke_production_from_wall_law requires a RANS model and "
+                                   "WallLayers = 1."));
     AssertThrow(wall_penalty_factor_viscous > 0.0,
                 dealii::ExcMessage("wall_penalty_factor_viscous must be positive."));
     // Strong: the wall traction is a reaction force on the fixed DoFs, not the penalty flux
@@ -1389,6 +1394,7 @@ Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout
     print_parameter(pcout, "Wall-law nu_t on enriched cells", wall_layer_nu_t_wall_law);
     print_parameter(pcout, "Wall-law nu_t only (no RANS nu_t)", wall_layer_nu_t_wall_law_only);
     print_parameter(pcout, "Exact velocity gradient in RANS", wall_layer_exact_velocity_gradient);
+    print_parameter(pcout, "Wall-law k production in wall cells", wall_layer_tke_production_from_wall_law);
   }
   print_parameter(pcout, "Number of 1D quadrature points on enriched cells",
                   enrichment_quadrature_points);

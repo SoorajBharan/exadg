@@ -243,6 +243,10 @@ void
   void
   compute_eddy_viscosity_wall_law_rans(VectorType & global_nu_t_wall_law) const;
 
+  void
+  compute_tke_production_from_wall_law_rans(VectorType & global_tke_production_from_wall_law,
+                                            VectorType & global_wall_cell_indicator) const;
+
   // Exact velocity gradient of u_h = U_bar + psi U_tilde in the RANS Gauss points of the enriched
   // cells,  grad u_h = grad U_bar + psi grad U_tilde + U_tilde (x) grad psi,  as dim*dim DG fields
   // on the RANS eddy viscosity DoFHandler (global layout, d u_i / d x_j in gradient[i * dim + j]),
@@ -273,6 +277,36 @@ void
 
   unsigned int
   get_active_fe_index() const;
+
+  // periodicity constraints of the CG scalar space (tau_w, u_tau)
+  dealii::AffineConstraints<Number> const &
+  get_constraint_cg_scalar() const;
+
+  // y+ switch of the enrichment in a cell by global active cell index (false: not enriched)
+  bool
+  is_enrichment_active_cell(dealii::types::global_cell_index const cell_index) const;
+
+  unsigned int
+  get_n_q_points_1d() const;
+
+  // boundary of the wall model (velocity boundary type WallEnrichment)
+  bool
+  is_wall_boundary(dealii::types::boundary_id const boundary_id) const
+  {
+    return boundary_descriptor->get_boundary_type(boundary_id) ==
+           IncNS::BoundaryTypeU::WallEnrichment;
+  }
+
+  // psi_u, grad psi_u (velocity enrichment, Spalding) at one point from y, grad y, tau_w and
+  // grad tau_w; for points of another MatrixFree (FunctionEnrichmentRANS)
+  std::pair<scalar, vector>
+  get_enrichment_function(scalar const & y,
+                          vector const & grad_y,
+                          scalar const & tau_w,
+                          vector const & grad_tau_w) const
+  {
+    return evaluate_enrichment_function(y, grad_y, tau_w, grad_tau_w);
+  }
 
   void
   set_minimum_wall_shear_stress_fraction(double const fraction);
@@ -559,6 +593,12 @@ private:
 
   // per cell (cell batch * lanes + lane, locally owned and ghost batches): 1 = enriched
   std::vector<unsigned char> cell_enriched;
+
+  // same y+ switch by global active cell index (FunctionEnrichmentRANS: other MatrixFree)
+  std::map<dealii::types::global_cell_index, bool> enrichment_active_cell;
+
+  // 1D points of the enrichment quadrature (quad_index)
+  unsigned int n_q_points_1d = 0;
 
   // number of enriched cells at the last report (printed when it changes)
   unsigned int n_enriched_cells_last = dealii::numbers::invalid_unsigned_int;

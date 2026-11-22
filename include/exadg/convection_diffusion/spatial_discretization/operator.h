@@ -39,6 +39,7 @@
 #include <exadg/matrix_free/matrix_free_data.h>
 #include <exadg/operators/inverse_mass_operator.h>
 #include <exadg/operators/mass_operator.h>
+#include <exadg/operators/wall_modelling/function_enrichment_rans.h>
 #include <exadg/operators/solution_transfer.h>
 #include <exadg/operators/modal_filter.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
@@ -61,6 +62,9 @@ private:
   typedef dealii::LinearAlgebra::distributed::Vector<Number> VectorType;
 
   typedef dealii::LinearAlgebra::distributed::BlockVector<Number> BlockVectorType;
+
+  typedef dealii::VectorizedArray<Number> scalar;
+  typedef dealii::Tensor<1, dim, scalar>  vector;
 public:
   /*
    * Constructor.
@@ -234,6 +238,100 @@ public:
                           BlockVectorType const & src) const;
 
   /*
+   * Inverse mass operator for all blocks; with enrichment of RANS variables the block inverse
+   * (thesis Eqs. (6.16), (6.17)) on the enriched cells. dst and src may be the same vector.
+   */
+  void
+  apply_inverse_mass_operator(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  /*
+   * Enrichment of RANS variables, conv-diff operator: mass term of the enriched variables with
+   * the block mass on the enriched cells, dst.block(r) += f (M_block - M) src (enriched cells),
+   * dst.block(n_blocks + i) = f M_block src (psi v_tilde rows), f = scaling factor of the mass
+   */
+  void
+  apply_add_enriched_mass_correction(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  /*
+   * Enrichment of RANS variables, preconditioner of the W_tilde blocks: dst = (1/f) S^+ src, the
+   * W_tilde part of the block inverse mass for a zero bar part (f = scaling factor of the mass)
+   */
+  void
+  apply_enrichment_preconditioner(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  /*
+   * Enrichment of RANS variables: re-expresses a stored solution W_bar + psi_old W_tilde in the
+   * space with the current psi (L2 projection on the enriched cells, after
+   * FunctionEnrichmentRANS::update()); identity on all other cells.
+   */
+  void
+  project_enrichment_history(BlockVectorType & solution) const;
+
+  /*
+   * Enrichment of RANS variables, initial values: on the enriched cells the enriched variables
+   * become the L2 projection of the wall law (u_tau of the fluid) onto the enriched space
+   * (W_bar, W_tilde); all other cells and variables unchanged.
+   */
+  void
+  initialize_enrichment(BlockVectorType & solution) const;
+
+  /*
+   * Enrichment of RANS variables: W_tilde blocks -> projector P onto the well-posed enrichment
+   * modes (FunctionEnrichmentRANS); the linear systems are solved on W_tilde in range(P). No-op
+   * without enrichment.
+   */
+  void
+  apply_enrichment_projector(BlockVectorType & vector) const;
+
+  /*
+   * Output (VTU, line plots): dst = src, with the enriched RANS block replaced by its total
+   * field at the nodes, omega_bar + psi_omega omega_tilde (or W_bar + psi_omega W_tilde), on the
+   * enriched cells. Without enrichment dst = src.
+   */
+  void
+  get_solution_for_output(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  // enrichment of RANS variables: k of the RANS solution (block 0) to FunctionEnrichmentRANS (k+
+  // and wall distance of the wall cells, k criterion of the omega enrichment)
+  void
+  set_enrichment_turbulent_kinetic_energy(BlockVectorType const & solution) const
+  {
+    if(not function_enrichment_rans)
+      return;
+    bool const k_logarithmic = param.turbulence_model_data.positivity_preserving_limiter[0] ==
+                               PositivityPreservingLimiter::LogarithmicTransportVariable;
+    function_enrichment_rans->set_turbulent_kinetic_energy(solution.block(0), k_logarithmic);
+  }
+
+#ifdef EXADG_DEBUG
+  // diagnostics of the wall layer of every enriched variable
+  // (FunctionEnrichmentRANS::print_wall_diagnostics)
+  void
+  print_enrichment_wall_diagnostics(BlockVectorType const & solution,
+                                    unsigned int const      time_step_number) const;
+#endif
+
+#ifdef EXADG_DEBUG
+  // diagnostics: dst += Newton_Implicit part of one group of turbulence terms applied to src
+  // (TurbulenceSourceOperator::apply_add_newton_implicit_part)
+  void
+  apply_add_turbulence_jacobian_part(BlockVectorType &       dst,
+                                     BlockVectorType const & src,
+                                     unsigned int const      part) const
+  {
+    turbulence_source_operator.apply_add_newton_implicit_part(dst, src, part);
+  }
+
+  // diagnostics: term balance of the enriched wall cells at the x stations, printed by the next
+  // evaluation of the turbulence terms (TurbulenceSourceOperator::request_omega_balance)
+  void
+  request_omega_balance(std::vector<double> const & x_stations, unsigned int const time_step) const
+  {
+    turbulence_source_operator.request_omega_balance(x_stations, time_step);
+  }
+#endif
+
+  /*
    * This function applies the convective operator to the src-vector and writes the result to the
    * dst-vector. It is needed for throughput measurements of the matrix-free implementation.
    */
@@ -377,12 +475,26 @@ public:
   void
   set_eddy_viscosity_wall_law(VectorType const & eddy_viscosity_wall_law) const;
 
+  void
+  set_tke_production_from_wall_law(VectorType const & tke_production_from_wall_law,
+                                   VectorType const & wall_cell_indicator) const;
+
   // wall model: exact velocity gradient of the enriched cells (dim*dim fields) and its indicator,
   // on the eddy viscosity DoFHandler; replaces the gradient of the velocity field in the cell terms
   // of the turbulence source terms where indicator = 1
   void
   set_velocity_gradient_enriched(std::vector<VectorType> const & velocity_gradient,
                                  VectorType const &              indicator) const;
+
+  // wall model: enrichment of RANS variables in the wall cells (omega_h = omega_bar + psi_omega
+  // omega_tilde); set by the driver after setup(), before the DoF vectors are initialized
+  void
+  set_function_enrichment_rans(
+    std::shared_ptr<FunctionEnrichmentRANS<dim, Number>> function_enrichment_rans_in);
+
+  // nullptr: no enrichment of RANS variables
+  std::shared_ptr<FunctionEnrichmentRANS<dim, Number>> const &
+  get_function_enrichment_rans() const;
 
   /*
    * Dof index for eddy viscosity (in case of turbulence model with eddy viscosity).
@@ -526,6 +638,55 @@ private:
    */
   std::shared_ptr<dealii::FiniteElement<dim>> fe_eddy_viscosity;
   std::shared_ptr<dealii::DoFHandler<dim>>    dof_handler_eddy_viscosity;
+
+  /*
+   * Enrichment of RANS variables in the wall cells (nullptr: none).
+   */
+  std::shared_ptr<FunctionEnrichmentRANS<dim, Number>> function_enrichment_rans;
+
+  /*
+   * Enrichment of RANS variables: explicit convective term of the enriched variables on the
+   * enriched wall cells and their faces (evaluate_convective_term), MatrixFree of
+   * FunctionEnrichmentRANS, exact velocity u_h. dst.block(r) += C(psi W_tilde) (enriched and halo
+   * cells), dst.block(n_blocks + i) = psi v_tilde rows of C(W_h).
+   */
+  void
+  evaluate_add_enriched_convective_term(BlockVectorType &       dst,
+                                        BlockVectorType const & src,
+                                        double const            time) const;
+
+  void
+  cell_loop_convective_enriched(dealii::MatrixFree<dim, Number> const &       matrix_free,
+                                std::vector<VectorType> &                     dst,
+                                BlockVectorType const &                       src,
+                                std::pair<unsigned int, unsigned int> const & cell_range) const;
+
+  void
+  face_loop_convective_enriched(dealii::MatrixFree<dim, Number> const &       matrix_free,
+                                std::vector<VectorType> &                     dst,
+                                BlockVectorType const &                       src,
+                                std::pair<unsigned int, unsigned int> const & face_range) const;
+
+  void
+  boundary_face_loop_convective_enriched(
+    dealii::MatrixFree<dim, Number> const &       matrix_free,
+    std::vector<VectorType> &                     dst,
+    BlockVectorType const &                       src,
+    std::pair<unsigned int, unsigned int> const & face_range) const;
+
+  // numerical flux of the convective term (DivergenceFormulation), as ExaDG's ConvectiveKernel
+  scalar
+  convective_flux_enriched(scalar const & value_m,
+                           scalar const & value_p,
+                           scalar const & normal_velocity_m,
+                           scalar const & normal_velocity_p) const;
+
+  // enriched variable and time of the current evaluate_add_enriched_convective_term() call
+  mutable unsigned int variable_convective_enriched = 0;
+  mutable double       time_convective_enriched     = 0.0;
+
+  // per enriched variable: nodal values psi W_tilde (global RANS layout) for the eddy viscosity
+  mutable std::vector<VectorType> enrichment_nodal;
 
   /*
    * Constraints.

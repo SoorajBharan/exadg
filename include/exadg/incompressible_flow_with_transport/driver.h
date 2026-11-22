@@ -166,6 +166,8 @@ private:
   mutable VectorType      turbulent_kinetic_energy;
   // wall model: upper bound nu_t^psi of the RANS eddy viscosity (fluid -> RANS)
   mutable VectorType      eddy_viscosity_wall_law;
+  mutable VectorType      tke_production_from_wall_law;
+  mutable VectorType      wall_cell_indicator;
   // wall model: exact velocity gradient of the enriched cells (dim*dim fields) and its indicator
   // for the RANS cell terms (fluid -> RANS)
   mutable std::vector<VectorType> velocity_gradient_enriched;

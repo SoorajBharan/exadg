@@ -478,6 +478,54 @@ TimeIntBDF<dim, Number>::prepare_vectors_for_next_timestep()
 
 template<int dim, typename Number>
 void
+TimeIntBDF<dim, Number>::update_enrichment_space(std::function<void()> const & update_psi)
+{
+  // explicit-term histories that exist in this setup (not initialized: no blocks)
+  std::vector<BlockVectorType *> histories;
+  for(auto & vector : vec_convective_term)
+    if(vector.n_blocks() > 0)
+      histories.push_back(&vector);
+  for(auto & vector : vec_source_term)
+    if(vector.n_blocks() > 0)
+      histories.push_back(&vector);
+
+  // (1) tested with the old psi -> fields (old block inverse mass)
+  for(BlockVectorType * history : histories)
+    pde_operator->apply_inverse_mass_operator(*history, *history);
+
+  // (2) k criterion with k of Q^n, then the new psi and new block inverse mass
+  set_enrichment_turbulent_kinetic_energy();
+  update_psi();
+
+  // (3) first call (u_tau of the fluid known for the first time): all stored solutions start
+  //     from the wall law on the enriched cells (no jump of W in the first time steps);
+  //     afterwards: projection onto the space with the new psi
+  if(not enrichment_initialized)
+  {
+    for(unsigned int i = 0; i < solution.size(); ++i)
+      pde_operator->initialize_enrichment(solution[i]);
+    enrichment_initialized = true;
+  }
+  else
+  {
+    for(unsigned int i = 0; i < solution.size(); ++i)
+      pde_operator->project_enrichment_history(solution[i]);
+  }
+  for(BlockVectorType * history : histories)
+    pde_operator->project_enrichment_history(*history);
+
+  // (4) fields -> tested with the new psi (new block mass)
+  BlockVectorType field;
+  pde_operator->initialize_dof_vector(field);
+  for(BlockVectorType * history : histories)
+  {
+    field = *history;
+    pde_operator->apply_mass_operator(*history, field);
+  }
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDF<dim, Number>::ale_update()
 {
   // and compute grid coordinates at the end of the current time step t_{n+1}
@@ -824,7 +872,14 @@ TimeIntBDF<dim, Number>::postprocessing() const
     helpers_ale->update_pde_operator_after_grid_motion();
   }
 
-  postprocessor->do_postprocessing(solution[0], this->get_time(), this->get_time_step_number());
+  // enrichment of RANS variables: total field omega_h at the nodes instead of omega_bar
+  BlockVectorType solution_output;
+  pde_operator->initialize_dof_vector(solution_output);
+  pde_operator->get_solution_for_output(solution_output, solution[0]);
+
+  postprocessor->do_postprocessing(solution_output,
+                                   this->get_time(),
+                                   this->get_time_step_number());
 
   this->timer_tree->insert({"Timeloop", "Postprocessing"}, timer.wall_time());
 }

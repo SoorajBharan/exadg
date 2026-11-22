@@ -44,6 +44,35 @@ namespace ExaDG
 namespace ConvDiff
 {
 /*
+ * Enrichment of RANS variables: the solution has the RANS variables (blocks 0 .. n - 1, MatrixFree
+ * of the RANS operator) followed by the enrichment blocks (W_tilde, MatrixFree of
+ * FunctionEnrichmentRANS). Loops of the RANS MatrixFree only accept the first n blocks.
+ */
+
+// copy of the first n blocks of full
+template<typename Number>
+dealii::LinearAlgebra::distributed::BlockVector<Number>
+copy_leading_blocks(dealii::LinearAlgebra::distributed::BlockVector<Number> const & full,
+                    unsigned int const                                             n)
+{
+  dealii::LinearAlgebra::distributed::BlockVector<Number> part(n);
+  for(unsigned int b = 0; b < n; ++b)
+    part.block(b) = full.block(b);
+  part.collect_sizes();
+  return part;
+}
+
+// the blocks of part back into the first blocks of full
+template<typename Number>
+void
+copy_back_leading_blocks(dealii::LinearAlgebra::distributed::BlockVector<Number> const & part,
+                         dealii::LinearAlgebra::distributed::BlockVector<Number> &       full)
+{
+  for(unsigned int b = 0; b < part.n_blocks(); ++b)
+    full.block(b) = part.block(b);
+}
+
+/*
  *  Base class for variable viscosity models.
  */
 template<int dim, typename Number>
@@ -108,6 +137,11 @@ public:
   void
   set_velocity_ptr(VectorType const & velocity_in);
 
+  // enrichment of RANS variables: nodal field added to the transported variable `variable`
+  // before the eddy viscosity is evaluated (W_node = W_bar_node + field_node); nullptr: none
+  void
+  set_enrichment_nodal(unsigned int const variable, VectorType const * field);
+
   void
   enforce_positivity(BlockVectorType & solution) const;
 
@@ -158,6 +192,9 @@ private:
   InverseMassOperator<dim, 1, Number> inverse_mass_viscosity;
 
   mutable lazy_ptr<VectorType> velocity;
+
+  // per transported variable: nodal enrichment field (nullptr: not enriched)
+  std::vector<VectorType const *> enrichment_nodal;
 
 protected:
   unsigned int dof_index;
