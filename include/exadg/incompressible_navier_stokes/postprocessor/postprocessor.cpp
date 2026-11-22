@@ -114,6 +114,28 @@ PostProcessor<dim, Number>::setup(Operator const & pde_operator)
 
 template<int dim, typename Number>
 void
+PostProcessor<dim, Number>::setup_after_coarsening_and_refinement()
+{
+  AssertThrow(not pp_data.pointwise_output_data.time_control_data.is_active,
+              dealii::ExcMessage("Pointwise output is not implemented together with adaptive mesh refinement."));
+
+  AssertThrow(not pp_data.kinetic_energy_spectrum_data.time_control_data.is_active,
+              dealii::ExcMessage("The kinetic energy spectrum is not implemented together with adaptive mesh refinement."));
+
+  AssertThrow(not pp_data.output_data.mean_velocity.is_active,
+              dealii::ExcMessage("The mean velocity is not implemented together with adaptive mesh refinement."));
+
+  initialize_derived_fields();
+
+  dealii::MatrixFree<dim, Number> const & matrix_free = navier_stokes_operator->get_matrix_free();
+
+  lift_and_drag_calculator.reinit_matrix_free(matrix_free);
+  div_and_mass_error_calculator.reinit_matrix_free(matrix_free);
+  kinetic_energy_calculator.reinit_matrix_free(matrix_free);
+}
+
+template<int dim, typename Number>
+void
 PostProcessor<dim, Number>::do_postprocessing(VectorType const &     velocity,
                                               VectorType const &     pressure,
                                               double const           time,

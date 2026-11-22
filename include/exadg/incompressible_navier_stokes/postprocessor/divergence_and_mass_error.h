@@ -82,6 +82,12 @@ public:
         MassConservationData const &            data_in);
 
   void
+  reinit_matrix_free(dealii::MatrixFree<dim, Number> const & matrix_free_in)
+  {
+    matrix_free = &matrix_free_in;
+  }
+
+  void
   evaluate(VectorType const & velocity, double const time, bool const unsteady);
 
   TimeControl time_control;

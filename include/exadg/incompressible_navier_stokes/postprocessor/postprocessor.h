@@ -81,6 +81,9 @@ public:
   setup(Operator const & pde_operator) override;
 
   void
+  setup_after_coarsening_and_refinement() override;
+
+  void
   do_postprocessing(VectorType const &     velocity,
                     VectorType const &     pressure,
                     double const           time             = 0.0,

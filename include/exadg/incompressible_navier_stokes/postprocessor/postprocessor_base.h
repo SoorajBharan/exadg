@@ -22,6 +22,7 @@
 #ifndef INCLUDE_EXADG_INCOMPRESSIBLE_NAVIER_STOKES_POSTPROCESSOR_POSTPROCESSOR_BASE_H_
 #define INCLUDE_EXADG_INCOMPRESSIBLE_NAVIER_STOKES_POSTPROCESSOR_POSTPROCESSOR_BASE_H_
 
+#include <deal.II/base/exceptions.h>
 #include <exadg/incompressible_navier_stokes/postprocessor/postprocessor_interface.h>
 
 namespace ExaDG
@@ -52,6 +53,13 @@ public:
    */
   virtual void
   setup(Operator const & pde_operator) = 0;
+
+  virtual void
+  setup_after_coarsening_and_refinement()
+  {
+    AssertThrow(false,
+                dealii::ExcMessage("AMR is not implement for this postprocessing"));
+  }
 };
 
 

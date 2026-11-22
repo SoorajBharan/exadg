@@ -242,6 +242,8 @@ Driver<dim, Number>::setup_after_coarsening_and_refinement() const
 
   // new DoFs, constraints, MatrixFree, operators, preconditioners and solvers
   pde_operator->setup_after_coarsening_and_refinement();
+
+  postprocessor->setup_after_coarsening_and_refinement();
 }
 
 template<int dim, typename Number>

@@ -91,6 +91,12 @@ public:
         LiftAndDragData const &                 lift_and_drag_data_in);
 
   void
+  reinit_matrix_free(dealii::MatrixFree<dim, Number> const & matrix_free_in)
+  {
+    matrix_free = &matrix_free_in;
+  }
+
+  void
   evaluate(VectorType const & velocity, VectorType const & pressure, double const time) const;
 
   TimeControl time_control;
