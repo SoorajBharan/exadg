@@ -134,6 +134,15 @@ Operator<dim, Number>::initialize_dof_handler_and_constraints()
 }
 
 template<int dim, typename Number>
+bool
+Operator<dim, Number>::uses_block_diagonal_with_ghost_faces() const
+{
+  return param.preconditioner == Preconditioner::BlockJacobi and
+         not param.implement_block_diagonal_preconditioner_matrix_free and
+         not param.use_cell_based_face_loops;
+}
+
+template<int dim, typename Number>
 void
 Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const
 {
@@ -175,6 +184,9 @@ Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matri
   // dealii::DoFHandler, dealii::AffineConstraints
   matrix_free_data.insert_dof_handler(&dof_handler, get_dof_name());
   matrix_free_data.insert_constraint(&affine_constraints, get_dof_name());
+
+  if(uses_block_diagonal_with_ghost_faces())
+    matrix_free_data.data.hold_all_faces_to_owned_cells = true;
 
   if(needs_own_dof_handler_velocity())
   {
@@ -417,6 +429,7 @@ Operator<dim, Number>::setup_operators()
       combined_operator_data.bc                   = boundary_descriptor_block[b];
       combined_operator_data.use_cell_based_loops = param.use_cell_based_face_loops;
       combined_operator_data.implement_block_diagonal_preconditioner_matrix_free =  param.implement_block_diagonal_preconditioner_matrix_free;
+      combined_operator_data.block_diagonal_with_ghost_faces = uses_block_diagonal_with_ghost_faces();
       combined_operator_data.solver_block_diagonal         = param.solver_block_diagonal;
       combined_operator_data.preconditioner_block_diagonal = param.preconditioner_block_diagonal;
       combined_operator_data.solver_data_block_diagonal    = param.solver_data_block_diagonal;

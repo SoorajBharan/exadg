@@ -634,11 +634,8 @@ OperatorBase<dim, Number, n_components>::add_block_diagonal_matrices(
     }
     else
     {
-      AssertThrow(
-        n_mpi_processes == 1,
-        dealii::ExcMessage(
-          "Block diagonal calculation with separate loops over cells and faces only works in serial. "
-          "Use cell based loops for parallel computations."));
+      AssertThrow(n_mpi_processes == 1 or data.block_diagonal_with_ghost_faces,
+                  dealii::ExcMessage("Block diagonal calculation with separate loops over cells and faces only works in serial. Use cell based loops for parallel computations."));
 
       matrix_free->loop(&This::cell_loop_block_diagonal,
                         &This::face_loop_block_diagonal,
@@ -646,6 +643,22 @@ OperatorBase<dim, Number, n_components>::add_block_diagonal_matrices(
                         this,
                         matrices,
                         matrices);
+
+      if(n_mpi_processes > 1)
+      {
+        unsigned int const n_ghost_faces = matrix_free->n_ghost_inner_face_batches();
+
+        AssertThrow(dealii::Utilities::MPI::sum(n_ghost_faces,
+                                                matrix_free->get_dof_handler(data.dof_index).get_communicator()) > 0,
+                    dealii::ExcMessage("Block diagonal calculation in parallel without cell based loops: set MatrixFree::AdditionalData::hold_all_faces_to_owned_cells = true."));
+
+        unsigned int const begin = matrix_free->n_inner_face_batches() + matrix_free->n_boundary_face_batches();
+
+        face_loop_block_diagonal(*matrix_free,
+                                 matrices,
+                                 matrices,
+                                 std::make_pair(begin, begin + n_ghost_faces));
+      }
     }
   }
   else
@@ -1805,8 +1818,10 @@ OperatorBase<dim, Number, n_components>::face_loop_block_diagonal(
       for(unsigned int v = 0; v < n_filled_lanes; ++v)
       {
         unsigned int const cell = matrix_free.get_face_info(face).cells_interior[v];
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
-          matrices[cell](i, j) += integrator_m.begin_dof_values()[i][v];
+
+        if(cell < matrices.size())
+          for(unsigned int i = 0; i < dofs_per_cell; ++i)
+            matrices[cell](i, j) += integrator_m.begin_dof_values()[i][v];
       }
     }
 
@@ -1824,8 +1839,9 @@ OperatorBase<dim, Number, n_components>::face_loop_block_diagonal(
       for(unsigned int v = 0; v < n_filled_lanes; ++v)
       {
         unsigned int const cell = matrix_free.get_face_info(face).cells_exterior[v];
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
-          matrices[cell](i, j) += integrator_p.begin_dof_values()[i][v];
+        if(cell < matrices.size())
+          for(unsigned int i = 0; i < dofs_per_cell; ++i)
+            matrices[cell](i, j) += integrator_p.begin_dof_values()[i][v];
       }
     }
   }

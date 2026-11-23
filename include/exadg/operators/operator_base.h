@@ -67,6 +67,7 @@ struct OperatorBaseData
       operator_is_singular(false),
       use_cell_based_loops(false),
       implement_block_diagonal_preconditioner_matrix_free(false),
+      block_diagonal_with_ghost_faces(false),
       solver_block_diagonal(Elementwise::Solver::GMRES),
       preconditioner_block_diagonal(Elementwise::Preconditioner::InverseMassMatrix),
       solver_data_block_diagonal(SolverData(1000, 1.e-12, 1.e-2, 1000))
@@ -95,6 +96,8 @@ struct OperatorBaseData
 
   // block Jacobi preconditioner
   bool implement_block_diagonal_preconditioner_matrix_free;
+
+  bool block_diagonal_with_ghost_faces;
 
   // elementwise iterative solution of block Jacobi problems
   Elementwise::Solver         solver_block_diagonal;

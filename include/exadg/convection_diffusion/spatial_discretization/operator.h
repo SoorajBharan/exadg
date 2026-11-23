@@ -82,6 +82,9 @@ public:
   void
   fill_matrix_free_data(MatrixFreeData<dim, Number> & matrix_free_data) const;
 
+  bool
+  uses_block_diagonal_with_ghost_faces() const;
+
   /**
    * Call this setup() function if the dealii::MatrixFree object can be set up by the present class.
    */
