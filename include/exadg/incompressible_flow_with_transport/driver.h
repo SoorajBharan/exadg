@@ -98,6 +98,12 @@ private:
   initialize_coupling_vectors() const;
 
   void
+  mark_cells_coarsening_and_refinement() const;
+
+  void
+  do_adaptive_refinement() const;
+
+  void
   synchronize_time_step_size() const;
 
   // MPI communicator

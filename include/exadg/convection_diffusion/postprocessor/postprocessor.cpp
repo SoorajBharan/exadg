@@ -101,8 +101,12 @@ template<int dim, typename Number>
 void
 PostProcessor<dim, Number>::setup_after_coarsening_and_refinement()
 {
-  // The `error_calculator` and `output_generator` do not require any additional setup after
-  // coarsening and refinement.
+  if(conv_diff_operator->get_turbulence_model_data().is_active)
+  {
+    initialize_additional_fields();
+
+    conv_diff_operator->initialize_dof_vector_eddy_viscosity(nu_t);
+  }
 }
 
 template<int dim, typename Number>

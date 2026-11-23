@@ -396,9 +396,6 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
     AssertThrow(not wall_enrichment_enabled,
                 dealii::ExcMessage("Combination of adaptive mesh refinement and wall enrichment not implemented yet."));
 
-    AssertThrow(not turbulence_model_data.rans_model,
-                dealii::ExcMessage("Combination of adaptive mesh refinement and RANS models not implemented yet."));
-
     AssertThrow(calculation_of_time_step_size == TimeStepCalculation::UserSpecified or (calculation_of_time_step_size == TimeStepCalculation::CFL and adaptive_time_stepping == true),
                 dealii::ExcMessage("Adaptive mesh refinement requires either TimeStepCalculation::UserSpecified, or TimeStepCalculation::CFL together with adaptive_time_stepping =  true."));
 

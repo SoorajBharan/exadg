@@ -18,12 +18,15 @@
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *  ______________________________________________________________________
  */
+#include <deal.II/fe/mapping_q_cache.h>
 
 #include <exadg/convection_diffusion/time_integration/create_time_integrator.h>
+#include <exadg/grid/grid_utilities.h>
 #include <exadg/incompressible_flow_with_transport/driver.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/create_operator.h>
 #include <exadg/incompressible_navier_stokes/time_integration/create_time_integrator.h>
 #include <exadg/utilities/print_solver_results.h>
+#include <exadg/operators/adaptive_mesh_refinement.h>
 
 namespace ExaDG
 {
@@ -198,19 +201,36 @@ Driver<dim, Number>::setup()
     AssertThrow(n_scalars > 0,
                 dealii::ExcMessage("Boussinesq term: the temperature (scalar 0) is missing."));
     AssertThrow(not(rans_enabled and rans_scalar_index == 0),
-                dealii::ExcMessage("Boussinesq term: scalar 0 is the temperature, the "
-                                   "turbulence model has to be solved by another scalar."));
+                dealii::ExcMessage("Boussinesq term: scalar 0 is the temperature, the turbulence model has to be solved by another scalar."));
     AssertThrow(application->scalars[0]->get_parameters().number_of_transport_variables == 1,
-                dealii::ExcMessage("Boussinesq term: the temperature (scalar 0) has to be a "
-                                   "single transport variable."));
+                dealii::ExcMessage("Boussinesq term: the temperature (scalar 0) has to be a single transport variable."));
   }
 
   if(rans_enabled)
   {
     AssertThrow(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
                 ConvDiff::TemporalDiscretization::BDF,
-                dealii::ExcMessage("Turbulence model: use TemporalDiscretization::BDF for the "
-                                   "RANS scalar."));
+                dealii::ExcMessage("Turbulence model: use TemporalDiscretization::BDF for the RANS scalar."));
+  }
+
+  if(application->fluid->get_parameters().enable_adaptivity)
+  {
+    for(unsigned int i = 0; i < n_scalars; ++i)
+    {
+      AssertThrow(not application->scalars[i]->get_parameters().enable_adaptivity,
+                  dealii::ExcMessage("Adaptive mesh refinement of the coupled solver is set in the fluid parameters; set enable_adaptivity = false for the scalars."));
+      AssertThrow(application->scalars[i]->get_parameters().temporal_discretization == ConvDiff::TemporalDiscretization::BDF,
+                  dealii::ExcMessage("Adaptive mesh refinement: the scalars need BDF time integration."));
+    }
+
+    setup_operators();
+
+    if(rans_enabled)
+      AssertThrow(not application->scalars[rans_scalar_index]
+                        ->get_parameters()
+                        .turbulence_model_data.omega_enrichment,
+                  dealii::ExcMessage("Combination of adaptive mesh refinement and the "
+                                     "enrichment of omega not implemented yet."));
   }
 
   // setup of the fluid and scalar operators with the shared MatrixFree object
@@ -484,6 +504,120 @@ Driver<dim, Number>::initialize_coupling_vectors() const
     scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
       velocity_gradient_indicator);
   }
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  AdaptiveMeshRefinementData const & amr_data = application->fluid->get_parameters().amr_data;
+
+  // error indicators of all fields and their weights: the velocity (fluid), then the transport
+  // variables of each scalar (e.g. temperature, k, omega)
+  std::vector<dealii::Vector<float>> indicators;
+  std::vector<double>                weights;
+
+  auto const append_solver = [&](std::vector<dealii::Vector<float>> const & solver_indicators,
+                                 std::vector<double> const &                solver_weights) {
+      for(unsigned int field = 0; field < solver_indicators.size(); ++field)
+      {
+        indicators.push_back(solver_indicators[field]);
+        weights.push_back(solver_weights.empty() ? 1.0 : solver_weights[field]);
+      }
+    };
+  append_solver(fluid_operator->compute_error_indicators(fluid_time_integrator->get_velocity_np()),
+                amr_data.indicator_weights);
+
+  for(unsigned int i = 0; i < application->scalars.size(); ++i)
+  {
+    std::shared_ptr<ConvDiff::TimeIntBDF<dim, Number>> const time_integrator_scalar =
+      std::dynamic_pointer_cast<ConvDiff::TimeIntBDF<dim, Number>>(scalar_time_integrator[i]);
+    AssertThrow(time_integrator_scalar != nullptr,
+                dealii::ExcMessage("Adaptive mesh refinement: the scalars need BDF time "
+                                   "integration."));
+
+    append_solver(
+      scalar_operator[i]->compute_error_indicators(time_integrator_scalar->get_solution_np()),
+      application->scalars[i]->get_parameters().amr_data.indicator_weights);
+  }
+
+  // one indicator per cell (normalized, weighted, combined), marking with the fluid parameters
+  dealii::Vector<float> const indicator =
+    combine_indicators(indicators, weights, amr_data.indicator_combination, mpi_comm);
+
+  mark_cells(*grid->triangulation, indicator, amr_data);
+
+  timer_tree.insert({"Flow + transport", "Adaptive mesh refinement", "Mark cells (Kelly)"},
+                    timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::do_adaptive_refinement() const
+{
+  dealii::Timer timer;
+  timer.restart();
+
+  IncNS::Parameters const & fluid_param = application->fluid->get_parameters();
+
+  // remove flags at the minimum/maximum refinement level (and on the boundary if requested)
+  limit_coarsening_and_refinement(*grid->triangulation, fluid_param.amr_data);
+
+  if(any_cells_flagged_for_coarsening_or_refinement(*grid->triangulation))
+  {
+    AssertThrow(std::dynamic_pointer_cast<dealii::MappingQCache<dim>>(mapping) == nullptr,
+                dealii::ExcMessage("Combination of adaptive mesh refinement and "
+                                   "dealii::MappingQCache not implemented."));
+
+    grid->triangulation->prepare_coarsening_and_refinement();
+
+    fluid_time_integrator->prepare_coarsening_and_refinement();
+    for(unsigned int i = 0; i < application->scalars.size(); ++i)
+      scalar_time_integrator[i]->prepare_coarsening_and_refinement();
+
+    grid->triangulation->execute_coarsening_and_refinement();
+
+    bool involves_h_multigrid = fluid_param.involves_h_multigrid();
+    for(unsigned int i = 0; i < application->scalars.size(); ++i)
+      involves_h_multigrid = involves_h_multigrid or application->scalars[i]->get_parameters().involves_h_multigrid();
+
+    if(involves_h_multigrid)
+    {
+      GridUtilities::create_coarse_triangulations_after_coarsening_and_refinement(
+        *grid->triangulation,
+        grid->periodic_face_pairs,
+        grid->coarse_triangulations,
+        grid->coarse_periodic_face_pairs,
+        fluid_param.grid,
+        fluid_param.amr_data.preserve_boundary_cells);
+    }
+
+    std::shared_ptr<dealii::MatrixFree<dim, Number> const> const matrix_free_old = matrix_free;
+    std::shared_ptr<MatrixFreeData<dim, Number> const> const     matrix_free_data_old = matrix_free_data;
+
+    fluid_operator->distribute_dofs_after_coarsening_and_refinement();
+    for(unsigned int i = 0; i < application->scalars.size(); ++i)
+      scalar_operator[i]->distribute_dofs_after_coarsening_and_refinement();
+
+    setup_matrix_free();
+    setup_operators();
+    initialize_coupling_vectors();
+    if(rans_enabled)
+      scalar_operator[rans_scalar_index]->initialize_dof_vector(rans_solution_extrapolated);
+
+    fluid_postprocessor->setup_after_coarsening_and_refinement();
+    for(unsigned int i = 0; i < application->scalars.size(); ++i)
+      scalar_postprocessor[i]->setup_after_coarsening_and_refinement();
+
+    fluid_time_integrator->interpolate_after_coarsening_and_refinement();
+    for(unsigned int i = 0; i < application->scalars.size(); ++i)
+      scalar_time_integrator[i]->interpolate_after_coarsening_and_refinement();
+  }
+  timer_tree.insert({"Flow + transport", "Adaptive mesh refinement", "Refine and transfer"},
+                    timer.wall_time());
 }
 
 template<int dim, typename Number>
@@ -841,6 +975,25 @@ Driver<dim, Number>::solve() const
     // scalar transport: advance one time step
     for(unsigned int i = 0; i < application->scalars.size(); ++i)
       scalar_time_integrator[i]->advance_one_timestep_solve();
+
+    /*
+       * adaptive mesh refinement: before post solve, so that the history vectors and the next time
+       * step size of the fluid and the scalars use the new mesh
+       */
+    if(application->fluid->get_parameters().enable_adaptivity and
+      trigger_coarsening_and_refinement_now(
+        application->fluid->get_parameters().amr_data.trigger_every_n_time_steps,
+        fluid_time_integrator->get_number_of_time_steps()))
+    {
+      dealii::Timer timer_amr;
+      timer_amr.restart();
+
+      mark_cells_coarsening_and_refinement();
+
+      do_adaptive_refinement();
+
+      timer_tree.insert({"Flow + transport", "Adaptive mesh refinement"}, timer_amr.wall_time());
+    }
 
     /*
      * post solve
