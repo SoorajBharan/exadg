@@ -252,6 +252,17 @@ combine_indicators(std::vector<dealii::Vector<float>> indicators,
   AssertThrow(weights.empty() or weights.size() == indicators.size(),
               dealii::ExcMessage("combine_indicators(): the number of weights has to be equal to "
                                  "the number of indicators (or zero for weight 1)."));
+  if(indicators.size() == 1)
+  {
+    double const weight = weights.empty() ? 1.0 : weights[0];
+    AssertThrow(weight >= 0.0,
+                dealii::ExcMessage("combine_indicators(): the weights must not be negative."));
+
+    if(weight > 0.0)
+      return indicators[0];
+    else
+      return dealii::Vector<float>(indicators[0].size());
+  }
 
   dealii::Vector<float> combined(indicators[0].size());
 

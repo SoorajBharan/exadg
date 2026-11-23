@@ -806,6 +806,23 @@ SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
 }
 
 template<int dim, typename Number>
+std::vector<dealii::Vector<float>>
+SpatialOperatorBase<dim, Number>::compute_error_indicators(VectorType const & velocity) const
+{
+  // one field: the velocity (Kelly indicator summed over all velocity components); Gauss points
+  // on the faces as for the marking of the stand-alone solver (degree_u + 1)
+  std::vector<dealii::Vector<float>> indicators;
+
+  indicators.push_back(compute_kelly_indicator(dof_handler_u,
+                                               constraint_u,
+                                               *get_mapping(),
+                                               velocity,
+                                               param.degree_u + 1));
+
+  return indicators;
+}
+
+template<int dim, typename Number>
 void
 SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
   std::vector<VectorType *> & vectors_velocity,

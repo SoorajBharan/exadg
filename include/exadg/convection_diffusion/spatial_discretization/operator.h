@@ -379,6 +379,9 @@ public:
   void
   interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors);
 
+  std::vector<dealii::Vector<float>>
+  compute_error_indicators(BlockVectorType const & solution) const;
+
   /*
    * This function solves the linear system of equations in case of implicit time integration or
    * steady-state problems (potentially involving the mass, convective, and diffusive

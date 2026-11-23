@@ -299,6 +299,15 @@ Parameters::check() const
                                    "only supported for hypercube elements."));
   }
 
+  AssertThrow(amr_data.indicator_weights.empty() or
+              amr_data.indicator_weights.size() == number_of_transport_variables,
+              dealii::ExcMessage("amr_data.indicator_weights: give one weight per transport variable (number_of_transport_variables) or none."));
+  for(double const weight : amr_data.indicator_weights)
+  {
+    AssertThrow(weight >= 0.0,
+                dealii::ExcMessage("amr_data.indicator_weights must not be negative."));
+  }
+
   AssertThrow(degree > 0, dealii::ExcMessage("Polynomial degree must be larger than zero."));
 
   if(equation_type == EquationType::Convection or

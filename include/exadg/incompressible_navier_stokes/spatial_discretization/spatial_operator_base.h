@@ -147,6 +147,9 @@ public:
   interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
                                               std::vector<VectorType *> & vectors_pressure);
 
+  std::vector<dealii::Vector<float>>
+  compute_error_indicators(VectorType const & velocity) const;
+
 protected:
   /*
    * This function initializes operators, preconditioners, and solvers related to the solution of

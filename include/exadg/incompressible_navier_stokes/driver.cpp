@@ -221,16 +221,17 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
   dealii::Timer timer;
   timer.restart();
 
-  // Kelly estimator on the velocity u_{n+1} of the time step that has just been solved; refine
-  // and coarsen fixed fractions of the cells (amr_data)
-  mark_cells_kelly_error_estimator(*grid->triangulation,
-                                   pde_operator->get_dof_handler_u(),
-                                   pde_operator->get_constraint_u(),
-                                   *pde_operator->get_mapping(),
-                                   time_integrator->get_velocity_np(),
-                                   application->get_parameters().degree_u +
-                                   1 /* n_face_quadrature_points */,
-                                   application->get_parameters().amr_data);
+  Parameters const & param = application->get_parameters();
+
+  std::vector<dealii::Vector<float>> const indicators =
+    pde_operator->compute_error_indicators(time_integrator->get_velocity_np());
+
+  dealii::Vector<float> const indicator = combine_indicators(indicators,
+                                                             param.amr_data.indicator_weights,
+                                                             param.amr_data.indicator_combination,
+                                                             mpi_comm);
+
+  mark_cells(*grid->triangulation, indicator, param.amr_data);
 
   timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement", "Mark cells (Kelly)"},
                     timer.wall_time());

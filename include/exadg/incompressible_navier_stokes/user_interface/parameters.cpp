@@ -401,6 +401,14 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
 
     AssertThrow(calculation_of_time_step_size == TimeStepCalculation::UserSpecified or (calculation_of_time_step_size == TimeStepCalculation::CFL and adaptive_time_stepping == true),
                 dealii::ExcMessage("Adaptive mesh refinement requires either TimeStepCalculation::UserSpecified, or TimeStepCalculation::CFL together with adaptive_time_stepping =  true."));
+
+    AssertThrow(amr_data.indicator_weights.empty() or amr_data.indicator_weights.size() == 1,
+                dealii::ExcMessage("amr_data.indicator_weights: the incompressible flow solver has one field (velocity), give one weight or none."));
+
+    for(double const weight : amr_data.indicator_weights)
+    {
+      AssertThrow(weight >= 0.0, dealii::ExcMessage("amr_data.indicator_weights must not be negative."));
+    }
   }
 
   // For the coupled solution approach, degree_p = 0 is allowed in principle.

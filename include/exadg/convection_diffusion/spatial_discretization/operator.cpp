@@ -1669,6 +1669,30 @@ Operator<dim, Number>::interpolate_after_coarsening_and_refinement(
 }
 
 template<int dim, typename Number>
+std::vector<dealii::Vector<float>>
+Operator<dim, Number>::compute_error_indicators(BlockVectorType const & solution) const
+{
+  // one field per transport variable (e.g. k and omega for a RANS model): block b of the solution
+  // lives on dof_handler; blocks behind n_blocks (enrichment of RANS variables) are no fields of
+  // this DoFHandler and are not used
+  AssertThrow(solution.n_blocks() >= n_blocks,
+              dealii::ExcMessage("compute_error_indicators(): the solution has fewer blocks than transport variables."));
+
+  std::vector<dealii::Vector<float>> indicators;
+
+  for(unsigned int b = 0; b < n_blocks; ++b)
+  {
+    indicators.push_back(compute_kelly_indicator(dof_handler,
+                                                 affine_constraints,
+                                                 *get_mapping(),
+                                                 solution.block(b),
+                                                 param.degree + 1));
+  }
+
+  return indicators;
+}
+
+template<int dim, typename Number>
 unsigned int
 Operator<dim, Number>::solve(BlockVectorType &       sol,
                              BlockVectorType const & rhs,
@@ -1767,7 +1791,7 @@ Operator<dim, Number>::calculate_time_step_cfl_global(double const time) const
     std::make_shared<dealii::Functions::ConstantFunction<dim>>(max_velocity, dim);
 
   return calculate_time_step_cfl_local<dim, Number>(*matrix_free,
-                                                    get_dof_index_velocity(),
+                                                    get_dof_index(),
                                                     get_quad_index(),
                                                     velocity_field,
                                                     time,

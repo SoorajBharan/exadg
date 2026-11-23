@@ -156,18 +156,16 @@ void
 Driver<dim, Number>::mark_cells_coarsening_and_refinement(dealii::Triangulation<dim> & tria,
                                                           BlockVectorType const & solution) const
 {
-  AssertThrow(solution.n_blocks() == 1,
-              dealii::ExcMessage(
-              "Adaptive mesh refinement is only implemented for one transport variable.")); 
+  Parameters const & param = application->get_parameters();
 
-  mark_cells_kelly_error_estimator(tria,
-                                   pde_operator->get_dof_handler(),
-                                   pde_operator->get_constraints(),
-                                   *pde_operator->get_mapping(),
-                                   solution.block(0),
-                                   application->get_parameters().degree +
-                                     1 /* n_face_quadrature_points */,
-                                   application->get_parameters().amr_data);
+  std::vector<dealii::Vector<float>> const indicators = pde_operator->compute_error_indicators(solution);
+
+  dealii::Vector<float> const indicator = combine_indicators(indicators,
+                                                             param.amr_data.indicator_weights,
+                                                             param.amr_data.indicator_combination,
+                                                             mpi_comm);
+
+  mark_cells(tria, indicator, param.amr_data);
 }
 
 template<int dim, typename Number>
