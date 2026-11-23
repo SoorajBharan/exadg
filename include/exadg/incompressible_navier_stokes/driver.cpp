@@ -280,6 +280,76 @@ Driver<dim, Number>::do_adaptive_refinement() const
         grid->coarse_periodic_face_pairs,
         param.grid,
         param.amr_data.preserve_boundary_cells);
+
+#ifdef EXADG_DEBUG
+      /*************************************DEBUG*********************************/
+      // Consistency of the h-multigrid levels (same check as deal.II's
+      // h_transfer_uses_first_child_policy): every locally owned active cell of a coarser level
+      // must be active or refined exactly once on the next finer level.
+      std::vector<dealii::Triangulation<dim> const *> mg_levels;
+      for(auto const & tria_coarse : grid->coarse_triangulations)
+      mg_levels.push_back(tria_coarse.get());
+      mg_levels.push_back(grid->triangulation.get());
+
+      unsigned int const rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
+
+      for(unsigned int l = 0; l < mg_levels.size(); ++l)
+        pcout << "  [AMR debug] h-level " << l
+          << ": n_global_levels = " << mg_levels[l]->n_global_levels()
+          << ", n_global_active_cells = " <<
+          mg_levels[l]->n_global_active_cells()
+          << std::endl;
+
+      for(unsigned int l = 0; l + 1 < mg_levels.size(); ++l)
+      {
+        unsigned int n_not_contained   = 0;
+        unsigned int n_refined_twice   = 0;
+        unsigned int n_printed_on_rank = 0;
+
+        for(auto const & cell : mg_levels[l]->active_cell_iterators())
+        {
+          if(not cell->is_locally_owned())
+            continue;
+
+          if(not mg_levels[l + 1]->contains_cell(cell->id()))
+          {
+            ++n_not_contained;
+            continue;
+          }
+          auto const cell_finer = mg_levels[l +
+            1]->create_cell_iterator(cell->id());
+
+          bool refined_twice = false;
+          if(cell_finer->has_children())
+            for(unsigned int c = 0; c < cell_finer->n_children(); ++c)
+              if(cell_finer->child(c)->has_children())
+                refined_twice = true;
+
+          if(refined_twice)
+          {
+            ++n_refined_twice;
+            if(n_printed_on_rank < 3)
+            {
+              std::cout << "  [AMR debug] rank " << rank << ": cell " <<
+                cell->id().to_string()
+                << " (level " << cell->level() << ", center " <<
+                cell->center()
+                << ") is refined more than once on h-level " << l + 1 <<
+                std::endl;
+              ++n_printed_on_rank;
+            }
+          }
+        }
+        pcout << "  [AMR debug] h-levels " << l << " -> " << l + 1
+          << ": cells refined more than once = "
+          << dealii::Utilities::MPI::sum(n_refined_twice, mpi_comm)
+          << ", cells not contained in the finer level = "
+          << dealii::Utilities::MPI::sum(n_not_contained, mpi_comm) <<
+          std::endl;
+      }
+
+      /****************************************************************************/
+#endif
     }
 
     setup_after_coarsening_and_refinement();

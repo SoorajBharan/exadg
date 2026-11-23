@@ -282,7 +282,8 @@ create_coarse_triangulations_automatically_from_fine_triangulation(
   PeriodicFacePairs<dim> const &                                   fine_periodic_face_pairs,
   std::vector<std::shared_ptr<dealii::Triangulation<dim> const>> & coarse_triangulations_const,
   std::vector<PeriodicFacePairs<dim>> &                            coarse_periodic_face_pairs,
-  GridData const &                                                 data)
+  GridData const &                                                 data,
+  bool const repartition_coarse_triangulations = true)
 {
   // In case of a serial or distributed triangulation, deal.II can automatically generate the
   // coarse triangulations.
@@ -309,11 +310,18 @@ create_coarse_triangulations_automatically_from_fine_triangulation(
       dealii::ExcMessage(
         "dealii::parallel::distributed::Triangulation does not support simplicial elements."));
 
-    coarse_triangulations_const =
-      dealii::MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
-        fine_triangulation,
-        BalancedGranularityPartitionPolicy<dim>(
-          dealii::Utilities::MPI::n_mpi_processes(fine_triangulation.get_communicator())));
+    if(repartition_coarse_triangulations)
+    {
+      coarse_triangulations_const =
+        dealii::MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
+          fine_triangulation,
+          BalancedGranularityPartitionPolicy<dim>(
+            dealii::Utilities::MPI::n_mpi_processes(fine_triangulation.get_communicator())));
+    }
+    else {
+      coarse_triangulations_const =
+        dealii::MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(fine_triangulation);
+    }
   }
   else
   {
@@ -592,11 +600,13 @@ create_coarse_triangulations_after_coarsening_and_refinement(
                     " requires boundary cells to be preserved."));
     }
 
-    create_coarse_triangulations_automatically_from_fine_triangulation(fine_triangulation,
-                                                                       fine_periodic_face_pairs,
-                                                                       coarse_triangulations_const,
-                                                                       coarse_periodic_face_pairs,
-                                                                       data);
+      create_coarse_triangulations_automatically_from_fine_triangulation(
+        fine_triangulation,
+        fine_periodic_face_pairs,
+        coarse_triangulations_const,
+        coarse_periodic_face_pairs,
+        data,
+        false /* repartition_coarse_triangulations */);
   }
   else if(data.triangulation_type == TriangulationType::FullyDistributed)
   {

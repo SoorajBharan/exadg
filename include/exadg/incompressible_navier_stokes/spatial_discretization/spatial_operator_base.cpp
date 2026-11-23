@@ -774,6 +774,9 @@ template<int dim, typename Number>
 void
 SpatialOperatorBase<dim, Number>::setup_after_coarsening_and_refinement()
 {
+  std::shared_ptr<dealii::MatrixFree<dim, Number> const> const matrix_free_old = matrix_free;
+  std::shared_ptr<MatrixFreeData<dim, Number> const> const matrix_free_data_old = matrix_free_data;
+
   constraint_u.clear();
   constraint_p.clear();
   constraint_u_scalar.clear();
