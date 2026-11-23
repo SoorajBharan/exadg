@@ -139,6 +139,14 @@ public:
   void
   setup_after_coarsening_and_refinement();
 
+  /**
+     * Adaptive mesh refinement, first part of setup_after_coarsening_and_refinement(): DoFs and
+     * constraints on the new mesh, without a new MatrixFree object. Used by coupled solvers that set
+     * up one MatrixFree object for several operators and then call setup(matrix_free, ...).
+     */
+  void
+  distribute_dofs_after_coarsening_and_refinement();
+
   void
   prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
                                     std::vector<VectorType *> & vectors_pressure);

@@ -165,21 +165,8 @@ Driver<dim, Number>::setup()
       mpi_comm);
   }
 
-  // initialize matrix_free
-  matrix_free_data = std::make_shared<MatrixFreeData<dim, Number>>();
-  matrix_free_data->append(fluid_operator);
-  for(unsigned int i = 0; i < n_scalars; ++i)
-    matrix_free_data->append(scalar_operator[i]);
-
-  matrix_free = std::make_shared<dealii::MatrixFree<dim, Number>>();
-  if(application->fluid->get_parameters().use_cell_based_face_loops)
-    Categorization::do_cell_based_loops(*grid->triangulation, matrix_free_data->data);
-
-  matrix_free->reinit(*dynamic_mapping,
-                      matrix_free_data->get_dof_handler_vector(),
-                      matrix_free_data->get_constraint_vector(),
-                      matrix_free_data->get_quadrature_vector(),
-                      matrix_free_data->data);
+  // initialize matrix_free (one object for the fluid and all scalars)
+  setup_matrix_free();
 
   for(unsigned int i = 0; i < n_scalars; ++i)
   {
@@ -221,77 +208,16 @@ Driver<dim, Number>::setup()
   if(rans_enabled)
   {
     AssertThrow(application->scalars[rans_scalar_index]->get_parameters().temporal_discretization ==
-                  ConvDiff::TemporalDiscretization::BDF,
+                ConvDiff::TemporalDiscretization::BDF,
                 dealii::ExcMessage("Turbulence model: use TemporalDiscretization::BDF for the "
                                    "RANS scalar."));
   }
 
-  // setup Navier-Stokes operator
-  if(application->fluid->get_parameters().boussinesq_term && rans_enabled)
-  {
-    // assume that the first scalar field with index 0 is the active scalar that
-    // couples to the incompressible Navier-Stokes equations
-    fluid_operator->setup(matrix_free,
-                          matrix_free_data,
-                          scalar_operator[0]->get_dof_name(),
-                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
-  }
-  else if(application->fluid->get_parameters().boussinesq_term)
-  {
-    // Pass only temperature (eddy viscosity defaults to "")
-    fluid_operator->setup(matrix_free, 
-                          matrix_free_data, 
-                          scalar_operator[0]->get_dof_name());
-  }
-  else if(rans_enabled)
-  {
-    // Pass empty temperature to reach the 4th argument for eddy viscosity
-    fluid_operator->setup(matrix_free, 
-                          matrix_free_data, 
-                          "", 
-                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
-  }
-  else
-  {
-    fluid_operator->setup(matrix_free, matrix_free_data);
-  }
+  // setup of the fluid and scalar operators with the shared MatrixFree object
+  setup_operators();
 
-  // setup convection-diffusion operator
-  for(unsigned int i = 0; i < n_scalars; ++i)
-  {
-    scalar_operator[i]->setup(matrix_free,
-                              matrix_free_data,
-                              fluid_operator->get_dof_name_velocity());
-  }
-
-  // Initialize DoF-vector temperature in case of transport->fluid coupling with Boussinesq term:
-  if(application->fluid->get_parameters().boussinesq_term)
-  {
-    // assume that the first scalar quantity with index 0 is the active scalar coupled to the
-    // incompressible Navier-Stokes equations via the Boussinesq term
-    scalar_operator[0]->initialize_dof_vector(temperature);
-  }
-
-  // Initialize DoF-vectors of the RANS -> fluid coupling (eddy viscosity and turbulent kinetic
-  // energy, both live on the eddy viscosity DoFHandler of the RANS scalar)
-  if(rans_enabled)
-  {
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(eddy_viscosity);
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
-      turbulent_kinetic_energy);
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
-      eddy_viscosity_wall_law);
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
-      tke_production_from_wall_law);
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
-      wall_cell_indicator);
-
-    velocity_gradient_enriched.resize(dim * dim);
-    for(auto & vec : velocity_gradient_enriched)
-      scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(vec);
-    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
-      velocity_gradient_indicator);
-  }
+  // DoF vectors of the coupling between fluid and scalars (temperature, RANS -> fluid, wall model)
+  initialize_coupling_vectors();
 
   // Enrichment of omega in the wall cells of the velocity enrichment:
   //   omega_h = omega_bar + psi_omega omega_tilde,  W_h = W_bar + ln(psi_omega) W_tilde (ln omega)
@@ -458,6 +384,106 @@ Driver<dim, Number>::setup()
   }
 
   timer_tree.insert({"Flow + transport", "Setup"}, timer.wall_time());
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::setup_matrix_free() const
+{
+  bool const ale = application->fluid->get_parameters().ale_formulation;
+
+  std::shared_ptr<dealii::Mapping<dim> const> dynamic_mapping =
+    ale ? ale_mapping->get_mapping() : mapping;
+
+  // one MatrixFree object for the fluid and all scalars: DoFHandlers, constraints and quadratures
+  // of all operators
+  matrix_free_data = std::make_shared<MatrixFreeData<dim, Number>>();
+  matrix_free_data->append(fluid_operator);
+  for(unsigned int i = 0; i < application->scalars.size(); ++i)
+    matrix_free_data->append(scalar_operator[i]);
+
+  matrix_free = std::make_shared<dealii::MatrixFree<dim, Number>>();
+  if(application->fluid->get_parameters().use_cell_based_face_loops)
+    Categorization::do_cell_based_loops(*grid->triangulation, matrix_free_data->data);
+
+  matrix_free->reinit(*dynamic_mapping,
+                      matrix_free_data->get_dof_handler_vector(),
+                      matrix_free_data->get_constraint_vector(),
+                      matrix_free_data->get_quadrature_vector(),
+                      matrix_free_data->data);
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::setup_operators() const
+{
+  // setup Navier-Stokes operator
+  if(application->fluid->get_parameters().boussinesq_term && rans_enabled)
+  {
+    // assume that the first scalar field with index 0 is the active scalar that
+    // couples to the incompressible Navier-Stokes equations
+    fluid_operator->setup(matrix_free,
+                          matrix_free_data,
+                          scalar_operator[0]->get_dof_name(),
+                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
+  }
+  else if(application->fluid->get_parameters().boussinesq_term)
+  {
+    // Pass only temperature (eddy viscosity defaults to "")
+    fluid_operator->setup(matrix_free, matrix_free_data, scalar_operator[0]->get_dof_name());
+  }
+  else if(rans_enabled)
+  {
+    // Pass empty temperature to reach the 4th argument for eddy viscosity
+    fluid_operator->setup(matrix_free,
+                          matrix_free_data,
+                          "",
+                          scalar_operator[rans_scalar_index]->get_dof_name_eddy_viscosity());
+  }
+  else
+  {
+    fluid_operator->setup(matrix_free, matrix_free_data);
+  }
+
+  // setup convection-diffusion operator
+  for(unsigned int i = 0; i < application->scalars.size(); ++i)
+  {
+    scalar_operator[i]->setup(matrix_free, matrix_free_data, fluid_operator->get_dof_name_velocity());
+  }
+}
+
+template<int dim, typename Number>
+void
+Driver<dim, Number>::initialize_coupling_vectors() const
+{
+  // Initialize DoF-vector temperature in case of transport->fluid coupling with Boussinesq term:
+  if(application->fluid->get_parameters().boussinesq_term)
+  {
+    // assume that the first scalar quantity with index 0 is the active scalar coupled to the
+    // incompressible Navier-Stokes equations via the Boussinesq term
+    scalar_operator[0]->initialize_dof_vector(temperature);
+  }
+
+  // Initialize DoF-vectors of the RANS -> fluid coupling (eddy viscosity and turbulent kinetic
+  // energy, both live on the eddy viscosity DoFHandler of the RANS scalar)
+  if(rans_enabled)
+  {
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(eddy_viscosity);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      turbulent_kinetic_energy);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      eddy_viscosity_wall_law);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      tke_production_from_wall_law);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      wall_cell_indicator);
+
+    velocity_gradient_enriched.resize(dim * dim);
+    for(auto & vec : velocity_gradient_enriched)
+      scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(vec);
+    scalar_operator[rans_scalar_index]->initialize_dof_vector_eddy_viscosity(
+      velocity_gradient_indicator);
+  }
 }
 
 template<int dim, typename Number>

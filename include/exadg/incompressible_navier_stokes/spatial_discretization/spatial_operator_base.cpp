@@ -772,19 +772,30 @@ SpatialOperatorBase<dim, Number>::setup()
 
 template<int dim, typename Number>
 void
-SpatialOperatorBase<dim, Number>::setup_after_coarsening_and_refinement()
+SpatialOperatorBase<dim, Number>::distribute_dofs_after_coarsening_and_refinement()
 {
-  std::shared_ptr<dealii::MatrixFree<dim, Number> const> const matrix_free_old = matrix_free;
-  std::shared_ptr<MatrixFreeData<dim, Number> const> const matrix_free_data_old = matrix_free_data;
-
+  // close() returns immediately for an AffineConstraints object that is already closed, so the
+  // content of the old mesh is cleared first
   constraint_u.clear();
   constraint_p.clear();
   constraint_u_scalar.clear();
   constraint_enrichment.clear();
 
+  // DoFs of velocity, pressure and scalar velocity on the new mesh, constraints
   initialize_dof_handler_and_constraints();
 
+  // the pressure DoF used to fix the pressure level (pure Dirichlet BC) has a new index
   initialization_pure_dirichlet_bc();
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::setup_after_coarsening_and_refinement()
+{
+  std::shared_ptr<dealii::MatrixFree<dim, Number> const> const matrix_free_old = matrix_free;
+  std::shared_ptr<MatrixFreeData<dim, Number> const> const matrix_free_data_old = matrix_free_data;
+
+  distribute_dofs_after_coarsening_and_refinement();
 
   setup();
 }

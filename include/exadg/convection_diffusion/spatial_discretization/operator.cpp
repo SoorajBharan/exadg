@@ -562,13 +562,29 @@ Operator<dim, Number>::setup(std::shared_ptr<dealii::MatrixFree<dim, Number> con
 
 template<int dim, typename Number>
 void
-Operator<dim, Number>::setup_after_coarsening_and_refinement()
+Operator<dim, Number>::distribute_dofs_after_coarsening_and_refinement()
 {
+  // close() returns immediately for an AffineConstraints object that is already closed, so the
+  // content of the old mesh is cleared first
+  affine_constraints.clear();
+
+  // DoFs of the transported quantities (and of the own velocity / eddy viscosity DoFHandlers if
+  // present) on the new mesh, constraints
   initialize_dof_handler_and_constraints();
 
   print_parameter(pcout,
                   "number of dofs (total) after adaptive mesh refinement",
                   dof_handler.n_dofs());
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::setup_after_coarsening_and_refinement()
+{
+  std::shared_ptr<dealii::MatrixFree<dim, Number> const> const matrix_free_old = matrix_free;
+  std::shared_ptr<MatrixFreeData<dim, Number> const> const     matrix_free_data_old = matrix_free_data;
+
+  distribute_dofs_after_coarsening_and_refinement();
 
   do_setup();
 }

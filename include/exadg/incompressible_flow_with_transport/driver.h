@@ -89,6 +89,15 @@ private:
   set_start_time() const;
 
   void
+  setup_matrix_free() const;
+
+  void
+  setup_operators() const;
+
+  void
+  initialize_coupling_vectors() const;
+
+  void
   synchronize_time_step_size() const;
 
   // MPI communicator
@@ -120,8 +129,8 @@ private:
   bool use_adaptive_time_stepping;
 
   //  MatrixFree (only a single object for both flow and transport problems)
-  std::shared_ptr<MatrixFreeData<dim, Number>>     matrix_free_data;
-  std::shared_ptr<dealii::MatrixFree<dim, Number>> matrix_free;
+  mutable std::shared_ptr<MatrixFreeData<dim, Number>>     matrix_free_data;
+  mutable std::shared_ptr<dealii::MatrixFree<dim, Number>> matrix_free;
 
   // INCOMPRESSIBLE NAVIER-STOKES
 
