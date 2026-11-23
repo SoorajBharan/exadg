@@ -30,16 +30,46 @@
 #include <deal.II/distributed/grid_refinement.h>
 #include <deal.II/distributed/solution_transfer.h>
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/fe/mapping.h>
 #include <deal.II/grid/grid_refinement.h>
+#include <deal.II/lac/affine_constraints.h>
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/solution_transfer.h>
 
 // ExaDG
 #include <exadg/utilities/print_functions.h>
 
+#include <string>
+#include <vector>
+#include <algorithm>
 
 namespace ExaDG
 {
+/**
+   * Rule for marking cells from the error indicator (deal.II GridRefinement):
+   *   FixedNumber:   the given fractions refer to the number of cells
+   *                  (refine_and_coarsen_fixed_number)
+   *   FixedFraction: the given fractions refer to the total error, i.e. the sum of the squared
+   *                  indicators (refine_and_coarsen_fixed_fraction)
+   */
+enum class MarkingStrategy
+{
+  FixedNumber,
+  FixedFraction
+};
+
+/**
+   * Combination of the normalized indicators of several fields (velocity, transport variables) into
+   * one indicator per cell:
+   *   Maximum:     eta_K = max_f ( w_f * eta_K^f / max_K eta_K^f )
+   *   WeightedSum: eta_K = sum_f ( w_f * eta_K^f / max_K eta_K^f )
+   */
+enum class IndicatorCombination
+{
+  Maximum,
+  WeightedSum
+};
+
 struct AdaptiveMeshRefinementData
 {
   AdaptiveMeshRefinementData()
@@ -48,7 +78,10 @@ struct AdaptiveMeshRefinementData
       minimum_refinement_level(0),
       preserve_boundary_cells(false),
       fraction_of_cells_to_be_refined(0.0),
-      fraction_of_cells_to_be_coarsened(0.0)
+      fraction_of_cells_to_be_coarsened(0.0),
+      marking_strategy(MarkingStrategy::FixedNumber),
+      indicator_combination(IndicatorCombination::Maximum),
+      indicator_weights()
   {
   }
 
@@ -62,6 +95,10 @@ struct AdaptiveMeshRefinementData
     print_parameter(pcout, "Preserve boundary cells", preserve_boundary_cells);
     print_parameter(pcout, "Fraction of cells to be refined", fraction_of_cells_to_be_refined);
     print_parameter(pcout, "Fraction of cells to be coarsened", fraction_of_cells_to_be_coarsened);
+    print_parameter(pcout, "Marking strategy", marking_strategy);
+    print_parameter(pcout, "Indicator combination", indicator_combination);
+    for(unsigned int i = 0; i < indicator_weights.size(); ++i)
+      print_parameter(pcout, "Indicator weight of field " + std::to_string(i), indicator_weights[i]);
   }
 
   unsigned int trigger_every_n_time_steps;
@@ -72,6 +109,10 @@ struct AdaptiveMeshRefinementData
 
   double fraction_of_cells_to_be_refined;
   double fraction_of_cells_to_be_coarsened;
+
+  MarkingStrategy marking_strategy;
+  IndicatorCombination indicator_combination;
+  std::vector<double> indicator_weights;
 };
 
 /**
@@ -144,6 +185,101 @@ any_cells_flagged_for_coarsening_or_refinement(dealii::Triangulation<dim> const 
   any_flag_set = dealii::Utilities::MPI::logical_or(any_flag_set, tria.get_communicator());
 
   return any_flag_set;
+}
+
+template<int dim, typename Number, typename VectorType>
+dealii::Vector<float>
+compute_kelly_indicator(
+  dealii::DoFHandler<dim> const & dof_handler,
+  dealii::AffineConstraints<Number> const & constraints,
+  dealii::Mapping<dim> const & mapping,
+  VectorType const & solution,
+  unsigned int const n_face_quadrature_points)
+{
+  VectorType locally_relevant_solution;
+  locally_relevant_solution.reinit(dof_handler.locally_owned_dofs(),
+                                   dealii::DoFTools::extract_locally_relevant_dofs(dof_handler),
+                                   dof_handler.get_communicator());
+  locally_relevant_solution.copy_locally_owned_data_from(solution);
+  constraints.distribute(locally_relevant_solution);
+  locally_relevant_solution.update_ghost_values();
+
+  dealii::QGauss<dim - 1> face_quadrature(n_face_quadrature_points);
+
+  dealii::Vector<float> indicator(dof_handler.get_triangulation().n_active_cells());
+
+  dealii::KellyErrorEstimator<dim>::estimate(mapping,
+                                             dof_handler,
+                                             face_quadrature,
+                                             {}, // no Neumann boundary contributions
+                                             locally_relevant_solution,
+                                             indicator);
+
+  return indicator;
+}
+
+/**
+   * Divide an indicator by its global maximum (over the locally owned cells of all MPI ranks), so
+   * that its values lie in [0, 1]. An indicator that is zero everywhere stays zero.
+   */
+inline void
+normalize_indicator(dealii::Vector<float> & indicator, MPI_Comm const & mpi_comm)
+{
+  float const local_maximum  = indicator.linfty_norm();
+  float const global_maximum = dealii::Utilities::MPI::max(local_maximum, mpi_comm);
+
+  if(global_maximum > 0.0f)
+    indicator /= global_maximum;
+}
+
+/**
+ * Combine the indicators of several fields (velocity, transport variables) into one indicator per
+ * cell, see IndicatorCombination: each field is normalized by its global maximum, multiplied by
+ * its weight, and then the maximum or the sum over the fields is taken per cell.
+ *
+ * All indicators have to belong to the same triangulation (one entry per active cell, see
+ * compute_kelly_indicator()). weights: one entry per field, or empty for weight 1 for all fields.
+ */
+inline dealii::Vector<float>
+combine_indicators(std::vector<dealii::Vector<float>> indicators,
+                   std::vector<double> const &        weights,
+                   IndicatorCombination const         combination,
+                   MPI_Comm const &                   mpi_comm)
+{
+  AssertThrow(not indicators.empty(),
+              dealii::ExcMessage("combine_indicators(): no indicator given."));
+  AssertThrow(weights.empty() or weights.size() == indicators.size(),
+              dealii::ExcMessage("combine_indicators(): the number of weights has to be equal to "
+                                 "the number of indicators (or zero for weight 1)."));
+
+  dealii::Vector<float> combined(indicators[0].size());
+
+  for(unsigned int field = 0; field < indicators.size(); ++field)
+  {
+    AssertThrow(indicators[field].size() == combined.size(),
+                dealii::ExcMessage("combine_indicators(): the indicators belong to different "
+                                   "triangulations."));
+
+    double const weight = weights.empty() ? 1.0 : weights[field];
+    AssertThrow(weight >= 0.0,
+                dealii::ExcMessage("combine_indicators(): the weights must not be negative."));
+
+    normalize_indicator(indicators[field], mpi_comm);
+
+    for(unsigned int cell = 0; cell < combined.size(); ++cell)
+    {
+      float const weighted_indicator = static_cast<float>(weight) * indicators[field][cell];
+
+      if(combination == IndicatorCombination::Maximum)
+        combined[cell] = std::max(combined[cell], weighted_indicator);
+      else if(combination == IndicatorCombination::WeightedSum)
+        combined[cell] += weighted_indicator;
+      else
+        AssertThrow(false, dealii::ExcMessage("Unknown IndicatorCombination."));
+    }
+  }
+
+  return combined;
 }
 
 template<int dim, typename Number, typename VectorType>
