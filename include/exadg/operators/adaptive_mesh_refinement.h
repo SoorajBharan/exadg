@@ -35,6 +35,7 @@
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/solution_transfer.h>
+#include <deal.II/numerics/vector_tools_common.h>
 
 // ExaDG
 #include <exadg/utilities/print_functions.h>
@@ -282,6 +283,51 @@ combine_indicators(std::vector<dealii::Vector<float>> indicators,
   return combined;
 }
 
+/**
+   * Flag cells for refinement and coarsening from an indicator (one entry per active cell, see
+   * compute_kelly_indicator() and combine_indicators()), with the marking rule of amr_data:
+   *
+   *   FixedNumber:   refine the fraction_of_cells_to_be_refined of the cells with the largest
+   *                  indicator, coarsen the fraction_of_cells_to_be_coarsened of the cells with the
+   *                  smallest indicator
+   *   FixedFraction: refine the cells with the largest indicator that together make up the
+   *                  fraction_of_cells_to_be_refined of the total error sum_K eta_K^2, coarsen the
+   *                  cells with the smallest indicator that make up the
+   *                  fraction_of_cells_to_be_coarsened of the total error
+   *
+   * The limits (minimum/maximum level, boundary cells) are applied afterwards by
+   * limit_coarsening_and_refinement().
+   */
+template<int dim>
+void
+mark_cells(dealii::Triangulation<dim> &       tria,
+           dealii::Vector<float> const &      indicator,
+           AdaptiveMeshRefinementData const & amr_data)
+{
+  if(amr_data.marking_strategy == MarkingStrategy::FixedNumber)
+  {
+    dealii::parallel::distributed::GridRefinement::refine_and_coarsen_fixed_number(
+      tria,
+      indicator,
+      amr_data.fraction_of_cells_to_be_refined,
+      amr_data.fraction_of_cells_to_be_coarsened);
+  }
+  else if(amr_data.marking_strategy == MarkingStrategy::FixedFraction)
+  {
+    // L2 norm: the fractions refer to sum_K eta_K^2, the Kelly estimate of the squared error
+    dealii::parallel::distributed::GridRefinement::refine_and_coarsen_fixed_fraction(
+      tria,
+      indicator,
+      amr_data.fraction_of_cells_to_be_refined,
+      amr_data.fraction_of_cells_to_be_coarsened,
+      dealii::VectorTools::L2_norm);
+  }
+  else
+{
+    AssertThrow(false, dealii::ExcMessage("Unknown MarkingStrategy."));
+  }
+}
+
 template<int dim, typename Number, typename VectorType>
 void
 mark_cells_kelly_error_estimator(dealii::Triangulation<dim> &              tria,
@@ -292,30 +338,12 @@ mark_cells_kelly_error_estimator(dealii::Triangulation<dim> &              tria,
                                  unsigned int const                        n_face_quadrature_points,
                                  AdaptiveMeshRefinementData const &        amr_data)
 {
-  VectorType locally_relevant_solution;
-  locally_relevant_solution.reinit(dof_handler.locally_owned_dofs(),
-                                   dealii::DoFTools::extract_locally_relevant_dofs(dof_handler),
-                                   dof_handler.get_communicator());
-  locally_relevant_solution.copy_locally_owned_data_from(solution);
-  constraints.distribute(locally_relevant_solution);
-  locally_relevant_solution.update_ghost_values();
-
-  dealii::QGauss<dim - 1> face_quadrature(n_face_quadrature_points);
-
-  dealii::Vector<float> estimated_error_per_cell(tria.n_active_cells());
-
-  dealii::KellyErrorEstimator<dim>::estimate(mapping,
-                                             dof_handler,
-                                             face_quadrature,
-                                             {}, // Neumann BC
-                                             locally_relevant_solution,
-                                             estimated_error_per_cell);
-
-  dealii::parallel::distributed::GridRefinement::refine_and_coarsen_fixed_number(
-    tria,
-    estimated_error_per_cell,
-    amr_data.fraction_of_cells_to_be_refined,
-    amr_data.fraction_of_cells_to_be_coarsened);
+  dealii::Vector<float> const indicator = compute_kelly_indicator(dof_handler,
+                                                                  constraints,
+                                                                  mapping,
+                                                                  solution,
+                                                                  n_face_quadrature_points);
+  mark_cells(tria, indicator, amr_data);
 }
 
 
