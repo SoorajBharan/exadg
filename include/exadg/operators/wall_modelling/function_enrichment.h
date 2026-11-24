@@ -37,6 +37,8 @@
 #include <deal.II/numerics/vector_tools_mean_value.h>
 #include <deal.II/lac/la_parallel_block_vector.h>
 
+#include <exadg/operators/solution_transfer.h>
+
 #include <map>
 #include <vector>
 #include <array>
@@ -57,7 +59,7 @@ public:
   // ──  construct ─────────────────────────────────────────────────
   FunctionEnrichment(double kinematic_viscosity_in);
 
-void
+  void
   initialize(dealii::Triangulation<dim> const &                     triangulation,
              std::shared_ptr<dealii::Mapping<dim> const>            mapping_in,
              dealii::DoFHandler<dim> const &                        global_dof_handler_in,
@@ -69,6 +71,31 @@ void
              unsigned int                                           n_q_points_enrichment,
              unsigned int                                           layers = 3);
 
+  void
+  initialize_mesh_dependent_data(
+    std::shared_ptr<dealii::Mapping<dim> const> mapping_in,
+    unsigned int                                fe_degree_dg,
+    unsigned int                                fe_degree_en,
+    std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
+    unsigned int                                n_q_points_enrichment,
+    unsigned int                                layers);
+
+  // adaptive mesh refinement: call before Triangulation::execute_coarsening_and_refinement();
+  // vectors_enrichment = U_tilde vectors of the time integrator (dof_index_en); u_tau and
+  // u_tau_old are transferred internally
+  void
+  prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment);
+
+  // adaptive mesh refinement: call after initialize_mesh_dependent_data() on the new mesh, with
+  // the same vectors (initialized on the new dof_index_en) in the same order
+  void
+  interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment);
+
+  // adaptive mesh refinement: call after interpolate_after_coarsening_and_refinement() and
+  // setup_wall_distance(..., false); recomputes psi_old and psi (tables per cell batch of the new
+  // matrix_free_en) from the transferred tau_w and y+ on/off, bitwise as before the refinement
+  void
+  rebuild_enrichment_function_after_coarsening_and_refinement();
 
   // ──  compute wall distances and node pairings ─────────────────
   /**
@@ -81,7 +108,8 @@ void
    */
   void
   setup_wall_distance(dealii::Mapping<dim> const &                          mapping,
-                      unsigned int                                          layers = 3);
+                      unsigned int                                          layers = 3,
+                      bool const update_enrichment_function_at_end          = true);
 
   void
   evaluate_friction_velocity(VectorType const & global_velocity);
@@ -357,6 +385,11 @@ void
   VectorType friction_velocity;
   VectorType wall_shear_stress;
 
+  VectorType wall_shear_stress_psi;
+  VectorType wall_shear_stress_psi_old;
+  VectorType enrichment_switch;
+  VectorType enrichment_switch_old;
+
   // interior-penalty parameter used by the viscous operator, per cell batch of matrix_free_en
   // (incl. ghost batches); set by EnrichedMomentumOperator. Used for the wall flux tau_w.
   dealii::AlignedVector<dealii::VectorizedArray<Number>> wall_penalty;
@@ -386,6 +419,18 @@ private:
     std::array<VectorType*, dim> num;
     VectorType*                  den;
   };
+
+  // adaptive mesh refinement, between prepare_ and interpolate_after_coarsening_and_refinement():
+  // transfer of U_tilde (dof_handler_en_vector), of u_tau, u_tau_old, tau_w, tau_w of psi and
+  // psi_old (dof_handler_cg_scalar), and of the y+ on/off of psi and psi_old (dof_handler_en_scalar)
+  std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_enrichment;
+  std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_friction_velocity;
+  std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_enrichment_switch;
+
+  // rebuild mode of update_enrichment_function() after adaptive mesh refinement: the y+ on/off
+  // per cell is read from this vector (no y+ criterion, no storing of the inputs, no print);
+  // nullptr: normal update
+  VectorType const * prescribed_enrichment_switch = nullptr;
 
   void
   project_velocity_to_wall();

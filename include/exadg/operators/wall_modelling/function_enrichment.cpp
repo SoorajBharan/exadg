@@ -19,6 +19,7 @@
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/utilities.h>
+#include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe_values.h>   // covers FEValues, FEFaceValues, FESubfaceValues
 #include <deal.II/fe/mapping.h>
@@ -149,6 +150,52 @@ FunctionEnrichment<dim, Number>::initialize(
   fe_en_collection_scalar.push_back(dealii::FESystem<dim>(dealii::FE_Nothing<dim>(), 1)); // index 2: halo
   dof_handler_en_scalar.reinit(triangulation);
 
+  // everything that depends on the mesh (called again after adaptive mesh refinement)
+  initialize_mesh_dependent_data(mapping_in,
+                                 fe_degree_dg,
+                                 fe_degree_en,
+                                 periodic_faces,
+                                 n_q_points_enrichment,
+                                 layers);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::initialize_mesh_dependent_data(
+  std::shared_ptr<dealii::Mapping<dim> const> mapping_in,
+  unsigned int                                fe_degree_dg,
+  unsigned int                                fe_degree_en,
+  std::vector<dealii::GridTools::PeriodicFacePair<typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
+  unsigned int                                n_q_points_enrichment,
+  unsigned int                                layers)
+{
+  // ====================================================================
+  // Second call (after adaptive mesh refinement): start from "not enriched" (index 0) on all
+  // locally owned cells and forget the cell numbers of the old mesh; the layer search below sets
+  // index 1 (enriched) and 2 (halo) again. On the first call this changes nothing.
+  // ====================================================================
+  is_cell_enriched.clear();
+  enrichment_active_cell.clear();
+
+  std::vector<dealii::DoFHandler<dim> *> const dof_handlers_with_fe_index = {
+    &dof_handler_en_vector,
+    &dof_handler_shadow_vector,
+    &dof_handler_cg_vector,
+    &dof_handler_cg_scalar,
+    &dof_handler_en_scalar,
+    &dof_handler_shadow_pressure};
+
+  for(dealii::DoFHandler<dim> * dof_handler : dof_handlers_with_fe_index)
+  {
+    for(auto const & cell : dof_handler->active_cell_iterators())
+    {
+      if(cell->is_locally_owned())
+      {
+        cell->set_active_fe_index(0);
+      }
+    }
+  }
+
   // ====================================================================
   // Topological BFS to locate the wall layer
   // ====================================================================
@@ -177,8 +224,9 @@ FunctionEnrichment<dim, Number>::initialize(
     }
   }
   // Sync the Seed Layer across all processors
-  std::vector<unsigned int> global_frontier = 
-    dealii::Utilities::MPI::compute_set_union(local_frontier, triangulation.get_communicator());
+  std::vector<unsigned int> global_frontier =
+    dealii::Utilities::MPI::compute_set_union(local_frontier,
+                                              dof_handler_en_vector.get_communicator());
 
   globally_enriched_set.insert(global_frontier.begin(), global_frontier.end());
 
@@ -204,7 +252,8 @@ FunctionEnrichment<dim, Number>::initialize(
     }
 
     // Sync the newly discovered layer across all processors
-    global_frontier = dealii::Utilities::MPI::compute_set_union(local_frontier, triangulation.get_communicator());
+    global_frontier = dealii::Utilities::MPI::compute_set_union(local_frontier,
+                                                                dof_handler_en_vector.get_communicator());
     globally_enriched_set.insert(global_frontier.begin(), global_frontier.end());
 
     // This allows the local processor to search the neighbors of these cells in the next loop.
@@ -331,6 +380,9 @@ FunctionEnrichment<dim, Number>::initialize(
   constraint_cg_scalar.reinit(dof_handler_cg_scalar.locally_owned_dofs(),
                               dealii::DoFTools::extract_locally_relevant_dofs(dof_handler_cg_scalar));
 
+  dealii::DoFTools::make_hanging_node_constraints(dof_handler_cg_scalar,
+                                                  constraint_cg_scalar);
+
   make_periodicity_constraints_hp(dof_handler_cg_scalar,
                                   periodic_faces,
                                   constraint_cg_scalar);
@@ -340,6 +392,8 @@ FunctionEnrichment<dim, Number>::initialize(
   constraint_cg_vector.clear();
   constraint_cg_vector.reinit(dof_handler_cg_vector.locally_owned_dofs(),
                               dealii::DoFTools::extract_locally_relevant_dofs(dof_handler_cg_vector));
+  dealii::DoFTools::make_hanging_node_constraints(dof_handler_cg_vector, 
+                                                  constraint_cg_vector);
   make_periodicity_constraints_hp(dof_handler_cg_vector,
                                   periodic_faces,
                                   constraint_cg_vector);
@@ -431,6 +485,11 @@ FunctionEnrichment<dim, Number>::initialize(
 
   matrix_free_en->initialize_dof_vector(friction_velocity_old, dof_index_cg_scalar);
 
+  matrix_free_en->initialize_dof_vector(wall_shear_stress_psi, dof_index_cg_scalar);
+  matrix_free_en->initialize_dof_vector(wall_shear_stress_psi_old, dof_index_cg_scalar);
+  matrix_free_en->initialize_dof_vector(enrichment_switch, dof_index_en_scalar);
+  matrix_free_en->initialize_dof_vector(enrichment_switch_old, dof_index_en_scalar);
+
   enrichment_velocity = 0.0;
   enrichment_residual = 0.0;
   shadow_velocity = 0.0;
@@ -440,6 +499,10 @@ FunctionEnrichment<dim, Number>::initialize(
   wall_velocity = 0.0;
   friction_velocity_old = 0.0;
   wall_shear_stress = 0.0;
+  wall_shear_stress_psi = 0.0;
+  wall_shear_stress_psi_old = 0.0;
+  enrichment_switch = 0.0;
+  enrichment_switch_old = 0.0;
 
   if(has_eddy_viscosity())
   {
@@ -508,6 +571,104 @@ FunctionEnrichment<dim, Number>::initialize(
                                                       dof_handler_shadow_eddy_viscosity,
                                                       eddy_viscosity_index_global,
                                                       eddy_viscosity_index_shadow);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_enrichment)
+{
+  // U_tilde of the time integrator (layout dof_index_en); the wall layer is frozen, so its values
+  // are copied cell by cell (also when a cell moves to another rank)
+  solution_transfer_enrichment =
+    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_vector);
+
+  if(not vectors_enrichment.empty())
+    solution_transfer_enrichment->prepare_coarsening_and_refinement(vectors_enrichment);
+
+  // CG scalar vectors: u_tau, u_tau of the old time step, tau_w, and the tau_w from which psi and
+  // psi_old were computed (rebuild of psi and psi_old after adaptive mesh refinement)
+  std::vector<VectorType *> vectors_cg_scalar = {&friction_velocity,
+    &friction_velocity_old,
+    &wall_shear_stress,
+    &wall_shear_stress_psi,
+    &wall_shear_stress_psi_old};
+  solution_transfer_friction_velocity =
+    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_cg_scalar);
+  solution_transfer_friction_velocity->prepare_coarsening_and_refinement(vectors_cg_scalar);
+
+  // y+ on/off of psi and psi_old (DG scalar, constant per cell)
+  std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
+    &enrichment_switch_old};
+  solution_transfer_enrichment_switch =
+    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_scalar);
+  solution_transfer_enrichment_switch->prepare_coarsening_and_refinement(vectors_enrichment_switch);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_enrichment)
+{
+  // same vectors in the same order as in prepare_coarsening_and_refinement(), initialized by the
+  // caller on the new mesh (dof_index_en of the new matrix_free_en)
+  if(not vectors_enrichment.empty())
+    solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
+
+  // friction_velocity and friction_velocity_old were initialized on the new mesh by
+  // initialize_mesh_dependent_data()
+  std::vector<VectorType *> vectors_cg_scalar = {&friction_velocity,
+    &friction_velocity_old,
+    &wall_shear_stress,
+    &wall_shear_stress_psi,
+    &wall_shear_stress_psi_old};
+  solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(
+    vectors_cg_scalar);
+
+  // CG space: values at hanging nodes from the constraints
+  for(VectorType * vector : vectors_cg_scalar)
+  {
+    constraint_cg_scalar.distribute(*vector);
+    vector->update_ghost_values();
+  }
+  // y+ on/off of psi and psi_old (DG scalar, constant per cell)
+  std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
+    &enrichment_switch_old};
+  solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(
+    vectors_enrichment_switch);
+  enrichment_switch.update_ghost_values();
+  enrichment_switch_old.update_ghost_values();
+
+  solution_transfer_enrichment.reset();
+  solution_transfer_friction_velocity.reset();
+  solution_transfer_enrichment_switch.reset();
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::rebuild_enrichment_function_after_coarsening_and_refinement()
+{
+  // tau_w on the new mesh (transferred), restored at the end
+  VectorType const wall_shear_stress_transferred = wall_shear_stress;
+
+  // (1) psi_old: from the tau_w and the y+ on/off from which psi_old was computed
+  wall_shear_stress            = wall_shear_stress_psi_old;
+  prescribed_enrichment_switch = &enrichment_switch_old;
+  update_enrichment_function();
+  dealii::AlignedVector<scalar> const psi_cell_rebuilt_old = psi_cell;
+
+  // (2) psi: from the tau_w and the y+ on/off from which psi was computed; this also sets the
+  // face tables, cell_enriched (start of the hysteresis at the next update) and
+  // enrichment_active_cell
+  wall_shear_stress            = wall_shear_stress_psi;
+  prescribed_enrichment_switch = &enrichment_switch;
+  update_enrichment_function();
+  psi_cell_old = psi_cell_rebuilt_old;
+
+  // back to normal updates
+  prescribed_enrichment_switch = nullptr;
+  wall_shear_stress            = wall_shear_stress_transferred;
+  wall_shear_stress.update_ghost_values();
 }
 
 template<int dim, typename Number>
@@ -581,7 +742,8 @@ template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::setup_wall_distance(
   dealii::Mapping<dim> const &                           mapping,
-  unsigned int                                           layers)
+  unsigned int                                           layers,
+  bool const                                             update_enrichment_function_at_end)
 {
   (void)layers;
   wall_distance.zero_out_ghost_values();
@@ -591,7 +753,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
   // PART 1: Compute Exact DG Wall Distance (for y_dist_vec)
   // ====================================================================
   std::map<dealii::types::global_dof_index, dealii::Point<dim>> dg_support_points;
-  
+
   // Use the DG Scalar Collection
   auto const & fe_dg_real = fe_en_collection_scalar[1]; 
   dealii::Quadrature<dim> dg_support_quad(fe_dg_real.get_unit_support_points());
@@ -692,7 +854,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
   // PART 2: Build CG node_to_wall_node map (for friction_velocity copy)
   // ====================================================================
   std::map<dealii::types::global_dof_index, dealii::Point<dim>> cg_support_points;
-  
+
   // Safe to use standard DoFTools here because CG uses the Mirror Dummy (No FE_Nothing!)
   dealii::DoFTools::map_dofs_to_support_points(mapping, dof_handler_cg_scalar, cg_support_points);
 
@@ -763,7 +925,7 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
             nearest_wall_dof = wall_point.second;
           }
         }
-        
+
         // Save the node mapping for evaluate_friction_velocity
         node_to_wall_node[global_dof] = nearest_wall_dof; 
       }
@@ -771,7 +933,8 @@ FunctionEnrichment<dim, Number>::setup_wall_distance(
   }
   setup_corner_nodes();
 
-  update_enrichment_function();
+  if(update_enrichment_function_at_end)
+    update_enrichment_function();
 }
 
 template<int dim, typename Number>
@@ -786,10 +949,10 @@ FunctionEnrichment<dim, Number>::project_velocity_to_wall()
   lumped_mass = 0.0;
 
   matrix_free_en->cell_loop(&FunctionEnrichment::loop_project_velocity_to_wall,
-                         this, rhs, shadow_velocity, false);
+                            this, rhs, shadow_velocity, false);
 
   matrix_free_en->cell_loop(&FunctionEnrichment::loop_lumped_mass,
-                         this, lumped_mass, shadow_velocity, false);
+                            this, lumped_mass, shadow_velocity, false);
 
   rhs.compress(dealii::VectorOperation::add);
   lumped_mass.compress(dealii::VectorOperation::add);
@@ -921,12 +1084,12 @@ FunctionEnrichment<dim, Number>::integrate_wall_traction(
 
   // Launch the ExaDG-style boundary loop!
   matrix_free_en->loop(&This::empty_loop,
-                    &This::empty_loop,
-                    &This::local_integrate_wall_traction, 
-                    this,
-                    dst_vectors,
-                    shadow_velocity,
-                    false);
+                       &This::empty_loop,
+                       &This::local_integrate_wall_traction, 
+                       this,
+                       dst_vectors,
+                       shadow_velocity,
+                       false);
 }
 
 template<int dim, typename Number>
@@ -942,9 +1105,9 @@ void FunctionEnrichment<dim, Number>::local_integrate_wall_traction(
   //     matrix_free_data, true, dof_index_shadow_vector, quad_index, 0, active_fe_index);
   FEFaceEnrichedEvaluation<dim, Number, dealii::FEFaceEvaluation<dim, -1, 0, dim, Number>> u_wall(
     matrix_free_data, *this, true, active_fe_index);
-  
+
   dealii::FEFaceEvaluation<dim, -1, 0, 1, Number> wss(
-      matrix_free_data, true, dof_index_cg_scalar, quad_index, 0, active_fe_index);
+    matrix_free_data, true, dof_index_cg_scalar, quad_index, 0, active_fe_index);
 
   scalar nu = dealii::make_vectorized_array<Number>(kinematic_viscosity);
 
@@ -1196,25 +1359,25 @@ FunctionEnrichment<dim, Number>::integrate_wall_residual(std::array<VectorType, 
   //      (N continuous -> consistency and penalty terms vanish)
   auto const values_on_side = [&](bool const interior, unsigned int const fe_index, unsigned int const face,
                                   std::vector<dealii::Tensor<1, dim, scalar>> & vals) {
-    if(fe_index == 1)
+      if(fe_index == 1)
+      {
+        FEFaceEnrichedEvaluation<dim, Number, FaceIntU> phi(mf, *this, interior, 1);
+        phi.reinit(face);
+        phi.gather_evaluate(shadow_velocity, u_tilde, dealii::EvaluationFlags::values);
+        vals.resize(phi.n_q_points);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q)
+          vals[q] = phi.get_value(q);
+      }
+      else // halo: U_bar only
     {
-      FEFaceEnrichedEvaluation<dim, Number, FaceIntU> phi(mf, *this, interior, 1);
-      phi.reinit(face);
-      phi.gather_evaluate(shadow_velocity, u_tilde, dealii::EvaluationFlags::values);
-      vals.resize(phi.n_q_points);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        vals[q] = phi.get_value(q);
-    }
-    else // halo: U_bar only
-    {
-      FaceIntU phi(mf, interior, dof_index_shadow_vector, quad_index, 0, fe_index);
-      phi.reinit(face);
-      phi.gather_evaluate(shadow_velocity, dealii::EvaluationFlags::values);
-      vals.resize(phi.n_q_points);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        vals[q] = phi.get_value(q);
-    }
-  };
+        FaceIntU phi(mf, interior, dof_index_shadow_vector, quad_index, 0, fe_index);
+        phi.reinit(face);
+        phi.gather_evaluate(shadow_velocity, dealii::EvaluationFlags::values);
+        vals.resize(phi.n_q_points);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q)
+          vals[q] = phi.get_value(q);
+      }
+    };
 
   std::vector<dealii::Tensor<1, dim, scalar>> u_m, u_p;
 
@@ -1294,15 +1457,15 @@ FunctionEnrichment<dim, Number>::evaluate_friction_velocity_from_residual(Vector
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::empty_loop(
-dealii::MatrixFree<dim, Number> const & matrix_free_data,
-TractionVectors &                       dst,
-VectorType const &                      src,
-std::pair<unsigned int, unsigned int> const & range) const
+  dealii::MatrixFree<dim, Number> const & matrix_free_data,
+  TractionVectors &                       dst,
+  VectorType const &                      src,
+  std::pair<unsigned int, unsigned int> const & range) const
 {
-(void)matrix_free_data;
-(void)dst;
-(void)src;
-(void)range;
+  (void)matrix_free_data;
+  (void)dst;
+  (void)src;
+  (void)range;
 }
 
 // ============================================================================
@@ -1375,9 +1538,9 @@ FunctionEnrichment<dim, Number>::get_gradient(
   scalar const u_tau_safe = std::max(u_tau, dealii::make_vectorized_array<Number>(1e-5));
 
   scalar const y_plus = (y * u_tau_safe) / nu;
-  
+
   scalar du_plus_dy_plus = wall_law_eval.get_gradient(y_plus);
-  
+
   return du_plus_dy_plus * (kappa * u_tau_safe / nu);
 }
 
@@ -1574,7 +1737,7 @@ FunctionEnrichment<dim, Number>::add_enriched_cell_difference(VectorType const &
   for(unsigned int i = 0; i < n_velocity_index_enriched; ++i)
     correction_bar.local_element(velocity_index_shadow[i]) +=
       factor * (enriched.local_element(velocity_index_shadow[i]) -
-                fluid.local_element(velocity_index_global[i]));
+      fluid.local_element(velocity_index_global[i]));
 }
 
 template<int dim, typename Number>
@@ -1719,8 +1882,8 @@ FunctionEnrichment<dim, Number>::setup_corner_nodes()
     for(auto const f : cell->face_indices())
     {
       if(not cell->at_boundary(f) or cell->has_periodic_neighbor(f) or
-         boundary_descriptor->get_boundary_type(cell->face(f)->boundary_id()) !=
-           IncNS::BoundaryTypeU::WallEnrichment)
+        boundary_descriptor->get_boundary_type(cell->face(f)->boundary_id()) !=
+        IncNS::BoundaryTypeU::WallEnrichment)
         continue;
 
       wall_dofs.resize(cell->get_fe().n_dofs_per_face());
@@ -1730,8 +1893,8 @@ FunctionEnrichment<dim, Number>::setup_corner_nodes()
       for(auto const g : cell->face_indices())
       {
         if(g == f or not cell->at_boundary(g) or cell->has_periodic_neighbor(g) or
-           boundary_descriptor->get_boundary_type(cell->face(g)->boundary_id()) ==
-             IncNS::BoundaryTypeU::WallEnrichment)
+          boundary_descriptor->get_boundary_type(cell->face(g)->boundary_id()) ==
+          IncNS::BoundaryTypeU::WallEnrichment)
           continue;
 
         other_dofs.resize(cell->get_fe().n_dofs_per_face());
@@ -1743,11 +1906,11 @@ FunctionEnrichment<dim, Number>::setup_corner_nodes()
             continue;
           // partner: a wall-face DoF of the same face that is not on the other boundary
           for(auto const partner : wall_dofs)
-            if(std::find(other_dofs.begin(), other_dofs.end(), partner) == other_dofs.end())
-            {
-              corner_to_wall_node[corner] = partner;
-              break;
-            }
+          if(std::find(other_dofs.begin(), other_dofs.end(), partner) == other_dofs.end())
+          {
+            corner_to_wall_node[corner] = partner;
+            break;
+          }
         }
       }
     }
@@ -1843,7 +2006,7 @@ void
 FunctionEnrichment<dim, Number>::make_periodicity_constraints_hp(
   dealii::DoFHandler<dim> const & dof_handler,
   std::vector<dealii::GridTools::PeriodicFacePair<
-    typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
+  typename dealii::Triangulation<dim>::cell_iterator>> const & periodic_faces,
   dealii::AffineConstraints<Number> &                            constraints) const
 {
   for(auto const & face_pair : periodic_faces)
@@ -1892,7 +2055,7 @@ FunctionEnrichment<dim, Number>::make_periodicity_constraints_hp(
     }
   }
   else
-  {
+{
     AssertThrow(not face_1->has_children() and not face_2->has_children(),
                 dealii::ExcMessage("Periodic faces on different refinement levels are not supported by the wall enrichment."));
 
@@ -1902,7 +2065,7 @@ FunctionEnrichment<dim, Number>::make_periodicity_constraints_hp(
 
 template<int dim, typename Number>
 std::pair<typename FunctionEnrichment<dim, Number>::scalar,
-          typename FunctionEnrichment<dim, Number>::vector>
+typename FunctionEnrichment<dim, Number>::vector>
 FunctionEnrichment<dim, Number>::evaluate_enrichment_function(scalar const & y,
                                                               vector const & grad_y,
                                                               scalar const & tau_w,
@@ -1961,6 +2124,13 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
     // \bar{u} + \psi^{old} \tilde{u} -> space with \psi^{new} (apply_mass_old_to_new)
     psi_cell_old = psi_cell;
 
+    if(prescribed_enrichment_switch == nullptr)
+    {
+      wall_shear_stress_psi_old = wall_shear_stress_psi;
+      enrichment_switch_old     = enrichment_switch;
+      wall_shear_stress_psi     = wall_shear_stress;
+    }
+
     n_q_points_cell = y_eval.n_q_points;
     psi_cell.resize(n_batches * n_q_points_cell);
     grad_psi_cell.resize(n_batches * n_q_points_cell);
@@ -1979,6 +2149,9 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
 
     unsigned int n_cells_wall     = 0;
     unsigned int n_cells_enriched = 0;
+
+    std::vector<dealii::types::global_dof_index> prescribed_dof_indices(
+      dof_handler_en_scalar.get_fe(active_fe_index).n_dofs_per_cell());
 
     for(unsigned int cell = 0; cell < n_batches; ++cell)
     {
@@ -2020,8 +2193,21 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
         double const y_plus_switch =
           was_enriched ? y_plus_min_enrichment : y_plus_max_enrichment;
 
-        bool const enriched =
+        bool enriched =
           (y_plus_max_enrichment <= 0.0) or (y_plus_cell[v] > y_plus_switch);
+
+        // rebuild after adaptive mesh refinement: the on/off stored per cell, no y+ criterion
+        if(prescribed_enrichment_switch != nullptr)
+        {
+          enriched = false;
+          if(v < mf.n_active_entries_per_cell_batch(cell))
+          {
+            mf.get_cell_iterator(cell, v, dof_index_en_scalar)
+              ->get_dof_indices(prescribed_dof_indices);
+            enriched = (*prescribed_enrichment_switch)(prescribed_dof_indices[0]) != 0.0;
+          }
+        }
+
         cell_enriched[cell * lanes + v] = enriched ? 1 : 0;
         if(v < mf.n_active_entries_per_cell_batch(cell))
           enrichment_active_cell[mf.get_cell_iterator(cell, v)->global_active_cell_index()] = enriched;
@@ -2043,20 +2229,54 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
         }
       }
     }
-    if(psi_cell_old.size() != psi_cell.size())
-      psi_cell_old = psi_cell;
 
-    // report when the number of enriched cells changes
-    MPI_Comm const comm = dof_handler_cg_scalar.get_triangulation().get_communicator();
-    n_cells_wall        = dealii::Utilities::MPI::sum(n_cells_wall, comm);
-    n_cells_enriched    = dealii::Utilities::MPI::sum(n_cells_enriched, comm);
-    if(n_cells_enriched != n_enriched_cells_last)
+    // normal update (not the rebuild after adaptive mesh refinement, which reads these vectors)
+    if(prescribed_enrichment_switch == nullptr)
     {
-      dealii::ConditionalOStream pcout(std::cout,
-                                       dealii::Utilities::MPI::this_mpi_process(comm) == 0);
-      pcout << "  [enrichment] y+ > " << y_plus_max_enrichment << ": " << n_cells_enriched
-            << " of " << n_cells_wall << " wall cells enriched" << std::endl;
-      n_enriched_cells_last = n_cells_enriched;
+      // y+ on/off of this update per cell (input of psi for the rebuild after adaptive mesh
+      // refinement): locally owned enriched cells, the same value on all DoFs of a cell
+      enrichment_switch.zero_out_ghost_values();
+      enrichment_switch = 0.0;
+
+      std::vector<dealii::types::global_dof_index> switch_dof_indices(
+        dof_handler_en_scalar.get_fe(active_fe_index).n_dofs_per_cell());
+
+      for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+      {
+        if(mf.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+          continue;
+
+        for(unsigned int v = 0; v < mf.n_active_entries_per_cell_batch(cell); ++v)
+        {
+          mf.get_cell_iterator(cell, v, dof_index_en_scalar)->get_dof_indices(switch_dof_indices);
+          for(auto const dof_index : switch_dof_indices)
+          {
+            enrichment_switch(dof_index) = cell_enriched[cell * lanes + v];
+          }
+        }
+      }
+      enrichment_switch.update_ghost_values();
+
+      // first update: no old state yet, old = current
+      if(psi_cell_old.size() != psi_cell.size())
+      {
+        psi_cell_old              = psi_cell;
+        wall_shear_stress_psi_old = wall_shear_stress_psi;
+        enrichment_switch_old     = enrichment_switch;
+      }
+
+      // report when the number of enriched cells changes
+      MPI_Comm const comm = dof_handler_cg_scalar.get_triangulation().get_communicator();
+      n_cells_wall        = dealii::Utilities::MPI::sum(n_cells_wall, comm);
+      n_cells_enriched    = dealii::Utilities::MPI::sum(n_cells_enriched, comm);
+      if(n_cells_enriched != n_enriched_cells_last and prescribed_enrichment_switch == nullptr)
+      {
+        dealii::ConditionalOStream pcout(std::cout,
+                                         dealii::Utilities::MPI::this_mpi_process(comm) == 0);
+        pcout << "  [enrichment] y+ > " << y_plus_max_enrichment << ": " << n_cells_enriched
+          << " of " << n_cells_wall << " wall cells enriched" << std::endl;
+        n_enriched_cells_last = n_cells_enriched;
+      }
     }
   }
 
@@ -2068,10 +2288,10 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
     // side 0: interior, side 1: exterior
     std::array<FaceIntegratorScalar, 2> y_eval = {
       {FaceIntegratorScalar(mf, true, dof_index_en_scalar, quad_index, 0, active_fe_index),
-       FaceIntegratorScalar(mf, false, dof_index_en_scalar, quad_index, 0, active_fe_index)}};
+        FaceIntegratorScalar(mf, false, dof_index_en_scalar, quad_index, 0, active_fe_index)}};
     std::array<FaceIntegratorScalar, 2> tau_eval = {
       {FaceIntegratorScalar(mf, true, dof_index_cg_scalar, quad_index, 0, active_fe_index),
-       FaceIntegratorScalar(mf, false, dof_index_cg_scalar, quad_index, 0, active_fe_index)}};
+        FaceIntegratorScalar(mf, false, dof_index_cg_scalar, quad_index, 0, active_fe_index)}};
 
     n_q_points_face = y_eval[0].n_q_points;
     for(unsigned int side = 0; side < 2; ++side)
@@ -2100,9 +2320,9 @@ FunctionEnrichment<dim, Number>::update_enrichment_function()
         for(unsigned int q = 0; q < n_q_points_face; ++q)
         {
           auto const psi = evaluate_enrichment_function(y_eval[side].get_value(q),
-                                     y_eval[side].get_gradient(q),
-                                     tau_eval[side].get_value(q),
-                                     tau_eval[side].get_gradient(q));
+                                                        y_eval[side].get_gradient(q),
+                                                        tau_eval[side].get_value(q),
+                                                        tau_eval[side].get_gradient(q));
           psi_face[side][face * n_q_points_face + q]      = psi.first;
           grad_psi_face[side][face * n_q_points_face + q] = psi.second;
         }
@@ -2168,7 +2388,7 @@ FunctionEnrichment<dim, Number>::eddy_viscosity_from_u_plus(scalar const & u_plu
   // small x can give tiny negative values
   return std::max(stress_ratio * dy_plus_du_plus - Number(1.0),
                   dealii::make_vectorized_array<Number>(0.0)) *
-         Number(kinematic_viscosity);
+  Number(kinematic_viscosity);
 }
 
 template<int dim, typename Number>
@@ -2178,7 +2398,7 @@ FunctionEnrichment<dim, Number>::stress_ratio(scalar const & y) const
   // linear shear stress across the wall layer: tau(y) / tau_w = 1 + g y (g = 0: constant),
   // channel: g = -1/delta; not negative
   return std::max(dealii::make_vectorized_array<Number>(1.0) +
-                    Number(wall_layer_stress_gradient) * y,
+                  Number(wall_layer_stress_gradient) * y,
                   dealii::make_vectorized_array<Number>(0.0));
 }
 
@@ -2361,7 +2581,7 @@ FunctionEnrichment<dim, Number>::compute_velocity_gradient_rans(
   // output in the shadow eddy viscosity layout: dim * dim gradient components + indicator
   std::vector<VectorType> dst(dim * dim + 1);
   for(auto & vec : dst)
-    mf.initialize_dof_vector(vec, dof_index_shadow_eddy_viscosity);
+  mf.initialize_dof_vector(vec, dof_index_shadow_eddy_viscosity);
 
   mf.cell_loop(&This::cell_loop_velocity_gradient_rans, this, dst, src, true /*zero_dst*/);
 
@@ -2508,7 +2728,7 @@ FunctionEnrichment<dim, Number>::compute_enrichment_component(
 {
   dealii::FiniteElement<dim> const & fe_out = dof_handler_out.get_fe();
   AssertThrow(fe_out.n_components() == dim and fe_out.n_base_elements() == 1 and
-                fe_out.base_element(0).has_support_points(),
+              fe_out.base_element(0).has_support_points(),
               dealii::ExcMessage("compute_enrichment_component: dof_handler_out must be a vector-valued "
                                  "space of dim equal Lagrange base elements."));
 
@@ -2680,7 +2900,7 @@ FunctionEnrichment<dim, Number>::add_enrichment_velocity(
                                    grad_y,
                                    dealii::make_vectorized_array<Number>(tau_values[q]),
                                    grad_tau)
-        .first[0];
+      .first[0];
 
     // u_h = U_bar + psi U_tilde: add the enrichment part
     for(unsigned int d = 0; d < dim; ++d)
