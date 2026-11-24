@@ -393,9 +393,6 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
     AssertThrow(not restart_data.write_restart,
                 dealii::ExcMessage("Writing restart files is not implemented together with adaptive mesh refinement."));
 
-    AssertThrow(not wall_enrichment_enabled,
-                dealii::ExcMessage("Combination of adaptive mesh refinement and wall enrichment not implemented yet."));
-
     AssertThrow(calculation_of_time_step_size == TimeStepCalculation::UserSpecified or (calculation_of_time_step_size == TimeStepCalculation::CFL and adaptive_time_stepping == true),
                 dealii::ExcMessage("Adaptive mesh refinement requires either TimeStepCalculation::UserSpecified, or TimeStepCalculation::CFL together with adaptive_time_stepping =  true."));
 

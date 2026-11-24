@@ -232,7 +232,7 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
                                                              param.amr_data.indicator_combination,
                                                              mpi_comm);
 
-  mark_cells(*grid->triangulation, indicator, param.amr_data);
+  mark_cells(*grid->triangulation, indicator, param.amr_data, get_frozen_cells());
 
   timer_tree.insert({"Incompressible flow", "Adaptive mesh refinement", "Mark cells (Kelly)"},
                     timer.wall_time());
@@ -270,7 +270,9 @@ Driver<dim, Number>::get_frozen_cells() const
     {
       if(not cell->is_artificial())
       {
-        frozen_cells[cell->active_cell_index()] = (cell->active_fe_index() != 0);
+        frozen_cells[cell->active_cell_index()] =
+          (cell->active_fe_index() != 0) or
+          (application->get_parameters().amr_data.preserve_boundary_cells and cell->at_boundary());
       }
     }
   }

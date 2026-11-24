@@ -226,11 +226,11 @@ Driver<dim, Number>::setup()
     setup_operators();
 
     if(rans_enabled)
-      AssertThrow(not application->scalars[rans_scalar_index]
-                        ->get_parameters()
-                        .turbulence_model_data.omega_enrichment,
-                  dealii::ExcMessage("Combination of adaptive mesh refinement and the "
-                                     "enrichment of omega not implemented yet."));
+      AssertThrow(not application->scalars[rans_scalar_index]->get_parameters().turbulence_model_data.omega_enrichment,
+                  dealii::ExcMessage("Combination of adaptive mesh refinement and the enrichment of omega not implemented yet."));
+
+    AssertThrow(not application->fluid->get_parameters().wall_enrichment_enabled,
+                dealii::ExcMessage("Combination of adaptive mesh refinement and wall enrichment is only implemented for the incompressible Navier-Stokes solver (not yet for the coupled flow-transport solver)."));
   }
 
   // setup of the fluid and scalar operators with the shared MatrixFree object

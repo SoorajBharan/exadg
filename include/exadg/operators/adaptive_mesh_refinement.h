@@ -44,6 +44,7 @@
 #include <exadg/utilities/print_functions.h>
 
 #include <limits>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -422,6 +423,107 @@ combine_indicators(std::vector<dealii::Vector<float>> indicators,
   return combined;
 }
 
+template<int dim>
+void
+mark_cells_fixed_number_without_frozen_cells(dealii::Triangulation<dim> &       tria,
+                                             dealii::Vector<float> const &      indicator,
+                                             AdaptiveMeshRefinementData const & amr_data,
+                                             std::vector<bool> const &          frozen_cells)
+{
+  MPI_Comm const mpi_comm = tria.get_communicator();
+
+  // indicators of the locally owned cells that are not frozen
+  std::vector<double> free_indicator;
+  for(auto const & cell : tria.active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and not frozen_cells[cell->active_cell_index()])
+    {
+      free_indicator.push_back(indicator[cell->active_cell_index()]);
+    }
+  }
+  double const n_free_cells =
+    dealii::Utilities::MPI::sum(static_cast<double>(free_indicator.size()), mpi_comm);
+  if(n_free_cells == 0.0)
+    return;
+
+  // number of cells to be refined and coarsened (the fractions refer to the non-frozen cells)
+  double const n_refine  = std::floor(amr_data.fraction_of_cells_to_be_refined * n_free_cells);
+  double const n_coarsen = std::floor(amr_data.fraction_of_cells_to_be_coarsened * n_free_cells);
+
+  // global range of the indicators of the non-frozen cells
+  double minimum = std::numeric_limits<double>::max();
+  double maximum = std::numeric_limits<double>::lowest();
+  for(double const value : free_indicator)
+  {
+    minimum = std::min(minimum, value);
+    maximum = std::max(maximum, value);
+  }
+  minimum = dealii::Utilities::MPI::min(minimum, mpi_comm);
+  maximum = dealii::Utilities::MPI::max(maximum, mpi_comm);
+
+  // global number of non-frozen cells with an indicator above / below a threshold
+  auto const n_cells_above = [&](double const threshold) {
+    double n = 0.0;
+    for(double const value : free_indicator)
+      if(value > threshold)
+        n += 1.0;
+    return dealii::Utilities::MPI::sum(n, mpi_comm);
+  };
+  auto const n_cells_below = [&](double const threshold) {
+    double n = 0.0;
+    for(double const value : free_indicator)
+      if(value < threshold)
+        n += 1.0;
+    return dealii::Utilities::MPI::sum(n, mpi_comm);
+  };
+
+  unsigned int const n_bisection_steps = 50;
+  // refinement: smallest threshold with at most n_refine cells above it (maximum: no cell above)
+  double threshold_refine = maximum;
+  if(n_refine > 0.0)
+  {
+    double lower = minimum, upper = maximum;
+    for(unsigned int step = 0; step < n_bisection_steps; ++step)
+    {
+      double const middle = 0.5 * (lower + upper);
+      if(n_cells_above(middle) > n_refine)
+        lower = middle;
+      else
+        upper = middle;
+    }
+    threshold_refine = upper;
+  }
+  // coarsening: largest threshold with at most n_coarsen cells below it (minimum: no cell below)
+  double threshold_coarsen = minimum;
+  if(n_coarsen > 0.0)
+  {
+    double lower = minimum, upper = maximum;
+    for(unsigned int step = 0; step < n_bisection_steps; ++step)
+    {
+      double const middle = 0.5 * (lower + upper);
+      if(n_cells_below(middle) > n_coarsen)
+        upper = middle;
+      else
+        lower = middle;
+    }
+    threshold_coarsen = lower;
+  }
+
+  // flags on the locally owned non-frozen cells (refinement has priority)
+  for(auto const & cell : tria.active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and not frozen_cells[cell->active_cell_index()])
+    {
+      double const value = indicator[cell->active_cell_index()];
+
+      if(value > threshold_refine)
+        cell->set_refine_flag();
+      else if(value < threshold_coarsen)
+        cell->set_coarsen_flag();
+    }
+  }
+}
+
 /**
    * Flag cells for refinement and coarsening from an indicator (one entry per active cell, see
    * compute_kelly_indicator() and combine_indicators()), with the marking rule of amr_data:
@@ -441,9 +543,22 @@ template<int dim>
 void
 mark_cells(dealii::Triangulation<dim> &       tria,
            dealii::Vector<float> const &      indicator,
-           AdaptiveMeshRefinementData const & amr_data)
+           AdaptiveMeshRefinementData const & amr_data,
+           std::vector<bool> const &          frozen_cells = {})
 {
-  if(amr_data.marking_strategy == MarkingStrategy::FixedNumber)
+  if(not frozen_cells.empty())
+  {
+    AssertThrow(frozen_cells.size() == tria.n_active_cells(),
+                dealii::ExcMessage("frozen_cells needs one entry per active cell."));
+    AssertThrow(amr_data.marking_strategy == MarkingStrategy::FixedNumber,
+                dealii::ExcMessage("Frozen cells (wall enrichment layer): only MarkingStrategy::FixedNumber is implemented."));
+
+    mark_cells_fixed_number_without_frozen_cells(tria,
+                                                 indicator,
+                                                 amr_data,
+                                                 frozen_cells);
+  }
+  else if(amr_data.marking_strategy == MarkingStrategy::FixedNumber)
   {
     dealii::parallel::distributed::GridRefinement::refine_and_coarsen_fixed_number(
       tria,
