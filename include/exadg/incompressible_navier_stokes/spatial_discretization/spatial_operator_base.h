@@ -149,7 +149,13 @@ public:
 
   void
   prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
-                                    std::vector<VectorType *> & vectors_pressure);
+                                    std::vector<VectorType *> & vectors_pressure,
+                                    std::vector<VectorType *> & vectors_enrichment);
+
+  void
+  interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
+                                              std::vector<VectorType *> & vectors_pressure,
+                                              std::vector<VectorType *> & vectors_enrichment);
 
   void
   interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,

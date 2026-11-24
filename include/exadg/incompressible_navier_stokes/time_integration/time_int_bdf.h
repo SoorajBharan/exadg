@@ -142,6 +142,9 @@ protected:
   get_vectors_for_transfer(std::vector<VectorType *> & vectors_velocity,
                              std::vector<VectorType *> & vectors_pressure);
 
+  virtual void
+  get_vectors_enrichment_for_transfer(std::vector<VectorType *> & vectors_enrichment);
+
   Parameters const & param;
 
   // number of refinement steps, where the time step size is reduced in

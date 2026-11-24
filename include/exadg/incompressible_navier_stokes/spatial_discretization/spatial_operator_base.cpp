@@ -404,36 +404,58 @@ SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_i
   // wall enrichment
   if(param.wall_enrichment_enabled)
   {
-    function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
-    function_enrichment->set_minimum_wall_shear_stress_fraction(param.wall_shear_stress_min_fraction);
-    function_enrichment->set_y_plus_max(param.wall_enrichment_y_plus_max);
-    function_enrichment->set_y_plus_min(param.wall_enrichment_y_plus_min);
-    function_enrichment->set_wall_layer_stress_gradient(param.wall_layer_stress_gradient);
-    wall_dg_coupler     = std::make_shared<WallDGCoupler<dim, Number>>();
+    wall_dg_coupler = std::make_shared<WallDGCoupler<dim, Number>>();
     wall_dg_coupler->set_rank_tolerance(param.wall_enrichment_rank_tolerance);
-    function_enrichment->set_global_pressure_dof_handler(get_dof_handler_p());
 
-    if(param.turbulence_model_data.rans_model)
+    if(function_enrichment == nullptr)
     {
-      function_enrichment->set_global_eddy_viscosity_dof_handler(matrix_free->get_dof_handler(matrix_free_data->get_dof_index(dof_index_eddy_viscosity)));
+      function_enrichment = std::make_shared<FunctionEnrichment<dim, Number>>(param.viscosity);
+      function_enrichment->set_minimum_wall_shear_stress_fraction(param.wall_shear_stress_min_fraction);
+      function_enrichment->set_y_plus_max(param.wall_enrichment_y_plus_max);
+      function_enrichment->set_y_plus_min(param.wall_enrichment_y_plus_min);
+      function_enrichment->set_wall_layer_stress_gradient(param.wall_layer_stress_gradient);
+      function_enrichment->set_global_pressure_dof_handler(get_dof_handler_p());
+
+      if(param.turbulence_model_data.rans_model)
+      {
+        function_enrichment->set_global_eddy_viscosity_dof_handler(matrix_free->get_dof_handler(matrix_free_data->get_dof_index(dof_index_eddy_viscosity)));
+      }
+
+      function_enrichment->initialize(*grid->triangulation,
+                                      get_mapping(),
+                                      get_dof_handler_u(),
+                                      param.degree_u,
+                                      param.fe_degree_enrichment,
+                                      boundary_descriptor->velocity,
+                                      grid->periodic_face_pairs,
+                                      get_quad_index_velocity_standard(),
+                                      param.enrichment_quadrature_points,
+                                      param.wall_enrichment_layers);
+
+      wall_dg_coupler->initialize(*matrix_free, 
+                                  get_dof_index_velocity(), 
+                                  function_enrichment);
+
+      function_enrichment->setup_wall_distance(*get_mapping(), param.wall_enrichment_layers);
     }
+    else {
+      function_enrichment->initialize_mesh_dependent_data(get_mapping(),
+                                                          param.degree_u,
+                                                          param.fe_degree_enrichment,
+                                                          grid->periodic_face_pairs,
+                                                          param.enrichment_quadrature_points,
+                                                          param.wall_enrichment_layers);
 
-    function_enrichment->initialize(*grid->triangulation,
-                                    get_mapping(),
-                                    get_dof_handler_u(),
-                                    param.degree_u,
-                                    param.fe_degree_enrichment,
-                                    boundary_descriptor->velocity,
-                                    grid->periodic_face_pairs,
-                                    get_quad_index_velocity_standard(),
-                                    param.enrichment_quadrature_points,
-                                    param.wall_enrichment_layers);
+      wall_dg_coupler->initialize(*matrix_free,
+                                  get_dof_index_velocity(),
+                                  function_enrichment);
 
-    wall_dg_coupler->initialize(*matrix_free, 
-                                get_dof_index_velocity(), 
-                                function_enrichment);
-
-    function_enrichment->setup_wall_distance(*get_mapping(), param.wall_enrichment_layers);
+      function_enrichment->setup_wall_distance(*get_mapping(),
+                                               param.wall_enrichment_layers,
+                                               false /* psi rebuilt below */);
+      function_enrichment->interpolate_wall_data_after_coarsening_and_refinement();
+      function_enrichment->rebuild_enrichment_function_after_coarsening_and_refinement();
+    }
     wall_dg_coupler->precompute_schur_matrices();
   }
   // mass operator
@@ -804,8 +826,9 @@ template<int dim, typename Number>
 void
 SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
   std::vector<VectorType *> & vectors_velocity,
-  std::vector<VectorType *> & vectors_pressure)
-{ 
+  std::vector<VectorType *> & vectors_pressure,
+  std::vector<VectorType *> & vectors_enrichment)
+{
   // the vectors must already have the size of the new mesh (allocate_vectors()),  and they must be
   // in the same order as in prepare_coarsening_and_refinement()
   solution_transfer_u->interpolate_after_coarsening_and_refinement(vectors_velocity);
@@ -814,6 +837,11 @@ SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
   // the transfer objects belong to one refinement step only
   solution_transfer_u.reset();
   solution_transfer_p.reset();
+
+  // wall enrichment: U_tilde (the wall data was already transferred in the setup of the operator,
+  // initialize_operators())
+  if(param.wall_enrichment_enabled)
+    function_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
 }
 
 template<int dim, typename Number>
@@ -837,8 +865,9 @@ template<int dim, typename Number>
 void
 SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
   std::vector<VectorType *> & vectors_velocity,
-  std::vector<VectorType *> & vectors_pressure)
-{ 
+  std::vector<VectorType *> & vectors_pressure,
+  std::vector<VectorType *> & vectors_enrichment)
+{
   // one transfer object per DoFHandler, created on the old mesh
   solution_transfer_u = std::make_shared<ExaDG::SolutionTransfer<dim,
     VectorType>>(dof_handler_u);
@@ -849,6 +878,10 @@ SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
   // execute_coarsening_and_refinement() of the triangulation
   solution_transfer_u->prepare_coarsening_and_refinement(vectors_velocity);
   solution_transfer_p->prepare_coarsening_and_refinement(vectors_pressure);
+
+  // wall enrichment: U_tilde of the time integrator and the wall data (u_tau, tau_w, y+ on/off)
+  if(param.wall_enrichment_enabled)
+    function_enrichment->prepare_coarsening_and_refinement(vectors_enrichment);
 }
 
 template<int dim, typename Number>

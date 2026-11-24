@@ -261,6 +261,15 @@ TimeIntBDFDualSplitting<dim, Number>::get_vectors_for_transfer(
   }
   vectors_velocity.push_back(&velocity_np.block(0));
 
+  if(this->param.wall_enrichment_enabled and this->param.convective_problem())
+  {
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+    {
+      vectors_velocity.push_back(&convective_history[i].block(0));
+    }
+    vectors_velocity.push_back(&convective_history_np.block(0));
+  }
+
   // Dirichlet velocity at t_{n-i} and t_{n+1} (time derivative in the pressure Neumann BC)
   for(unsigned int i = 0; i < velocity_dbc.size(); ++i)
   {
@@ -275,6 +284,34 @@ TimeIntBDFDualSplitting<dim, Number>::get_vectors_for_transfer(
   }
   vectors_pressure.push_back(&pressure_np);
 }
+
+template<int dim, typename Number>
+void
+TimeIntBDFDualSplitting<dim, Number>::get_vectors_enrichment_for_transfer(
+  std::vector<VectorType *> & vectors_enrichment)
+{
+  if(not this->param.wall_enrichment_enabled)
+    return;
+
+  // U_tilde (block 1): velocity history u_{n-i} and u_{n+1}
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+  {
+    vectors_enrichment.push_back(&velocity[i].block(1));
+  }
+  vectors_enrichment.push_back(&velocity_np.block(1));
+
+  // U_tilde of the convective term history (velocity space), see allocate_vectors()
+  if(this->param.convective_problem())
+  {
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+    {
+      vectors_enrichment.push_back(&convective_history[i].block(1));
+    }
+    vectors_enrichment.push_back(&convective_history_np.block(1));
+  }
+}
+
+
 
 template<int dim, typename Number>
 void

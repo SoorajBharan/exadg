@@ -183,6 +183,14 @@ TimeIntBDF<dim, Number>::get_vectors_for_transfer(
 
 template<int dim, typename Number>
 void
+TimeIntBDF<dim, Number>::get_vectors_enrichment_for_transfer(
+  std::vector<VectorType *> & /* vectors_enrichment */)
+{
+  // no wall enrichment in this time integrator: nothing to transfer
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 {
   AssertThrow(not store_solution,
@@ -192,7 +200,12 @@ TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
   std::vector<VectorType *> vectors_pressure;
   get_vectors_for_transfer(vectors_velocity, vectors_pressure);
 
-  operator_base->prepare_coarsening_and_refinement(vectors_velocity, vectors_pressure);
+  std::vector<VectorType *> vectors_enrichment;
+  get_vectors_enrichment_for_transfer(vectors_enrichment);
+
+  operator_base->prepare_coarsening_and_refinement(vectors_velocity,
+                                                   vectors_pressure,
+                                                   vectors_enrichment);
 }
 
 template<int dim, typename Number>
@@ -205,7 +218,12 @@ TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
   std::vector<VectorType *> vectors_pressure;
   get_vectors_for_transfer(vectors_velocity, vectors_pressure);
 
-  operator_base->interpolate_after_coarsening_and_refinement(vectors_velocity, vectors_pressure);
+  std::vector<VectorType *> vectors_enrichment;
+  get_vectors_enrichment_for_transfer(vectors_enrichment);
+
+  operator_base->interpolate_after_coarsening_and_refinement(vectors_velocity,
+                                                             vectors_pressure,
+                                                             vectors_enrichment);
 }
 
 template<int dim, typename Number>

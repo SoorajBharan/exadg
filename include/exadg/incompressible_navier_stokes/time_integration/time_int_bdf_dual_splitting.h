@@ -94,6 +94,9 @@ private:
                            std::vector<VectorType *> & vectors_pressure) final;
 
   void
+  get_vectors_enrichment_for_transfer(std::vector<VectorType *> & vectors_enrichment) final;
+
+  void
   do_timestep_solve() final;
 
   void

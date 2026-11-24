@@ -607,14 +607,8 @@ FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
 
 template<int dim, typename Number>
 void
-FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
-  std::vector<VectorType *> & vectors_enrichment)
+FunctionEnrichment<dim, Number>::interpolate_wall_data_after_coarsening_and_refinement()
 {
-  // same vectors in the same order as in prepare_coarsening_and_refinement(), initialized by the
-  // caller on the new mesh (dof_index_en of the new matrix_free_en)
-  if(not vectors_enrichment.empty())
-    solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
-
   // friction_velocity and friction_velocity_old were initialized on the new mesh by
   // initialize_mesh_dependent_data()
   std::vector<VectorType *> vectors_cg_scalar = {&friction_velocity,
@@ -622,8 +616,7 @@ FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
     &wall_shear_stress,
     &wall_shear_stress_psi,
     &wall_shear_stress_psi_old};
-  solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(
-    vectors_cg_scalar);
+  solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(vectors_cg_scalar);
 
   // CG space: values at hanging nodes from the constraints
   for(VectorType * vector : vectors_cg_scalar)
@@ -634,14 +627,26 @@ FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
   // y+ on/off of psi and psi_old (DG scalar, constant per cell)
   std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
     &enrichment_switch_old};
-  solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(
-    vectors_enrichment_switch);
+  solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(vectors_enrichment_switch);
   enrichment_switch.update_ghost_values();
   enrichment_switch_old.update_ghost_values();
 
-  solution_transfer_enrichment.reset();
   solution_transfer_friction_velocity.reset();
   solution_transfer_enrichment_switch.reset();
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_enrichment)
+{
+  // U_tilde of the time integrator: same vectors in the same order as in
+  // prepare_coarsening_and_refinement(), initialized by the caller on the new mesh (dof_index_en
+  // of the new matrix_free_en)
+  if(not vectors_enrichment.empty())
+    solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
+
+  solution_transfer_enrichment.reset();
 }
 
 template<int dim, typename Number>

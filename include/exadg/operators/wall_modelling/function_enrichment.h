@@ -86,6 +86,12 @@ public:
   void
   prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment);
 
+  // adaptive mesh refinement, step 1 (operator setup on the new mesh): call after
+  // initialize_mesh_dependent_data(); transfers u_tau, u_tau_old, tau_w, tau_w of psi and psi_old
+  // and the y+ on/off of psi and psi_old
+  void
+  interpolate_wall_data_after_coarsening_and_refinement();
+
   // adaptive mesh refinement: call after initialize_mesh_dependent_data() on the new mesh, with
   // the same vectors (initialized on the new dof_index_en) in the same order
   void
