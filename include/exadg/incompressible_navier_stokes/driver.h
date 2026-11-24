@@ -158,6 +158,9 @@ private:
   void
   do_adaptive_refinement() const;
 
+  std::vector<bool>
+  get_frozen_cells() const;
+
   // MPI communicator
   MPI_Comm const mpi_comm;
 

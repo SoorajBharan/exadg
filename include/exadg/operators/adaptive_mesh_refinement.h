@@ -26,12 +26,15 @@
 #define INCLUDE_EXADG_OPERATORS_ADAPTIVE_MESH_REFINEMENT_H_
 
 // deal.II
+#include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/distributed/grid_refinement.h>
 #include <deal.II/distributed/solution_transfer.h>
+#include <deal.II/distributed/tria_base.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/mapping.h>
 #include <deal.II/grid/grid_refinement.h>
+#include <deal.II/grid/grid_tools.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/solution_transfer.h>
@@ -40,9 +43,11 @@
 // ExaDG
 #include <exadg/utilities/print_functions.h>
 
+#include <limits>
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <optional>
 
 namespace ExaDG
 {
@@ -126,6 +131,80 @@ trigger_coarsening_and_refinement_now(unsigned int const trigger_every_n_time_st
   return ((time_step_number == 0) or not(time_step_number % trigger_every_n_time_steps));
 }
 
+template<int dim>
+std::vector<int>
+compute_maximum_level_around_frozen_cells(dealii::Triangulation<dim> const & tria,
+                                          std::vector<bool> const &          frozen_cells,
+                                          int const                     maximum_refinement_level)
+{
+  int const no_level_limit = std::numeric_limits<int>::max();
+
+  std::vector<int> maximum_level(tria.n_active_cells(), no_level_limit);
+
+  // frozen cells keep their level
+  for(auto const & cell : tria.active_cell_iterators())
+  {
+    if(not cell->is_artificial() and frozen_cells[cell->active_cell_index()])
+    {
+      maximum_level[cell->active_cell_index()] = cell->level();
+    }
+  }
+
+  // ring n around the frozen cells gets level l + n; a cell in ring n >= maximum_refinement_level
+  // cannot be refined too far anyway, so maximum_refinement_level rings are sufficient
+  for(int ring = 1; ring <= maximum_refinement_level; ++ring)
+  {
+    // smallest maximum level of all cells at each vertex
+    std::vector<int> maximum_level_at_vertex(tria.n_vertices(), no_level_limit);
+
+    for(auto const & cell : tria.active_cell_iterators())
+    {
+      if(not cell->is_artificial())
+      {
+        for(auto const v : cell->vertex_indices())
+        {
+          unsigned int const vertex       = cell->vertex_index(v);
+          maximum_level_at_vertex[vertex] = std::min(maximum_level_at_vertex[vertex],
+                                                     maximum_level[cell->active_cell_index()]);
+        }
+      }
+    }
+
+    // locally owned cells: at most one level more than any cell sharing a vertex
+    for(auto const & cell : tria.active_cell_iterators())
+    {
+      if(cell->is_locally_owned())
+      {
+        for(auto const v : cell->vertex_indices())
+        {
+          int const level_at_vertex = maximum_level_at_vertex[cell->vertex_index(v)];
+
+          if(level_at_vertex != no_level_limit)
+          {
+            maximum_level[cell->active_cell_index()] =
+              std::min(maximum_level[cell->active_cell_index()], level_at_vertex + 1);
+          }
+        }
+      }
+    }
+
+    // ghost cells: the value computed by the rank that owns the cell (next ring needs it)
+    if(dynamic_cast<dealii::parallel::TriangulationBase<dim> const *>(&tria) != nullptr)
+    {
+      dealii::GridTools::exchange_cell_data_to_ghosts<int, dealii::Triangulation<dim>>(
+        tria,
+        [&](typename dealii::Triangulation<dim>::active_cell_iterator const & cell)
+        -> std::optional<int> { return maximum_level[cell->active_cell_index()]; },
+        [&](typename dealii::Triangulation<dim>::active_cell_iterator const & cell,
+            int const &                                                      level) {
+          maximum_level[cell->active_cell_index()] = level;
+        });
+    }
+  }
+
+  return maximum_level;
+}
+
 /**
  * Limit the coarsening and refinement by adapting the flags set in the triangulation.
  * This considers the maximum and minimum refinement levels provided and might remove
@@ -134,8 +213,15 @@ trigger_coarsening_and_refinement_now(unsigned int const trigger_every_n_time_st
 template<int dim>
 void
 limit_coarsening_and_refinement(dealii::Triangulation<dim> &       tria,
-                                AdaptiveMeshRefinementData const & amr_data)
+                                AdaptiveMeshRefinementData const & amr_data,
+                                std::vector<bool> const &          frozen_cells = {})
 {
+  AssertThrow(frozen_cells.empty() or frozen_cells.size() == tria.n_active_cells(),
+              dealii::ExcMessage("frozen_cells needs one entry per active cell."));
+
+  // maximum level after refinement around the frozen cells (2:1 rule); empty: no frozen cells
+  std::vector<int> const maximum_level = frozen_cells.empty() ? std::vector<int>() : compute_maximum_level_around_frozen_cells(tria, frozen_cells, amr_data.maximum_refinement_level);
+
   for(auto & cell : tria.active_cell_iterators())
   {
     if(cell->is_locally_owned())
@@ -158,8 +244,50 @@ limit_coarsening_and_refinement(dealii::Triangulation<dim> &       tria,
         cell->clear_refine_flag();
         cell->clear_coarsen_flag();
       }
+
+      // Do not coarsen/refine frozen cells (wall enrichment layer)
+      if(not frozen_cells.empty() and frozen_cells[cell->active_cell_index()])
+      {
+        cell->clear_refine_flag();
+        cell->clear_coarsen_flag();
+      }
+
+      // Do not refine cells around the frozen cells beyond the maximum level of the 2:1 rule
+      if(not maximum_level.empty() and cell->level() + 1 > maximum_level[cell->active_cell_index()])
+      {
+        cell->clear_refine_flag();
+      }
     }
   }
+}
+
+/**
+ * Call after prepare_coarsening_and_refinement(): stops if a frozen cell (wall enrichment layer)
+ * is flagged, i.e. the 2:1 rule of the triangulation has set a refinement flag on it again.
+ * frozen_cells as in limit_coarsening_and_refinement(); empty: nothing to check.
+ */
+template<int dim>
+void
+check_frozen_cells_not_flagged(dealii::Triangulation<dim> const & tria,
+                               std::vector<bool> const &          frozen_cells)
+{
+  bool frozen_cells_flagged = false;
+
+  if(not frozen_cells.empty())
+  {
+    for(auto const & cell : tria.active_cell_iterators())
+    {
+      if(cell->is_locally_owned() and frozen_cells[cell->active_cell_index()] and (cell->refine_flag_set() or cell->coarsen_flag_set()))
+      {
+        frozen_cells_flagged = true;
+      }
+    }
+  }
+
+  frozen_cells_flagged = dealii::Utilities::MPI::logical_or(frozen_cells_flagged, tria.get_communicator());
+
+  AssertThrow(not frozen_cells_flagged,
+              dealii::ExcMessage("Adaptive mesh refinement: a cell of the wall enrihched layer is flagged for refinement or coarsening after prepare_coarsening_and_refinement()"));
 }
 
 /**

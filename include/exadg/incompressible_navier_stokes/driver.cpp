@@ -20,6 +20,7 @@
  */
 
 // likwid
+#include <deal.II/dofs/dof_handler.h>
 #include "exadg/operators/adaptive_mesh_refinement.h"
 #ifdef EXADG_WITH_LIKWID
 #  include <likwid.h>
@@ -254,6 +255,30 @@ Driver<dim, Number>::setup_after_coarsening_and_refinement() const
 }
 
 template<int dim, typename Number>
+std::vector<bool>
+Driver<dim, Number>::get_frozen_cells() const
+{
+  std::vector<bool> frozen_cells;
+
+  if(application->get_parameters().wall_enrichment_enabled)
+  {
+    dealii::DoFHandler<dim> const & dof_handler_enrichment = pde_operator->get_function_enrichment()->get_dof_handler_en_vector();
+
+    frozen_cells.resize(grid->triangulation->n_active_cells(), false);
+
+    for(auto const & cell : dof_handler_enrichment.active_cell_iterators())
+    {
+      if(not cell->is_artificial())
+      {
+        frozen_cells[cell->active_cell_index()] = (cell->active_fe_index() != 0);
+      }
+    }
+  }
+
+  return frozen_cells;
+}
+
+template<int dim, typename Number>
 void
 Driver<dim, Number>::do_adaptive_refinement() const
 {
@@ -262,11 +287,15 @@ Driver<dim, Number>::do_adaptive_refinement() const
 
   Parameters const & param = application->get_parameters();
 
-  limit_coarsening_and_refinement(*grid->triangulation, param.amr_data);
+  std::vector<bool> const frozen_cells = get_frozen_cells();
+
+  limit_coarsening_and_refinement(*grid->triangulation, param.amr_data, frozen_cells);
 
   if(any_cells_flagged_for_coarsening_or_refinement(*grid->triangulation))
   {
     grid->triangulation->prepare_coarsening_and_refinement();
+
+    check_frozen_cells_not_flagged(*grid->triangulation, frozen_cells);
 
     time_integrator->prepare_coarsening_and_refinement();
 
