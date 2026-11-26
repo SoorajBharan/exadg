@@ -84,7 +84,7 @@ public:
   // vectors_enrichment = U_tilde vectors of the time integrator (dof_index_en); u_tau and
   // u_tau_old are transferred internally
   void
-  prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment);
+  prepare_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment, bool const follow_mesh);
 
   // adaptive mesh refinement, step 1 (operator setup on the new mesh): call after
   // initialize_mesh_dependent_data(); transfers u_tau, u_tau_old, tau_w, tau_w of psi and psi_old
@@ -95,7 +95,9 @@ public:
   // adaptive mesh refinement: call after initialize_mesh_dependent_data() on the new mesh, with
   // the same vectors (initialized on the new dof_index_en) in the same order
   void
-  interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_enrichment);
+  interpolate_after_coarsening_and_refinement(
+    std::vector<VectorType *> & vectors_enrichment,
+    bool const                  follow_mesh);
 
   // adaptive mesh refinement: call after interpolate_after_coarsening_and_refinement() and
   // setup_wall_distance(..., false); recomputes psi_old and psi (tables per cell batch of the new
@@ -149,6 +151,13 @@ public:
                         VectorType &       dst_tilde,
                         VectorType const & u_bar_shadow,
                         VectorType const & u_tilde) const;
+
+  // adaptive mesh refinement (FollowMesh): enrichment part psi U_tilde of u_h = U_bar + psi U_tilde
+  // tested with the polynomial test functions on the enriched cells (shadow layout),
+  //   dst_bar_shadow = int v_bar . psi U_tilde,
+  // psi of the current solution (AMR is done before the post solve, before psi is updated)
+  void
+  integrate_enrichment_part(VectorType & dst_bar_shadow, VectorType const & u_tilde) const;
 
   void 
   copy_wall_layout_to_global_dg(VectorType const & wall_vec, VectorType & global_vec) const;
@@ -432,6 +441,34 @@ private:
   std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_enrichment;
   std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_friction_velocity;
   std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_enrichment_switch;
+
+  dealii::DoFHandler<dim> dof_handler_en_vector_all_cells;
+  std::vector<VectorType> enrichment_all_cells;
+
+  dealii::DoFHandler<dim> dof_handler_en_scalar_all_cells;
+  std::vector<VectorType> enrichment_switch_all_cells;
+
+  // set in prepare_coarsening_and_refinement() (FollowMesh), read in
+  // interpolate_wall_data_after_coarsening_and_refinement(), which has no follow_mesh argument
+  bool enrichment_switch_transferred_on_all_cells = false;
+
+  void
+  initialize_vector_all_cells(dealii::DoFHandler<dim> const & dof_handler_all_cells,
+                              VectorType &                    vector) const;
+
+  // enriched cells (hp DoFHandler, FE_Nothing elsewhere) -> field on all cells, 0 elsewhere
+  void
+  copy_enriched_cells_to_all_cells(dealii::DoFHandler<dim> const & dof_handler_enriched,
+                                   dealii::DoFHandler<dim> const & dof_handler_all_cells,
+                                   VectorType const &              src,
+                                   VectorType &                    dst) const;
+
+  // field on all cells -> enriched cells of the current mesh (hp DoFHandler)
+  void
+  copy_all_cells_to_enriched_cells(dealii::DoFHandler<dim> const & dof_handler_enriched,
+                                   dealii::DoFHandler<dim> const & dof_handler_all_cells,
+                                   VectorType const &              src,
+                                   VectorType &                    dst) const;
 
   // rebuild mode of update_enrichment_function() after adaptive mesh refinement: the y+ on/off
   // per cell is read from this vector (no y+ criterion, no storing of the inputs, no print);

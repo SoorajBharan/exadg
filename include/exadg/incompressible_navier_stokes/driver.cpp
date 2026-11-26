@@ -261,9 +261,11 @@ Driver<dim, Number>::get_frozen_cells() const
   std::vector<bool> frozen_cells;
 
   bool const preserve_boundary_cells = application->get_parameters().amr_data.preserve_boundary_cells;
-  bool const wall_enrichment = application->get_parameters().wall_enrichment_enabled;
+  bool const frozen_wall_enrichment_layer =
+    application->get_parameters().wall_enrichment_enabled and
+    application->get_parameters().wall_enrichment_adaptivity == WallEnrichmentAdaptivity::FrozenLayer;
 
-  if(not preserve_boundary_cells and not wall_enrichment)
+  if(not preserve_boundary_cells and not frozen_wall_enrichment_layer)
     return frozen_cells;
 
   frozen_cells.resize(grid->triangulation->n_active_cells(), false);
@@ -283,7 +285,7 @@ Driver<dim, Number>::get_frozen_cells() const
 
   // wall enrichment layer: active_fe_index of the enrichment DoFHandler, 0 not enriched,
   // 1 enriched, 2 halo (also known on ghost cells)
-  if(wall_enrichment)
+  if(frozen_wall_enrichment_layer)
   {
     dealii::DoFHandler<dim> const & dof_handler_enrichment = pde_operator->get_function_enrichment()->get_dof_handler_en_vector();
 

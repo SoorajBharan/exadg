@@ -191,6 +191,14 @@ TimeIntBDF<dim, Number>::get_vectors_enrichment_for_transfer(
 
 template<int dim, typename Number>
 void
+TimeIntBDF<dim, Number>::get_vectors_enrichment_pairs(
+  std::vector<std::pair<VectorType *, VectorType *>> & /* pairs */)
+{
+  // no wall enrichment in this time integrator: no pairs
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 {
   AssertThrow(not store_solution,
@@ -202,6 +210,16 @@ TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 
   std::vector<VectorType *> vectors_enrichment;
   get_vectors_enrichment_for_transfer(vectors_enrichment);
+
+  // FollowMesh: projection W = Pi(psi U_tilde) of every (U_bar, U_tilde) pair, and on the cells
+  // flagged for coarsening the fold U_bar += W, U_tilde = 0; before the vectors are registered for
+  // the transfer
+  if(operator_base->wall_enrichment_follows_mesh())
+  {
+    std::vector<std::pair<VectorType *, VectorType *>> pairs;
+    get_vectors_enrichment_pairs(pairs);
+    operator_base->prepare_enrichment_part_for_transfer(pairs);
+  }
 
   operator_base->prepare_coarsening_and_refinement(vectors_velocity,
                                                    vectors_pressure,
@@ -235,6 +253,15 @@ TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
   operator_base->interpolate_after_coarsening_and_refinement(vectors_velocity,
                                                              vectors_pressure,
                                                              vectors_enrichment);
+  // FollowMesh: the part psi U_tilde of the cells that are not enriched on the new mesh (W,
+  // transferred with the velocity) is added to U_bar
+  if(operator_base->wall_enrichment_follows_mesh())
+  {
+    std::vector<std::pair<VectorType *, VectorType *>> pairs;
+    get_vectors_enrichment_pairs(pairs);
+    operator_base->add_enrichment_part_after_transfer(pairs);
+  }
+
   if(needs_vector_convective_term and param.ale_formulation == false)
   {
     auto const apply_mass = [&](VectorType & vector) {

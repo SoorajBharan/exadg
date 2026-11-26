@@ -161,6 +161,25 @@ public:
   interpolate_after_coarsening_and_refinement(std::vector<VectorType *> & vectors_velocity,
                                               std::vector<VectorType *> & vectors_pressure);
 
+
+  // adaptive mesh refinement with wall enrichment: the enrichment layer is found again on the new
+  // mesh (FollowMesh), not frozen
+  bool
+  wall_enrichment_follows_mesh() const;
+
+  // FollowMesh, before prepare_coarsening_and_refinement(): W = Pi(psi U_tilde) of every pair
+  // (stored in enrichment_part_projection), and the fold U_bar += W, U_tilde = 0, W = 0 on the
+  // cells flagged for coarsening
+  void
+  prepare_enrichment_part_for_transfer(std::vector<std::pair<VectorType *, VectorType *>> const & pairs);
+
+  // FollowMesh, after interpolate_after_coarsening_and_refinement(): U_bar += W on the cells that
+  // are not enriched on the new mesh (same pairs in the same order as in
+  // prepare_enrichment_part_for_transfer()); W is released afterwards
+  void
+  add_enrichment_part_after_transfer(
+    std::vector<std::pair<VectorType *, VectorType *>> const & pairs);
+
   std::vector<dealii::Vector<float>>
   compute_error_indicators(VectorType const & velocity) const;
 
@@ -463,6 +482,20 @@ public:
   // Requires precompute_schur_matrices() for the current u_tau.
   void
   project_enrichment_history(BlockVectorType & u) const;
+
+  // adaptive mesh refinement (FollowMesh): local L2 projection of the enrichment part psi U_tilde
+  // onto the polynomial DG velocity space, dst = M^{-1} int v . psi U_tilde (global DG layout,
+  // dst = 0 outside the enriched cells); dst is initialized here
+  void
+  project_enrichment_part(VectorType & dst, VectorType const & u_tilde) const;
+
+  // adaptive mesh refinement (FollowMesh), cells flagged for coarsening (call after
+  // triangulation.prepare_coarsening_and_refinement()): U_bar += W, then W = 0 and U_tilde = 0, i.e.
+  // the enrichment part is folded into the polynomial part (W from project_enrichment_part())
+  void
+  fold_enrichment_part_on_coarsened_cells(VectorType & u_bar,
+                                          VectorType & u_tilde,
+                                          VectorType & projection) const;
 
   // wall enrichment: convective term c(u_h) tested with v_bar (block 0) and psi v_tilde (block 1)
   void
@@ -821,6 +854,7 @@ private:
   std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_u;
   std::shared_ptr<ExaDG::SolutionTransfer<dim, VectorType>> solution_transfer_p;
 
+  std::vector<VectorType> enrichment_part_projection;
 protected:
   /*
    * Operator kernels.

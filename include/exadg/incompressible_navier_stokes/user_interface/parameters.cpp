@@ -235,6 +235,7 @@ Parameters::Parameters()
     wall_enrichment_rank_tolerance(1.e-6),
     wall_enrichment_y_plus_max(30.0),
     wall_enrichment_y_plus_min(15.0),
+    wall_enrichment_adaptivity(WallEnrichmentAdaptivity::FrozenLayer),
     wall_layer_stress_gradient(0.0),
     use_enrichment_aware_penalty(false),
     wall_bc_viscous(WallBoundaryConditionViscous::Weak),
@@ -637,6 +638,7 @@ Parameters::check(dealii::ConditionalOStream const & pcout) const
     AssertThrow(wall_enrichment_y_plus_min >= 0.0 and
                   wall_enrichment_y_plus_min <= wall_enrichment_y_plus_max,
                 dealii::ExcMessage("wall_enrichment_y_plus_min must be in [0, wall_enrichment_y_plus_max]."));
+
     AssertThrow(not wall_layer_nu_t_wall_law_only or wall_layer_nu_t_wall_law,
                 dealii::ExcMessage("wall_layer_nu_t_wall_law_only requires wall_layer_nu_t_wall_law."));
     AssertThrow(not wall_layer_tke_production_from_wall_law or
@@ -1433,6 +1435,12 @@ Parameters::print_parameters_wall_model(dealii::ConditionalOStream const & pcout
   print_parameter(pcout, "Rank tolerance of enrichment space", wall_enrichment_rank_tolerance);
   print_parameter(pcout, "Enrichment switched on above y+", wall_enrichment_y_plus_max);
   print_parameter(pcout, "Enrichment switched off below y+", wall_enrichment_y_plus_min);
+
+  if(enable_adaptivity)
+  {
+    print_parameter(pcout, "Adaptive mesh refinement for the enrichment layer", wall_enrichment_adaptivity);
+  }
+
   print_parameter(pcout, "Wall layer stress gradient (1/length)", wall_layer_stress_gradient);
   print_parameter(pcout, "Enrichment-aware interior penalty", use_enrichment_aware_penalty);
   print_parameter(pcout, "Wall boundary condition viscous step", wall_bc_viscous);

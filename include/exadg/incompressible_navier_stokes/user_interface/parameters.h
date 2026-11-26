@@ -446,6 +446,8 @@ public:
   // y+ < wall_enrichment_y_plus_min (must be <= wall_enrichment_y_plus_max)
   double wall_enrichment_y_plus_min;
 
+  WallEnrichmentAdaptivity wall_enrichment_adaptivity;
+
   // wall-law eddy viscosity with a linear shear stress across the wall layer,
   // tau(y) / tau_w = 1 + g y, nu_t = nu (r dy+/du+ - 1); g in 1/length.
   // 0: constant stress layer (default); channel: -1/delta (exact for the mean flow)

@@ -139,6 +139,29 @@ TimeIntBDFCoupled<dim, Number>::get_vectors_enrichment_for_transfer(
 
 template<int dim, typename Number>
 void
+TimeIntBDFCoupled<dim, Number>::get_vectors_enrichment_pairs(
+  std::vector<std::pair<VectorType *, VectorType *>> & pairs)
+{
+  if(not this->param.wall_enrichment_enabled)
+    return;
+
+  // solution history and t_{n+1}: U_bar in block 0 of the solution, U_tilde separately
+  for(unsigned int i = 0; i < velocity_enrichment.size(); ++i)
+    pairs.emplace_back(&solution[i].block(0), &velocity_enrichment[i]);
+  pairs.emplace_back(&solution_np.block(0), &velocity_enrichment_np);
+
+  // convective term history (velocity space)
+  if(this->param.convective_problem() and
+     this->param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      pairs.emplace_back(&convective_history[i].block(0), &convective_history[i].block(1));
+    pairs.emplace_back(&convective_history_np.block(0), &convective_history_np.block(1));
+  }
+}
+
+template<int dim, typename Number>
+void
 TimeIntBDFCoupled<dim, Number>::initialize_velocity_enriched(BlockVectorType & velocity) const
 {
   velocity.reinit(2);

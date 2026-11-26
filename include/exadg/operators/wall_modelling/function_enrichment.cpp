@@ -575,16 +575,108 @@ FunctionEnrichment<dim, Number>::initialize_mesh_dependent_data(
 
 template<int dim, typename Number>
 void
-FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
-  std::vector<VectorType *> & vectors_enrichment)
+FunctionEnrichment<dim, Number>::initialize_vector_all_cells(
+  dealii::DoFHandler<dim> const & dof_handler_all_cells,
+  VectorType &                    vector) const
 {
-  // U_tilde of the time integrator (layout dof_index_en); the wall layer is frozen, so its values
-  // are copied cell by cell (also when a cell moves to another rank)
-  solution_transfer_enrichment =
-    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_vector);
+  vector.reinit(dof_handler_all_cells.locally_owned_dofs(),
+                dealii::DoFTools::extract_locally_relevant_dofs(dof_handler_all_cells),
+                dof_handler_all_cells.get_communicator());
+}
 
-  if(not vectors_enrichment.empty())
-    solution_transfer_enrichment->prepare_coarsening_and_refinement(vectors_enrichment);
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::copy_enriched_cells_to_all_cells(
+  dealii::DoFHandler<dim> const & dof_handler_enriched,
+  dealii::DoFHandler<dim> const & dof_handler_all_cells,
+  VectorType const &              src,
+  VectorType &                    dst) const
+{
+  dst = 0.0;
+
+  dealii::Vector<Number> values;
+
+  // both DoFHandlers live on the same triangulation: the active cells come in the same order
+  auto cell_all = dof_handler_all_cells.begin_active();
+  for(auto const & cell : dof_handler_enriched.active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and cell->active_fe_index() == active_fe_index)
+    {
+      values.reinit(cell->get_fe().n_dofs_per_cell());
+      cell->get_dof_values(src, values);
+      cell_all->set_dof_values(values, dst);
+    }
+    ++cell_all;
+  }
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::copy_all_cells_to_enriched_cells(
+  dealii::DoFHandler<dim> const & dof_handler_enriched,
+  dealii::DoFHandler<dim> const & dof_handler_all_cells,
+  VectorType const &              src,
+  VectorType &                    dst) const
+{
+  dst = 0.0;
+
+  dealii::Vector<Number> values;
+
+  auto cell_all = dof_handler_all_cells.begin_active();
+  for(auto const & cell : dof_handler_enriched.active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and cell->active_fe_index() == active_fe_index)
+    {
+      values.reinit(cell->get_fe().n_dofs_per_cell());
+      cell_all->get_dof_values(src, values);
+      cell->set_dof_values(values, dst);
+    }
+    ++cell_all;
+  }
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
+  std::vector<VectorType *> & vectors_enrichment,
+  bool const                  follow_mesh)
+{
+  if(follow_mesh)
+  {
+    // FollowMesh: cells can leave or join the enrichment, so U_tilde is transferred as a DG field
+    // on all cells (fe_en_vector everywhere, 0 outside the enriched cells); the fold on the cells
+    // flagged for coarsening has already been done
+    dof_handler_en_vector_all_cells.reinit(dof_handler_en_vector.get_triangulation());
+    dof_handler_en_vector_all_cells.distribute_dofs(*fe_en_vector);
+
+    enrichment_all_cells.resize(vectors_enrichment.size());
+    std::vector<VectorType *> vectors_all_cells;
+    for(unsigned int i = 0; i < vectors_enrichment.size(); ++i)
+    {
+      initialize_vector_all_cells(dof_handler_en_vector_all_cells, enrichment_all_cells[i]);
+      copy_enriched_cells_to_all_cells(dof_handler_en_vector,
+                                       dof_handler_en_vector_all_cells,
+                                       *vectors_enrichment[i],
+                                       enrichment_all_cells[i]);
+      vectors_all_cells.push_back(&enrichment_all_cells[i]);
+    }
+
+    solution_transfer_enrichment =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_vector_all_cells);
+
+    if(not vectors_all_cells.empty())
+      solution_transfer_enrichment->prepare_coarsening_and_refinement(vectors_all_cells);
+  }
+  else
+  {
+    // FrozenLayer: U_tilde of the time integrator (layout dof_index_en); the wall layer is frozen,
+    // so its values are copied cell by cell (also when a cell moves to another rank)
+    solution_transfer_enrichment =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_vector);
+
+    if(not vectors_enrichment.empty())
+      solution_transfer_enrichment->prepare_coarsening_and_refinement(vectors_enrichment);
+  }
 
   // CG scalar vectors: u_tau, u_tau of the old time step, tau_w, and the tau_w from which psi and
   // psi_old were computed (rebuild of psi and psi_old after adaptive mesh refinement)
@@ -610,9 +702,39 @@ FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
   // y+ on/off of psi and psi_old (DG scalar, constant per cell)
   std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
     &enrichment_switch_old};
-  solution_transfer_enrichment_switch =
-    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_scalar);
-  solution_transfer_enrichment_switch->prepare_coarsening_and_refinement(vectors_enrichment_switch);
+  if(follow_mesh)
+  {
+    // FollowMesh: cells can leave or join the enrichment, so the switch is transferred as a field
+    // on all cells (0 outside the enriched cells), like U_tilde
+    dof_handler_en_scalar_all_cells.reinit(dof_handler_en_scalar.get_triangulation());
+    dof_handler_en_scalar_all_cells.distribute_dofs(*fe_en_scalar);
+
+    enrichment_switch_all_cells.resize(vectors_enrichment_switch.size());
+    std::vector<VectorType *> vectors_all_cells;
+    for(unsigned int i = 0; i < vectors_enrichment_switch.size(); ++i)
+    {
+      initialize_vector_all_cells(dof_handler_en_scalar_all_cells, enrichment_switch_all_cells[i]);
+      copy_enriched_cells_to_all_cells(dof_handler_en_scalar,
+                                       dof_handler_en_scalar_all_cells,
+                                       *vectors_enrichment_switch[i],
+                                       enrichment_switch_all_cells[i]);
+      vectors_all_cells.push_back(&enrichment_switch_all_cells[i]);
+    }
+
+    solution_transfer_enrichment_switch =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_scalar_all_cells);
+    solution_transfer_enrichment_switch->prepare_coarsening_and_refinement(vectors_all_cells);
+
+    enrichment_switch_transferred_on_all_cells = true;
+  }
+  else
+  {
+    // FrozenLayer: transfer on the hp DoFHandler (the enriched cells do not change)
+    solution_transfer_enrichment_switch =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_en_scalar);
+    solution_transfer_enrichment_switch->prepare_coarsening_and_refinement(
+      vectors_enrichment_switch);
+  }
 }
 
 template<int dim, typename Number>
@@ -634,10 +756,41 @@ FunctionEnrichment<dim, Number>::interpolate_wall_data_after_coarsening_and_refi
     constraint_cg_scalar.distribute(*vector);
     vector->update_ghost_values();
   }
-  // y+ on/off of psi and psi_old (DG scalar, constant per cell)
-  std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
+
+ std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
     &enrichment_switch_old};
-  solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(vectors_enrichment_switch);
+  if(enrichment_switch_transferred_on_all_cells)
+  {
+    // FollowMesh: field on all cells of the new mesh
+    dof_handler_en_scalar_all_cells.distribute_dofs(*fe_en_scalar);
+
+    std::vector<VectorType *> vectors_all_cells;
+    for(VectorType & vector : enrichment_switch_all_cells)
+    {
+      initialize_vector_all_cells(dof_handler_en_scalar_all_cells, vector);
+      vectors_all_cells.push_back(&vector);
+    }
+    solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(vectors_all_cells);
+
+    // enriched cells of the new mesh: value of the old cell (refined: of the parent, coarsened:
+    // mean of the children, i.e. on if one child was on); cells that join the enrichment: 0 (off)
+    // until the y+ criterion switches them on
+    for(unsigned int i = 0; i < vectors_enrichment_switch.size(); ++i)
+      copy_all_cells_to_enriched_cells(dof_handler_en_scalar,
+                                       dof_handler_en_scalar_all_cells,
+                                       enrichment_switch_all_cells[i],
+                                       *vectors_enrichment_switch[i]);
+
+    // the helper field belongs to one refinement step only
+    enrichment_switch_all_cells.clear();
+    dof_handler_en_scalar_all_cells.clear();
+    enrichment_switch_transferred_on_all_cells = false;
+  }
+  else
+  {
+    // FrozenLayer: the enriched cells do not change, the values are copied cell by cell
+    solution_transfer_enrichment_switch->interpolate_after_coarsening_and_refinement(vectors_enrichment_switch);
+  }
   enrichment_switch.update_ghost_values();
   enrichment_switch_old.update_ghost_values();
 
@@ -648,13 +801,46 @@ FunctionEnrichment<dim, Number>::interpolate_wall_data_after_coarsening_and_refi
 template<int dim, typename Number>
 void
 FunctionEnrichment<dim, Number>::interpolate_after_coarsening_and_refinement(
-  std::vector<VectorType *> & vectors_enrichment)
+  std::vector<VectorType *> & vectors_enrichment,
+  bool const                   follow_mesh)
 {
   // U_tilde of the time integrator: same vectors in the same order as in
   // prepare_coarsening_and_refinement(), initialized by the caller on the new mesh (dof_index_en
   // of the new matrix_free_en)
-  if(not vectors_enrichment.empty())
-    solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
+  if(follow_mesh)
+  {
+    // DG field on all cells of the new mesh
+    dof_handler_en_vector_all_cells.distribute_dofs(*fe_en_vector);
+
+    std::vector<VectorType *> vectors_all_cells;
+    for(VectorType & vector : enrichment_all_cells)
+    {
+      initialize_vector_all_cells(dof_handler_en_vector_all_cells, vector);
+      vectors_all_cells.push_back(&vector);
+    }
+
+    if(not vectors_all_cells.empty())
+      solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_all_cells);
+
+    // enriched cells of the new mesh: U_tilde from the transferred field (exact for the wall child
+    // of a refined cell, 0 for a newly enriched cell); cells that are not enriched any more drop it
+    // (their part psi U_tilde is added to U_bar with W, step 4)
+    for(unsigned int i = 0; i < vectors_enrichment.size(); ++i)
+      copy_all_cells_to_enriched_cells(dof_handler_en_vector,
+                                       dof_handler_en_vector_all_cells,
+                                       enrichment_all_cells[i],
+                                       *vectors_enrichment[i]);
+
+    // the helper field belongs to one refinement step only
+    enrichment_all_cells.clear();
+    dof_handler_en_vector_all_cells.clear();
+  }
+  else
+{
+    // FrozenLayer: the enriched cells do not change, U_tilde is copied cell by cell
+    if(not vectors_enrichment.empty())
+      solution_transfer_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
+  }
 
   solution_transfer_enrichment.reset();
 }
@@ -1879,6 +2065,42 @@ FunctionEnrichment<dim, Number>::apply_mass_old_to_new(VectorType &       dst_ba
 
   dst_bar_shadow.compress(dealii::VectorOperation::add);
   dst_tilde.compress(dealii::VectorOperation::add);
+}
+
+template<int dim, typename Number>
+void
+FunctionEnrichment<dim, Number>::integrate_enrichment_part(VectorType &       dst_bar_shadow,
+                                                           VectorType const & u_tilde) const
+{
+  auto const & mf = *matrix_free_en;
+
+  typedef dealii::FEEvaluation<dim, -1, 0, dim, Number> CellIntegratorU;
+
+  CellIntegratorU phi_bar(mf, dof_index_shadow_vector, quad_index, 0, active_fe_index);
+  CellIntegratorU phi_tilde(mf, dof_index_en, quad_index, 0, active_fe_index);
+
+  dst_bar_shadow = 0.0;
+
+  for(unsigned int cell = 0; cell < mf.n_cell_batches(); ++cell)
+  {
+    // enriched cells only: the halo carries no U_tilde
+    if(mf.get_cell_iterator(cell, 0)->active_fe_index() != active_fe_index)
+      continue;
+
+    phi_bar.reinit(cell);
+    phi_tilde.reinit(cell);
+
+    phi_tilde.gather_evaluate(u_tilde, dealii::EvaluationFlags::values);
+
+    // psi U_tilde, tested with the polynomial test functions v_bar
+    for(unsigned int q = 0; q < phi_bar.n_q_points; ++q)
+      phi_bar.submit_value(get_psi_cell(cell, q) * phi_tilde.get_value(q), q);
+
+    phi_bar.integrate(dealii::EvaluationFlags::values);
+    phi_bar.distribute_local_to_global(dst_bar_shadow);
+  }
+
+  dst_bar_shadow.compress(dealii::VectorOperation::add);
 }
 
 template<int dim, typename Number>

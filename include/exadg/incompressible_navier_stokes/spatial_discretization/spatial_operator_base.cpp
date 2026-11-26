@@ -829,6 +829,16 @@ SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
   std::vector<VectorType *> & vectors_pressure,
   std::vector<VectorType *> & vectors_enrichment)
 {
+  // FollowMesh: W on the new mesh, appended in the same order as in
+  // prepare_coarsening_and_refinement()
+  if(wall_enrichment_follows_mesh())
+  {
+    for(VectorType & projection : enrichment_part_projection)
+    {
+      initialize_vector_velocity(projection);
+      vectors_velocity.push_back(&projection);
+    }
+  }
   // the vectors must already have the size of the new mesh (allocate_vectors()),  and they must be
   // in the same order as in prepare_coarsening_and_refinement()
   solution_transfer_u->interpolate_after_coarsening_and_refinement(vectors_velocity);
@@ -841,7 +851,8 @@ SpatialOperatorBase<dim, Number>::interpolate_after_coarsening_and_refinement(
   // wall enrichment: U_tilde (the wall data was already transferred in the setup of the operator,
   // initialize_operators())
   if(param.wall_enrichment_enabled)
-    function_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment);
+    function_enrichment->interpolate_after_coarsening_and_refinement(vectors_enrichment,
+                                                                     wall_enrichment_follows_mesh());
 }
 
 template<int dim, typename Number>
@@ -874,6 +885,13 @@ SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
   solution_transfer_p = std::make_shared<ExaDG::SolutionTransfer<dim,
     VectorType>>(dof_handler_p);
 
+  // FollowMesh: W of every (U_bar, U_tilde) pair is transferred with the velocity (same DoFHandler)
+  if(wall_enrichment_follows_mesh())
+  {
+    for(VectorType & projection : enrichment_part_projection)
+      vectors_velocity.push_back(&projection);
+  }
+
   // register the vectors of the old mesh; the data is packed per cell during
   // execute_coarsening_and_refinement() of the triangulation
   solution_transfer_u->prepare_coarsening_and_refinement(vectors_velocity);
@@ -881,7 +899,62 @@ SpatialOperatorBase<dim, Number>::prepare_coarsening_and_refinement(
 
   // wall enrichment: U_tilde of the time integrator and the wall data (u_tau, tau_w, y+ on/off)
   if(param.wall_enrichment_enabled)
-    function_enrichment->prepare_coarsening_and_refinement(vectors_enrichment);
+    function_enrichment->prepare_coarsening_and_refinement(vectors_enrichment,
+                                                           wall_enrichment_follows_mesh());
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::prepare_enrichment_part_for_transfer(
+  std::vector<std::pair<VectorType *, VectorType *>> const & pairs)
+{
+  enrichment_part_projection.resize(pairs.size());
+
+  for(unsigned int i = 0; i < pairs.size(); ++i)
+  {
+    VectorType & u_bar   = *pairs[i].first;
+    VectorType & u_tilde = *pairs[i].second;
+
+    // W = Pi(psi U_tilde), 0 outside the enriched cells
+    project_enrichment_part(enrichment_part_projection[i], u_tilde);
+
+    // cells flagged for coarsening: U_bar += W, U_tilde = 0, W = 0
+    fold_enrichment_part_on_coarsened_cells(u_bar, u_tilde, enrichment_part_projection[i]);
+  }
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::add_enrichment_part_after_transfer(
+  std::vector<std::pair<VectorType *, VectorType *>> const & pairs)
+{
+  AssertThrow(pairs.size() == enrichment_part_projection.size(),
+              dealii::ExcMessage("The (U_bar, U_tilde) pairs after the transfer do not match the pairs before the transfer."));
+
+  std::vector<dealii::types::global_dof_index> dof_indices;
+
+  // both DoFHandlers live on the same triangulation: the active cells come in the same order
+  auto cell_en = function_enrichment->get_dof_handler_en_vector().begin_active();
+  for(auto const & cell : dof_handler_u.active_cell_iterators())
+  {
+    // cells that are not enriched on the new mesh (also the halo): U_bar += W
+    if(cell->is_locally_owned() and cell_en->active_fe_index() != function_enrichment->get_active_fe_index())
+    {
+      dof_indices.resize(cell->get_fe().n_dofs_per_cell());
+      cell->get_dof_indices(dof_indices);
+      for(unsigned int i = 0; i < pairs.size(); ++i)
+      {
+        VectorType &       u_bar      = *pairs[i].first;
+        VectorType const & projection = enrichment_part_projection[i];
+        for(auto const index : dof_indices)
+          u_bar(index) += projection(index);
+      }
+    }
+    ++cell_en;
+  }
+
+  // W belongs to one refinement step only
+  enrichment_part_projection.clear();
 }
 
 template<int dim, typename Number>
@@ -2750,6 +2823,67 @@ SpatialOperatorBase<dim, Number>::project_enrichment_history(BlockVectorType & u
   apply_inverse_mass_operator(u, rhs);
 }
 
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::project_enrichment_part(VectorType &       dst,
+                                                          VectorType const & u_tilde) const
+{
+  auto const & mf_en = *function_enrichment->get_matrix_free();
+
+  // int v_bar . psi U_tilde on the enriched cells (shadow layout)
+  VectorType rhs_bar_shadow;
+  mf_en.initialize_dof_vector(rhs_bar_shadow, function_enrichment->get_dof_index_shadow_vector());
+  function_enrichment->integrate_enrichment_part(rhs_bar_shadow, u_tilde);
+
+  // global DG layout of the velocity, 0 outside the enriched cells
+  VectorType rhs;
+  initialize_vector_velocity(rhs);
+  function_enrichment->copy_wall_layout_to_global_dg(rhs_bar_shadow, rhs);
+
+  // inverse of the polynomial mass matrix (cell-local): local L2 projection
+  initialize_vector_velocity(dst);
+  apply_inverse_mass_operator(dst, rhs);
+}
+
+template<int dim, typename Number>
+void
+SpatialOperatorBase<dim, Number>::fold_enrichment_part_on_coarsened_cells(
+  VectorType & u_bar,
+  VectorType & u_tilde,
+  VectorType & projection) const
+{
+  std::vector<dealii::types::global_dof_index> dof_indices;
+
+  // polynomial part: U_bar += W, W = 0 (W = 0 outside the enriched cells)
+  for(auto const & cell : dof_handler_u.active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and cell->coarsen_flag_set())
+    {
+      dof_indices.resize(cell->get_fe().n_dofs_per_cell());
+      cell->get_dof_indices(dof_indices);
+      for(auto const i : dof_indices)
+      {
+        u_bar(i) += projection(i);
+        projection(i) = 0.0;
+      }
+    }
+  }
+
+  // enrichment part: U_tilde = 0 (DoFs only on the enriched cells, FE_Nothing elsewhere)
+  for(auto const & cell : function_enrichment->get_dof_handler_en_vector().active_cell_iterators())
+  {
+    if(cell->is_locally_owned() and cell->coarsen_flag_set() and
+       cell->active_fe_index() == function_enrichment->get_active_fe_index())
+    {
+      dof_indices.resize(cell->get_fe().n_dofs_per_cell());
+      cell->get_dof_indices(dof_indices);
+      for(auto const i : dof_indices)
+        u_tilde(i) = 0.0;
+    }
+  }
+}
+
 template<int dim, typename Number>
 void
 SpatialOperatorBase<dim, Number>::evaluate_add_body_force_term_enriched(BlockVectorType & dst,
@@ -3425,6 +3559,14 @@ SpatialOperatorBase<dim, Number>::evaluate_velocity_divergence_term(
   rhs_boundary_data.reinit(dst, false);
   this->divergence_operator.rhs(rhs_boundary_data, time);
   dst.add(-1.0, rhs_boundary_data);
+}
+
+template<int dim, typename Number>
+bool
+SpatialOperatorBase<dim, Number>::wall_enrichment_follows_mesh() const
+{
+  return param.wall_enrichment_enabled and param.enable_adaptivity and
+  param.wall_enrichment_adaptivity == WallEnrichmentAdaptivity::FollowMesh;
 }
 
 template class SpatialOperatorBase<2, float>;

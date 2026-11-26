@@ -517,6 +517,12 @@ enum class WallBoundaryConditionViscous
   Strong
 };
 
+enum class WallEnrichmentAdaptivity
+{
+  FrozenLayer,
+  FollowMesh
+};
+
 } // namespace IncNS
 } // namespace ExaDG
 

@@ -311,7 +311,27 @@ TimeIntBDFDualSplitting<dim, Number>::get_vectors_enrichment_for_transfer(
   }
 }
 
+template<int dim, typename Number>
+void
+TimeIntBDFDualSplitting<dim, Number>::get_vectors_enrichment_pairs(
+  std::vector<std::pair<VectorType *, VectorType *>> & pairs)
+{
+  if(not this->param.wall_enrichment_enabled)
+    return;
 
+  // velocity history u_{n-i} and u_{n+1}: block 0 = U_bar, block 1 = U_tilde
+  for(unsigned int i = 0; i < velocity.size(); ++i)
+    pairs.emplace_back(&velocity[i].block(0), &velocity[i].block(1));
+  pairs.emplace_back(&velocity_np.block(0), &velocity_np.block(1));
+
+  // convective term history, a velocity field as well (w = M^{-1} c)
+  if(this->param.convective_problem())
+  {
+    for(unsigned int i = 0; i < convective_history.size(); ++i)
+      pairs.emplace_back(&convective_history[i].block(0), &convective_history[i].block(1));
+    pairs.emplace_back(&convective_history_np.block(0), &convective_history_np.block(1));
+  }
+}
 
 template<int dim, typename Number>
 void

@@ -96,6 +96,9 @@ private:
   void
   get_vectors_enrichment_for_transfer(std::vector<VectorType *> & vectors_enrichment) final;
 
+ void
+  get_vectors_enrichment_pairs(std::vector<std::pair<VectorType *, VectorType *>> & pairs) final;
+
   void
   do_timestep_solve() final;
 

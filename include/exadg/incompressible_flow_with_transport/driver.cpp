@@ -27,6 +27,7 @@
 #include <exadg/incompressible_navier_stokes/time_integration/create_time_integrator.h>
 #include <exadg/utilities/print_solver_results.h>
 #include <exadg/operators/adaptive_mesh_refinement.h>
+#include "exadg/incompressible_navier_stokes/user_interface/enum_types.h"
 
 namespace ExaDG
 {
@@ -559,9 +560,9 @@ Driver<dim, Number>::get_frozen_cells() const
   IncNS::Parameters const & fluid_param = application->fluid->get_parameters();
 
   bool const preserve_boundary_cells = fluid_param.amr_data.preserve_boundary_cells;
-  bool const wall_enrichment         = fluid_param.wall_enrichment_enabled;
+  bool const frozen_wall_enrichment_layer         = fluid_param.wall_enrichment_enabled and fluid_param.wall_enrichment_adaptivity == IncNS::WallEnrichmentAdaptivity::FrozenLayer;
 
-  if(not preserve_boundary_cells and not wall_enrichment)
+  if(not preserve_boundary_cells and not frozen_wall_enrichment_layer)
     return frozen_cells;
 
   frozen_cells.resize(grid->triangulation->n_active_cells(), false);
@@ -581,7 +582,7 @@ Driver<dim, Number>::get_frozen_cells() const
   }
   // wall enrichment layer: active_fe_index of the enrichment DoFHandler, 0 not enriched,
   // 1 enriched, 2 halo (also known on ghost cells)
-  if(wall_enrichment)
+  if(frozen_wall_enrichment_layer)
   {
     dealii::DoFHandler<dim> const & dof_handler_enrichment = fluid_operator->get_function_enrichment()->get_dof_handler_en_vector();
 

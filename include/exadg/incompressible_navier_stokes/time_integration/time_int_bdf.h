@@ -145,6 +145,11 @@ protected:
   virtual void
   get_vectors_enrichment_for_transfer(std::vector<VectorType *> & vectors_enrichment);
 
+  // wall enrichment, adaptive mesh refinement with FollowMesh: pairs (U_bar, U_tilde) of all
+  // velocity fields u_h = U_bar + psi U_tilde (history, t_{n+1}, convective history)
+  virtual void
+  get_vectors_enrichment_pairs(std::vector<std::pair<VectorType *, VectorType *>> & pairs);
+
   Parameters const & param;
 
   // number of refinement steps, where the time step size is reduced in
