@@ -223,14 +223,10 @@ Driver<dim, Number>::setup()
                   dealii::ExcMessage("Adaptive mesh refinement: the scalars need BDF time integration."));
     }
 
-    setup_operators();
 
     if(rans_enabled)
       AssertThrow(not application->scalars[rans_scalar_index]->get_parameters().turbulence_model_data.omega_enrichment,
                   dealii::ExcMessage("Combination of adaptive mesh refinement and the enrichment of omega not implemented yet."));
-
-    AssertThrow(not application->fluid->get_parameters().wall_enrichment_enabled,
-                dealii::ExcMessage("Combination of adaptive mesh refinement and wall enrichment is only implemented for the incompressible Navier-Stokes solver (not yet for the coupled flow-transport solver)."));
   }
 
   // setup of the fluid and scalar operators with the shared MatrixFree object
@@ -548,10 +544,57 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
   dealii::Vector<float> const indicator =
     combine_indicators(indicators, weights, amr_data.indicator_combination, mpi_comm);
 
-  mark_cells(*grid->triangulation, indicator, amr_data);
+  mark_cells(*grid->triangulation, indicator, amr_data, get_frozen_cells());
 
   timer_tree.insert({"Flow + transport", "Adaptive mesh refinement", "Mark cells (Kelly)"},
                     timer.wall_time());
+}
+
+template<int dim, typename Number>
+std::vector<bool>
+Driver<dim, Number>::get_frozen_cells() const
+{
+  std::vector<bool> frozen_cells;
+
+  IncNS::Parameters const & fluid_param = application->fluid->get_parameters();
+
+  bool const preserve_boundary_cells = fluid_param.amr_data.preserve_boundary_cells;
+  bool const wall_enrichment         = fluid_param.wall_enrichment_enabled;
+
+  if(not preserve_boundary_cells and not wall_enrichment)
+    return frozen_cells;
+
+  frozen_cells.resize(grid->triangulation->n_active_cells(), false);
+
+  // boundary cells (with or without wall enrichment): otherwise the 2:1 rule of
+  // prepare_coarsening_and_refinement() could refine them again (e.g. the RANS omega wall value
+  // is computed from the size of the first cell at the wall)
+  if(preserve_boundary_cells)
+  {
+    for(auto const & cell : grid->triangulation->active_cell_iterators())
+    {
+      if(not cell->is_artificial() and cell->at_boundary())
+      {
+        frozen_cells[cell->active_cell_index()] = true;
+      }
+    }
+  }
+  // wall enrichment layer: active_fe_index of the enrichment DoFHandler, 0 not enriched,
+  // 1 enriched, 2 halo (also known on ghost cells)
+  if(wall_enrichment)
+  {
+    dealii::DoFHandler<dim> const & dof_handler_enrichment = fluid_operator->get_function_enrichment()->get_dof_handler_en_vector();
+
+    for(auto const & cell : dof_handler_enrichment.active_cell_iterators())
+    {
+      if(not cell->is_artificial() and cell->active_fe_index() != 0)
+      {
+        frozen_cells[cell->active_cell_index()] = true;
+      }
+    }
+  }
+
+  return frozen_cells;
 }
 
 template<int dim, typename Number>
@@ -563,8 +606,12 @@ Driver<dim, Number>::do_adaptive_refinement() const
 
   IncNS::Parameters const & fluid_param = application->fluid->get_parameters();
 
-  // remove flags at the minimum/maximum refinement level (and on the boundary if requested)
-  limit_coarsening_and_refinement(*grid->triangulation, fluid_param.amr_data);
+  // cells of the wall enrichment layer on the current mesh (empty without wall enrichment)
+  std::vector<bool> const frozen_cells = get_frozen_cells();
+
+  // remove flags at the minimum/maximum refinement level, on the boundary if requested, and on the
+  // cells of the wall enrichment layer
+  limit_coarsening_and_refinement(*grid->triangulation, fluid_param.amr_data, frozen_cells);
 
   if(any_cells_flagged_for_coarsening_or_refinement(*grid->triangulation))
   {
@@ -573,6 +620,7 @@ Driver<dim, Number>::do_adaptive_refinement() const
                                    "dealii::MappingQCache not implemented."));
 
     grid->triangulation->prepare_coarsening_and_refinement();
+    check_frozen_cells_not_flagged(*grid->triangulation, frozen_cells);
 
     fluid_time_integrator->prepare_coarsening_and_refinement();
     for(unsigned int i = 0; i < application->scalars.size(); ++i)
@@ -926,6 +974,8 @@ Driver<dim, Number>::solve() const
 
   synchronize_time_step_size();
 
+  AdaptivityStartCriterion adaptivity_start(application->fluid->get_parameters().amr_data.start_time_solution_ratio);
+  bool adaptivity_start_reported = false;
   // time loop
   bool finished = false;
   while(not finished)
@@ -976,11 +1026,30 @@ Driver<dim, Number>::solve() const
     for(unsigned int i = 0; i < application->scalars.size(); ++i)
       scalar_time_integrator[i]->advance_one_timestep_solve();
 
+    // start-up phase: relative change of the fluid velocity in this time step
+    if(application->fluid->get_parameters().enable_adaptivity)
+    {
+      adaptivity_start.update(
+        compute_relative_change_rate(fluid_time_integrator->get_velocity_np(),
+                                     fluid_time_integrator->get_velocity(),
+                                     fluid_time_integrator->get_time_step_size()));
+      if(adaptivity_start.adaptivity_started() and not adaptivity_start_reported)
+      {
+        pcout << std::endl
+              << "Adaptive mesh refinement starts at t = "
+              << fluid_time_integrator->get_next_time() << " (time step "
+              << fluid_time_integrator->get_number_of_time_steps() << ")" << std::endl;
+        adaptivity_start_reported = true;
+      }
+    }
+
     /*
        * adaptive mesh refinement: before post solve, so that the history vectors and the next time
        * step size of the fluid and the scalars use the new mesh
        */
     if(application->fluid->get_parameters().enable_adaptivity and
+      adaptivity_start.adaptivity_started() and
+      fluid_time_integrator->get_next_time() >= application->fluid->get_parameters().amr_data.start_time and
       trigger_coarsening_and_refinement_now(
         application->fluid->get_parameters().amr_data.trigger_every_n_time_steps,
         fluid_time_integrator->get_number_of_time_steps()))

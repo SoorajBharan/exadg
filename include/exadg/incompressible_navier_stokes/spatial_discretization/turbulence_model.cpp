@@ -621,6 +621,11 @@ void
 TurbulenceModel<dim, Number>::set_eddy_viscosity(VectorType const & eddy_viscosity_in)
 {
   this->eddy_viscosity = eddy_viscosity_in;
+  if(eddy_viscosity.get_partitioner().get() != eddy_viscosity_in.get_partitioner().get())
+  {
+    eddy_viscosity.reinit(eddy_viscosity_in, true);
+  }
+  eddy_viscosity.copy_locally_owned_data_from(eddy_viscosity_in);
   eddy_viscosity.update_ghost_values();
 }
 

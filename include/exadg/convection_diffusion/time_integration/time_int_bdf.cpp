@@ -225,6 +225,27 @@ template<int dim, typename Number>
 void
 TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
 {
+  auto const apply_inverse_mass = [&](BlockVectorType & vector) {
+    if(vector.n_blocks() == 0)
+      return;
+    BlockVectorType const weak_form(vector);
+    pde_operator->apply_inverse_mass_operator(vector, weak_form);
+  };
+  if(param.convective_problem() and
+     param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < this->order; i++)
+      apply_inverse_mass(vec_convective_term[i]);
+    if(param.ale_formulation == false)
+      apply_inverse_mass(convective_term_np);
+  }
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+      apply_inverse_mass(vec_source_term[i]);
+    if(param.ale_formulation == false)
+      apply_inverse_mass(source_term_np);
+  }
   std::shared_ptr<std::vector<VectorType *>> vectors = get_vectors();
   pde_operator->prepare_coarsening_and_refinement(*vectors);
 }
@@ -237,6 +258,28 @@ TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
 
   std::shared_ptr<std::vector<VectorType *>> vectors = get_vectors();
   pde_operator->interpolate_after_coarsening_and_refinement(*vectors);
+
+  auto const apply_mass = [&](BlockVectorType & vector) {
+    if(vector.n_blocks() == 0)
+      return;
+    BlockVectorType const field(vector);
+    pde_operator->apply_mass_operator(vector, field);
+  };
+  if(param.convective_problem() and
+     param.treatment_of_convective_term == TreatmentOfConvectiveTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < this->order; i++)
+      apply_mass(vec_convective_term[i]);
+    if(param.ale_formulation == false)
+      apply_mass(convective_term_np);
+  }
+  if(param.treatment_of_source_term == TreatmentOfSourceTerm::Explicit)
+  {
+    for(unsigned int i = 0; i < vec_source_term.size(); ++i)
+      apply_mass(vec_source_term[i]);
+    if(param.ale_formulation == false)
+      apply_mass(source_term_np);
+  }
 }
 
 template<int dim, typename Number>

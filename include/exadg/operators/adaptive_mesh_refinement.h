@@ -86,6 +86,8 @@ struct AdaptiveMeshRefinementData
       preserve_boundary_cells(false),
       fraction_of_cells_to_be_refined(0.0),
       fraction_of_cells_to_be_coarsened(0.0),
+      start_time_solution_ratio(0.0),
+      start_time(0.0),
       marking_strategy(MarkingStrategy::FixedNumber),
       indicator_combination(IndicatorCombination::Maximum),
       indicator_weights()
@@ -102,6 +104,8 @@ struct AdaptiveMeshRefinementData
     print_parameter(pcout, "Preserve boundary cells", preserve_boundary_cells);
     print_parameter(pcout, "Fraction of cells to be refined", fraction_of_cells_to_be_refined);
     print_parameter(pcout, "Fraction of cells to be coarsened", fraction_of_cells_to_be_coarsened);
+    print_parameter(pcout, "Solution change ratio for AMR : ", start_time_solution_ratio);
+    print_parameter(pcout, "Start time of adaptivity", start_time);
     print_parameter(pcout, "Marking strategy", marking_strategy);
     print_parameter(pcout, "Indicator combination", indicator_combination);
     for(unsigned int i = 0; i < indicator_weights.size(); ++i)
@@ -117,6 +121,9 @@ struct AdaptiveMeshRefinementData
   double fraction_of_cells_to_be_refined;
   double fraction_of_cells_to_be_coarsened;
 
+  double start_time_solution_ratio;
+  double start_time;
+
   MarkingStrategy marking_strategy;
   IndicatorCombination indicator_combination;
   std::vector<double> indicator_weights;
@@ -131,6 +138,60 @@ trigger_coarsening_and_refinement_now(unsigned int const trigger_every_n_time_st
 {
   return ((time_step_number == 0) or not(time_step_number % trigger_every_n_time_steps));
 }
+
+/**
+ * Relative change of a solution vector per time step, r = |u^{n+1} - u^n| / (dt |u^{n+1}|), with the
+ * l2 norm of the DoF vectors (0 if u^{n+1} = 0).
+ */
+template<typename VectorType>
+double
+compute_relative_change_rate(VectorType const & solution_np,
+                             VectorType const & solution_n,
+                             double const       time_step_size)
+{
+  VectorType difference(solution_np);
+  difference -= solution_n;
+
+  double const norm = solution_np.l2_norm();
+
+  return (norm > 0.0) ? difference.l2_norm() / (time_step_size * norm) : 0.0;
+}
+
+/**
+ * Start of the adaptivity after the start-up phase: update() is called after every time step with
+ * r of that step; the adaptivity starts once r < start_time_solution_ratio * r_max (r_max: largest r
+ * so far) and stays active afterwards. start_time_solution_ratio <= 0: active from the start.
+ */
+class AdaptivityStartCriterion
+{
+public:
+  AdaptivityStartCriterion(double const start_time_solution_ratio_in = 0.0)
+    : start_time_solution_ratio(start_time_solution_ratio_in),
+      largest_change_rate(0.0),
+      started(start_time_solution_ratio_in <= 0.0)
+  {
+  }
+
+  void
+  update(double const change_rate)
+  {
+    largest_change_rate = std::max(largest_change_rate, change_rate);
+
+    if(not started and change_rate < start_time_solution_ratio * largest_change_rate)
+      started = true;
+  }
+
+  bool
+  adaptivity_started() const
+  {
+    return started;
+  }
+
+private:
+  double start_time_solution_ratio;
+  double largest_change_rate;
+  bool   started;
+};
 
 template<int dim>
 std::vector<int>

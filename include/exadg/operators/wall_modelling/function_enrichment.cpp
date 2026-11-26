@@ -593,6 +593,16 @@ FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
     &wall_shear_stress,
     &wall_shear_stress_psi,
     &wall_shear_stress_psi_old};
+
+  // the fields are computed DoF by DoF (tau_w = numerator / denominator, u_tau = sqrt(tau_w)), so
+  // their values at hanging nodes do not satisfy the constraints: make them continuous before the
+  // transfer (deal.II requires one value per DoF from all cells)
+  for(VectorType * vector : vectors_cg_scalar)
+  {
+    vector->zero_out_ghost_values();
+    constraint_cg_scalar.distribute(*vector);
+  }
+
   solution_transfer_friction_velocity =
     std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_cg_scalar);
   solution_transfer_friction_velocity->prepare_coarsening_and_refinement(vectors_cg_scalar);

@@ -260,19 +260,38 @@ Driver<dim, Number>::get_frozen_cells() const
 {
   std::vector<bool> frozen_cells;
 
-  if(application->get_parameters().wall_enrichment_enabled)
+  bool const preserve_boundary_cells = application->get_parameters().amr_data.preserve_boundary_cells;
+  bool const wall_enrichment = application->get_parameters().wall_enrichment_enabled;
+
+  if(not preserve_boundary_cells and not wall_enrichment)
+    return frozen_cells;
+
+  frozen_cells.resize(grid->triangulation->n_active_cells(), false);
+
+  // boundary cells (with or without wall enrichment): otherwise the 2:1 rule of
+  // prepare_coarsening_and_refinement() could refine them again
+  if(preserve_boundary_cells)
+  {
+    for(auto const & cell : grid->triangulation->active_cell_iterators())
+    {
+      if(not cell->is_artificial() and cell->at_boundary())
+      {
+        frozen_cells[cell->active_cell_index()] = true;
+      }
+    }
+  }
+
+  // wall enrichment layer: active_fe_index of the enrichment DoFHandler, 0 not enriched,
+  // 1 enriched, 2 halo (also known on ghost cells)
+  if(wall_enrichment)
   {
     dealii::DoFHandler<dim> const & dof_handler_enrichment = pde_operator->get_function_enrichment()->get_dof_handler_en_vector();
 
-    frozen_cells.resize(grid->triangulation->n_active_cells(), false);
-
     for(auto const & cell : dof_handler_enrichment.active_cell_iterators())
     {
-      if(not cell->is_artificial())
+      if(not cell->is_artificial() and cell->active_fe_index() != 0)
       {
-        frozen_cells[cell->active_cell_index()] =
-          (cell->active_fe_index() != 0) or
-          (application->get_parameters().amr_data.preserve_boundary_cells and cell->at_boundary());
+        frozen_cells[cell->active_cell_index()] = true;
       }
     }
   }
@@ -417,14 +436,31 @@ Driver<dim, Number>::solve() const
     }
     else if(application->get_parameters().enable_adaptivity)
     {
+      AdaptivityStartCriterion adaptivity_start(application->get_parameters().amr_data.start_time_solution_ratio);
+      bool adaptivity_start_reported = false;
+
       while(not(time_integrator->finished()))
       {
         time_integrator->advance_one_timestep_pre_solve(true);
 
         time_integrator->advance_one_timestep_solve();
+
+        // start-up phase: relative change of the velocity in this time step
+        adaptivity_start.update(compute_relative_change_rate(time_integrator->get_velocity_np(),
+                                                             time_integrator->get_velocity(),
+                                                             time_integrator->get_time_step_size()));
+        if(adaptivity_start.adaptivity_started() and not adaptivity_start_reported)
+        {
+          pcout << std::endl
+                << "Adaptive mesh refinement starts at t = " << time_integrator->get_next_time()
+                << " (time step " << time_integrator->get_number_of_time_steps() << ")"
+                << std::endl;
+          adaptivity_start_reported = true;
+        }
         
-        if(trigger_coarsening_and_refinement_now(application->get_parameters().amr_data.trigger_every_n_time_steps,
-                                                 time_integrator->get_number_of_time_steps()))
+        if(adaptivity_start.adaptivity_started() and
+          time_integrator->get_next_time() >= application->get_parameters().amr_data.start_time and
+          trigger_coarsening_and_refinement_now(application->get_parameters().amr_data.trigger_every_n_time_steps, time_integrator->get_number_of_time_steps()))
         {
           // total cost of adaptive mesh refinement (marking + refinement and transfer)
           dealii::Timer timer_amr;

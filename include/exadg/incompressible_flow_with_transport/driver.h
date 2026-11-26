@@ -103,6 +103,9 @@ private:
   void
   do_adaptive_refinement() const;
 
+  std::vector<bool>
+  get_frozen_cells() const;
+
   void
   synchronize_time_step_size() const;
 

@@ -206,6 +206,17 @@ TimeIntBDF<dim, Number>::prepare_coarsening_and_refinement()
   operator_base->prepare_coarsening_and_refinement(vectors_velocity,
                                                    vectors_pressure,
                                                    vectors_enrichment);
+
+  if(needs_vector_convective_term and param.ale_formulation == false)
+  {
+    auto const apply_inverse_mass = [&](VectorType & vector) {
+      VectorType const weak_form(vector);
+      operator_base->apply_inverse_mass_operator(vector, weak_form);
+    };
+    for(unsigned int i = 0; i < vec_convective_term.size(); ++i)
+      apply_inverse_mass(vec_convective_term[i]);
+    apply_inverse_mass(convective_term_np);
+  }
 }
 
 template<int dim, typename Number>
@@ -224,6 +235,16 @@ TimeIntBDF<dim, Number>::interpolate_after_coarsening_and_refinement()
   operator_base->interpolate_after_coarsening_and_refinement(vectors_velocity,
                                                              vectors_pressure,
                                                              vectors_enrichment);
+  if(needs_vector_convective_term and param.ale_formulation == false)
+  {
+    auto const apply_mass = [&](VectorType & vector) {
+      VectorType const field(vector);
+      operator_base->apply_mass_operator(vector, field);
+    };
+    for(unsigned int i = 0; i < vec_convective_term.size(); ++i)
+      apply_mass(vec_convective_term[i]);
+    apply_mass(convective_term_np);
+  }
 }
 
 template<int dim, typename Number>
