@@ -179,6 +179,11 @@ TimeIntBDF<dim, Number>::get_vectors_for_transfer(
     }
     vectors_velocity.push_back(&convective_term_np);
   }
+
+  if(param.wall_enrichment_enabled)
+  {
+    vectors_velocity.push_back(&velocity_total);
+  }
 }
 
 template<int dim, typename Number>
@@ -648,6 +653,27 @@ TimeIntBDF<dim, Number>::postprocessing() const
   }
 
   this->timer_tree->insert({"Timeloop", "Postprocessing"}, timer.wall_time());
+}
+
+template<int dim, typename Number>
+typename TimeIntBDF<dim, Number>::BlockVectorType const &
+TimeIntBDF<dim, Number>::get_velocity_np_enriched() const
+{
+  AssertThrow(false,
+              dealii::ExcMessage("get_velocity_np_enriched: not implemented for this solver."));
+  static BlockVectorType const dummy;
+  return dummy;
+}
+
+template<int dim, typename Number>
+typename TimeIntBDF<dim, Number>::VectorType const &
+TimeIntBDF<dim, Number>::get_velocity_total_np() const
+{
+  // total velocity Pi(U_bar + psi U_tilde) at t_{n+1}, computed by compute_total_velocity() after
+  // every solve; only allocated with wall enrichment
+  AssertThrow(param.wall_enrichment_enabled,
+              dealii::ExcMessage("get_velocity_total_np(): only available with wall enrichment."));
+  return velocity_total;
 }
 
 // instantiations

@@ -525,8 +525,14 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
         weights.push_back(solver_weights.empty() ? 1.0 : solver_weights[field]);
       }
     };
-  append_solver(fluid_operator->compute_error_indicators(fluid_time_integrator->get_velocity_np()),
-                amr_data.indicator_weights);
+
+  if(application->fluid->get_parameters().wall_enrichment_enabled)
+  {
+    append_solver(fluid_operator->compute_error_indicators(fluid_time_integrator->get_velocity_total_np()), amr_data.indicator_weights);
+  }
+  else {
+    append_solver(fluid_operator->compute_error_indicators(fluid_time_integrator->get_velocity_np()), amr_data.indicator_weights);
+  }
 
   for(unsigned int i = 0; i < application->scalars.size(); ++i)
   {

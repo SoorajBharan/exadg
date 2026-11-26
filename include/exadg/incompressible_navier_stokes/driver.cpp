@@ -224,8 +224,14 @@ Driver<dim, Number>::mark_cells_coarsening_and_refinement() const
 
   Parameters const & param = application->get_parameters();
 
-  std::vector<dealii::Vector<float>> const indicators =
-    pde_operator->compute_error_indicators(time_integrator->get_velocity_np());
+  std::vector<dealii::Vector<float>> indicators;
+  if(param.wall_enrichment_enabled)
+  {
+    indicators = pde_operator->compute_error_indicators(time_integrator->get_velocity_total_np());
+  }
+  else {
+    indicators = pde_operator->compute_error_indicators(time_integrator->get_velocity_np());
+  }
 
   dealii::Vector<float> const indicator = combine_indicators(indicators,
                                                              param.amr_data.indicator_weights,
