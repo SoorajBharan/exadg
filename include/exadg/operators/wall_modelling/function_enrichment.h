@@ -448,8 +448,14 @@ private:
   dealii::DoFHandler<dim> dof_handler_en_scalar_all_cells;
   std::vector<VectorType> enrichment_switch_all_cells;
 
+  // FollowMesh: u_tau, u_tau_old, tau_w, tau_w of psi and psi_old (CG) on a DoFHandler without FE
+  // indices (fe_cg_scalar on every cell)
+  dealii::DoFHandler<dim> dof_handler_cg_scalar_all_cells;
+  std::vector<VectorType> wall_data_all_cells;
+
   // set in prepare_coarsening_and_refinement() (FollowMesh), read in
-  // interpolate_wall_data_after_coarsening_and_refinement(), which has no follow_mesh argument
+  // interpolate_wall_data_after_coarsening_and_refinement(), which has no follow_mesh argument:
+  // the wall data (u_tau, tau_w, CG) and the y+ switch were transferred on the helper DoFHandlers
   bool enrichment_switch_transferred_on_all_cells = false;
 
   void
@@ -461,14 +467,16 @@ private:
   copy_enriched_cells_to_all_cells(dealii::DoFHandler<dim> const & dof_handler_enriched,
                                    dealii::DoFHandler<dim> const & dof_handler_all_cells,
                                    VectorType const &              src,
-                                   VectorType &                    dst) const;
+                                   VectorType &                    dst,
+                                   bool const                      only_enriched_cells = true) const;
 
   // field on all cells -> enriched cells of the current mesh (hp DoFHandler)
   void
   copy_all_cells_to_enriched_cells(dealii::DoFHandler<dim> const & dof_handler_enriched,
                                    dealii::DoFHandler<dim> const & dof_handler_all_cells,
                                    VectorType const &              src,
-                                   VectorType &                    dst) const;
+                                   VectorType &                    dst,
+                                   bool const                      only_enriched_cells = true) const;
 
   // rebuild mode of update_enrichment_function() after adaptive mesh refinement: the y+ on/off
   // per cell is read from this vector (no y+ criterion, no storing of the inputs, no print);

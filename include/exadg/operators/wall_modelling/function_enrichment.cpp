@@ -590,7 +590,8 @@ FunctionEnrichment<dim, Number>::copy_enriched_cells_to_all_cells(
   dealii::DoFHandler<dim> const & dof_handler_enriched,
   dealii::DoFHandler<dim> const & dof_handler_all_cells,
   VectorType const &              src,
-  VectorType &                    dst) const
+  VectorType &                    dst,
+  bool const                      only_enriched_cells) const
 {
   dst = 0.0;
 
@@ -600,7 +601,7 @@ FunctionEnrichment<dim, Number>::copy_enriched_cells_to_all_cells(
   auto cell_all = dof_handler_all_cells.begin_active();
   for(auto const & cell : dof_handler_enriched.active_cell_iterators())
   {
-    if(cell->is_locally_owned() and cell->active_fe_index() == active_fe_index)
+    if(cell->is_locally_owned() and (not only_enriched_cells or cell->active_fe_index() == active_fe_index))
     {
       values.reinit(cell->get_fe().n_dofs_per_cell());
       cell->get_dof_values(src, values);
@@ -616,7 +617,8 @@ FunctionEnrichment<dim, Number>::copy_all_cells_to_enriched_cells(
   dealii::DoFHandler<dim> const & dof_handler_enriched,
   dealii::DoFHandler<dim> const & dof_handler_all_cells,
   VectorType const &              src,
-  VectorType &                    dst) const
+  VectorType &                    dst,
+  bool const                      only_enriched_cells) const
 {
   dst = 0.0;
 
@@ -625,7 +627,7 @@ FunctionEnrichment<dim, Number>::copy_all_cells_to_enriched_cells(
   auto cell_all = dof_handler_all_cells.begin_active();
   for(auto const & cell : dof_handler_enriched.active_cell_iterators())
   {
-    if(cell->is_locally_owned() and cell->active_fe_index() == active_fe_index)
+    if(cell->is_locally_owned() and (not only_enriched_cells or cell->active_fe_index() == active_fe_index))
     {
       values.reinit(cell->get_fe().n_dofs_per_cell());
       cell_all->get_dof_values(src, values);
@@ -686,18 +688,45 @@ FunctionEnrichment<dim, Number>::prepare_coarsening_and_refinement(
     &wall_shear_stress_psi,
     &wall_shear_stress_psi_old};
 
-  // the fields are computed DoF by DoF (tau_w = numerator / denominator, u_tau = sqrt(tau_w)), so
-  // their values at hanging nodes do not satisfy the constraints: make them continuous before the
-  // transfer (deal.II requires one value per DoF from all cells)
   for(VectorType * vector : vectors_cg_scalar)
   {
     vector->zero_out_ghost_values();
     constraint_cg_scalar.distribute(*vector);
   }
 
-  solution_transfer_friction_velocity =
-    std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_cg_scalar);
-  solution_transfer_friction_velocity->prepare_coarsening_and_refinement(vectors_cg_scalar);
+  if(follow_mesh)
+  {
+    // FollowMesh: dof_handler_cg_scalar has the same FE_Q on all cells, but its FE index marks the
+    // enriched cells and changes for the children of a refined wall cell; deal.II requires the same
+    // FE index on all children, so the fields are transferred on a DoFHandler without FE indices
+    dof_handler_cg_scalar_all_cells.reinit(dof_handler_cg_scalar.get_triangulation());
+    dof_handler_cg_scalar_all_cells.distribute_dofs(*fe_cg_scalar);
+
+    wall_data_all_cells.resize(vectors_cg_scalar.size());
+    std::vector<VectorType *> vectors_all_cells;
+    for(unsigned int i = 0; i < vectors_cg_scalar.size(); ++i)
+    {
+      vectors_cg_scalar[i]->update_ghost_values();
+      initialize_vector_all_cells(dof_handler_cg_scalar_all_cells, wall_data_all_cells[i]);
+      copy_enriched_cells_to_all_cells(dof_handler_cg_scalar,
+                                       dof_handler_cg_scalar_all_cells,
+                                       *vectors_cg_scalar[i],
+                                       wall_data_all_cells[i],
+                                       false /* all locally owned cells */);
+      vectors_all_cells.push_back(&wall_data_all_cells[i]);
+    }
+
+    solution_transfer_friction_velocity =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_cg_scalar_all_cells);
+    solution_transfer_friction_velocity->prepare_coarsening_and_refinement(vectors_all_cells);
+  }
+  else
+{
+    // FrozenLayer: the FE indices of the children do not change
+    solution_transfer_friction_velocity =
+      std::make_shared<ExaDG::SolutionTransfer<dim, VectorType>>(dof_handler_cg_scalar);
+    solution_transfer_friction_velocity->prepare_coarsening_and_refinement(vectors_cg_scalar);
+  }
 
   // y+ on/off of psi and psi_old (DG scalar, constant per cell)
   std::vector<VectorType *> vectors_enrichment_switch = {&enrichment_switch,
@@ -748,7 +777,41 @@ FunctionEnrichment<dim, Number>::interpolate_wall_data_after_coarsening_and_refi
     &wall_shear_stress,
     &wall_shear_stress_psi,
     &wall_shear_stress_psi_old};
-  solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(vectors_cg_scalar);
+  if(enrichment_switch_transferred_on_all_cells)
+  {
+    // FollowMesh: fields on the DoFHandler without FE indices, then copied to all cells of
+    // dof_handler_cg_scalar (same FE_Q on every cell)
+    dof_handler_cg_scalar_all_cells.distribute_dofs(*fe_cg_scalar);
+
+    std::vector<VectorType *> vectors_all_cells;
+    for(VectorType & vector : wall_data_all_cells)
+    {
+      initialize_vector_all_cells(dof_handler_cg_scalar_all_cells, vector);
+      vectors_all_cells.push_back(&vector);
+    }
+
+    solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(vectors_all_cells);
+
+    for(unsigned int i = 0; i < vectors_cg_scalar.size(); ++i)
+    {
+      wall_data_all_cells[i].update_ghost_values();
+      copy_all_cells_to_enriched_cells(dof_handler_cg_scalar,
+                                       dof_handler_cg_scalar_all_cells,
+                                       wall_data_all_cells[i],
+                                       *vectors_cg_scalar[i],
+                                       false /* all locally owned cells */);
+      vectors_cg_scalar[i]->zero_out_ghost_values();
+    }
+
+    // the helper fields belong to one refinement step only
+    wall_data_all_cells.clear();
+    dof_handler_cg_scalar_all_cells.clear();
+  }
+  else
+  {
+    // FrozenLayer: the FE indices of the children do not change
+    solution_transfer_friction_velocity->interpolate_after_coarsening_and_refinement(vectors_cg_scalar);
+  }
 
   // CG space: values at hanging nodes from the constraints
   for(VectorType * vector : vectors_cg_scalar)
