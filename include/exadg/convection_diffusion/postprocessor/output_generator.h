@@ -35,7 +35,7 @@
 #include <exadg/postprocessor/solution_field.h>
 #include <exadg/postprocessor/time_control.h>
 
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
 {

@@ -115,10 +115,10 @@ SET(TARGET_SRC
      include/exadg/convection_diffusion/spatial_discretization/operators/diffusive_operator.cpp
      include/exadg/convection_diffusion/spatial_discretization/operators/combined_operator.cpp
      include/exadg/convection_diffusion/spatial_discretization/operators/rhs_operator.cpp
-     include/exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.cpp
+     include/exadg/rans_transport_equations/spatial_discretization/operators/turbulence_source_operator.cpp
      include/exadg/convection_diffusion/spatial_discretization/operator.cpp
      include/exadg/convection_diffusion/spatial_discretization/interface.cpp
-     include/exadg/convection_diffusion/spatial_discretization/turbulence_model.cpp
+     include/exadg/rans_transport_equations/spatial_discretization/turbulence_model.cpp
      include/exadg/convection_diffusion/preconditioners/multigrid_preconditioner.cpp
      include/exadg/convection_diffusion/time_integration/time_int_bdf.cpp
      include/exadg/convection_diffusion/time_integration/time_int_bdf_newton.cpp

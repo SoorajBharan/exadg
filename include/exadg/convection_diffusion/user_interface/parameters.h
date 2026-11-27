@@ -29,7 +29,7 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/user_interface/enum_types.h>
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 #include <exadg/grid/grid_data.h>
 #include <exadg/operators/adaptive_mesh_refinement.h>
 #include <exadg/operators/inverse_mass_parameters.h>

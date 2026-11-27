@@ -19,7 +19,7 @@
  *  ______________________________________________________________________
  */
 
-#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
+#include <exadg/rans_transport_equations/spatial_discretization/operators/turbulence_source_operator.h>
 
 #include <algorithm>
 #include <array>
@@ -31,7 +31,7 @@
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 template<int dim, typename Number>
 TurbulenceSourceOperator<dim, Number>::TurbulenceSourceOperator() : matrix_free(nullptr)
@@ -1826,5 +1826,5 @@ template class TurbulenceSourceOperator<2, double>;
 template class TurbulenceSourceOperator<3, float>;
 template class TurbulenceSourceOperator<3, double>;
 
-} // namespace ConvDiff
+} // namespace RANS
 } // namespace ExaDG

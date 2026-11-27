@@ -19,20 +19,20 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_
 
 // C++
 #include <memory>
 
 // ExaDG
-#include <exadg/convection_diffusion/spatial_discretization/rans_models/k_omega_1988.h>
-#include <exadg/convection_diffusion/spatial_discretization/rans_models/k_omega_2006.h>
-#include <exadg/convection_diffusion/spatial_discretization/rans_models/rans_model_base.h>
+#include <exadg/rans_transport_equations/spatial_discretization/rans_models/k_omega_1988.h>
+#include <exadg/rans_transport_equations/spatial_discretization/rans_models/k_omega_2006.h>
+#include <exadg/rans_transport_equations/spatial_discretization/rans_models/rans_model_base.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /*
    * Creates the RANS model selected in TurbulenceModelData. The model object is shared (read only) by
@@ -73,7 +73,7 @@ create_rans_model(TurbulenceModelData const & turbulence_model_data)
   return model;
 }
 
-} // namespace ConvDiff
+} // namespace RANS
 } // namespace ExaDG
 
-#endif /* INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_ */
+#endif /* INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_CREATE_RANS_MODEL_H_ */

@@ -19,11 +19,11 @@
  *  ______________________________________________________________________
  */
 
-#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
+#include <exadg/rans_transport_equations/spatial_discretization/turbulence_model.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 template<int dim, typename Number>
 TurbulenceModel<dim, Number>::TurbulenceModel()

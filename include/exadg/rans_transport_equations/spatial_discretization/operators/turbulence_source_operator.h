@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_OPERATORS_TURBULENCE_SOURCE_OPERATOR
-#define INCLUDE_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_OPERATORS_TURBULENCE_SOURCE_OPERATOR
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_OPERATORS_TURBULENCE_SOURCE_OPERATOR
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_OPERATORS_TURBULENCE_SOURCE_OPERATOR
 
 #include <deal.II/base/aligned_vector.h>
 #include <deal.II/base/array_view.h>
@@ -38,7 +38,7 @@
 #include <exadg/grid/grid_data.h>
 #include <exadg/operators/interior_penalty_parameter.h>
 
-#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
+#include <exadg/rans_transport_equations/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/user_interface/enum_types.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/weak_boundary_conditions.h>
 #include <exadg/convection_diffusion/user_interface/boundary_descriptor.h>
@@ -47,8 +47,10 @@
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
+using ConvDiff::BoundaryDescriptor;
+using ConvDiff::BoundaryType;
 namespace Operators
 {
 template<int dim>
@@ -2089,8 +2091,17 @@ private:
   mutable bool linearization_stored = false;
 };
 
+} // namespace RANS
+namespace ConvDiff
+{
+using RANS::TurbulenceSourceOperator;
+using RANS::TurbulenceSourceOperatorData;
+namespace Operators
+{
+using RANS::Operators::TurbulenceSourceKernel;
+using RANS::Operators::TurbulenceSourceKernelData;
+} // namespace Operators
 } // namespace ConvDiff
-
 } // namespace ExaDG
 
 #endif

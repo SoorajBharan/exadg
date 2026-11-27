@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_
 
 // C++
 #include <vector>
@@ -33,11 +33,11 @@
 #include <deal.II/base/vectorization.h>
 
 // ExaDG
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /*
    * Input of a RANS model at one quadrature point, in PHYSICAL variables (k, omega), never in the
@@ -323,7 +323,7 @@ private:
   std::vector<bool> is_logarithmic;
 };
 
-} // namespace ConvDiff
+} // namespace RANS
 } // namespace ExaDG
 
-#endif /* INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_ */
+#endif /* INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_RANS_MODEL_BASE_H_ */

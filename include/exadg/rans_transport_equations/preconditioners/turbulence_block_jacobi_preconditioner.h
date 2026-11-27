@@ -19,20 +19,21 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_
 
 // ExaDG
 #include <exadg/convection_diffusion/spatial_discretization/operators/combined_operator.h>
-#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
+#include <exadg/rans_transport_equations/spatial_discretization/operators/turbulence_source_operator.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/elementwise_preconditioners.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_base.h>
 #include <exadg/solvers_and_preconditioners/solvers/wrapper_elementwise_solvers.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
+using ConvDiff::CombinedOperator;
 /*
  * Elementwise operator of variable "block" for the matrix-free block Jacobi preconditioner:
  * element block of the combined operator (mass, convection, molecular diffusion: cell and own
@@ -186,7 +187,11 @@ private:
   std::shared_ptr<ElementwiseSolver>         elementwise_solver;
 };
 
+} // namespace RANS
+namespace ConvDiff
+{
+using RANS::TurbulenceBlockJacobiPreconditioner;
 } // namespace ConvDiff
 } // namespace ExaDG
 
-#endif /* INCLUDE_EXADG_CONVECTION_DIFFUSION_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_ */
+#endif /* INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_PRECONDITIONERS_TURBULENCE_BLOCK_JACOBI_PRECONDITIONER_H_ */

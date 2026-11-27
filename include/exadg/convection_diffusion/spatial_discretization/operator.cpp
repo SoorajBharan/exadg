@@ -25,7 +25,7 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/preconditioners/multigrid_preconditioner.h>
-#include <exadg/convection_diffusion/preconditioners/turbulence_block_jacobi_preconditioner.h>
+#include <exadg/rans_transport_equations/preconditioners/turbulence_block_jacobi_preconditioner.h>
 #include <exadg/convection_diffusion/spatial_discretization/operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/project_velocity.h>
 #include <exadg/functions_and_boundary_conditions/evaluate_functions.h>

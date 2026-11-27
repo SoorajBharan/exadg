@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_TURBULENCE_MODEL_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_TURBULENCE_MODEL_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_TURBULENCE_MODEL_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_TURBULENCE_MODEL_H_
 
 // deal.II
 #include <deal.II/base/aligned_vector.h>
@@ -31,17 +31,17 @@
 // ExaDG
 #include <exadg/matrix_free/integrators.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 #include <exadg/utilities/lazy_ptr.h>
 
-#include <exadg/convection_diffusion/spatial_discretization/eddy_viscosity_evaluator.h>
+#include <exadg/rans_transport_equations/spatial_discretization/eddy_viscosity_evaluator.h>
 
 #include <exadg/operators/inverse_mass_operator.h>
 
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /*
  * Enrichment of RANS variables: the solution has the RANS variables (blocks 0 .. n - 1, MatrixFree
@@ -205,6 +205,10 @@ protected:
 };
 
 } // namespace RANS
+namespace ConvDiff
+{
+using RANS::TurbulenceModel;
+} // namespace ConvDiff
 } // namespace ExaDG
 
 #endif /* INCLUDE_EXADG_RANS_EQUATIONS_SPATIAL_DISCRETIZATION_VISCOSITY_MODEL_BASE_H_ \

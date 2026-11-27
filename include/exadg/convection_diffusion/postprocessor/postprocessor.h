@@ -32,14 +32,14 @@
 #include <exadg/convection_diffusion/postprocessor/postprocessor_base.h>
 #include <exadg/convection_diffusion/user_interface/analytical_solution.h>
 
-#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
+#include <exadg/rans_transport_equations/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operator.h>
 
 #include <exadg/convection_diffusion/postprocessor/line_plot_calculation.h>
 #include <exadg/convection_diffusion/postprocessor/line_plot_data.h>
 #include "line_plot_calculation.h"
 
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
 {

@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_USER_INTERFACE_TURBULENCE_MODEL_DATA_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_USER_INTERFACE_TURBULENCE_MODEL_DATA_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_USER_INTERFACE_TURBULENCE_MODEL_DATA_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_USER_INTERFACE_TURBULENCE_MODEL_DATA_H_
 
 // ExaDG
 #include <exadg/utilities/print_functions.h>
@@ -28,7 +28,7 @@
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /**
  *  RANS based turbulence models
@@ -386,6 +386,17 @@ struct TurbulenceModelData
 
 
 } // namespace RANS
+namespace ConvDiff
+{
+using RANS::PositivityPreservingLimiter;
+using RANS::StandardKEpsilonData;
+using RANS::StandardKOmega1988Data;
+using RANS::StandardKOmega2006Data;
+using RANS::TurbulenceDataBase;
+using RANS::TurbulenceEddyViscosityModel;
+using RANS::TurbulenceModelData;
+using RANS::VaryingViscosityType;
+} // namespace ConvDiff
 } // namespace ExaDG
 
 #endif /* INCLUDE_EXADG_RANS_EQUATIONS_USER_INTERFACE_VISCOSITY_MODEL_DATA_H_ */

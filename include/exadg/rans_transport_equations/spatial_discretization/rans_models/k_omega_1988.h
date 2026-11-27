@@ -19,15 +19,15 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_
 
 // ExaDG
-#include <exadg/convection_diffusion/spatial_discretization/rans_models/rans_model_base.h>
+#include <exadg/rans_transport_equations/spatial_discretization/rans_models/rans_model_base.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /*
    * Wilcox (1988) k-omega model as in Bassi et al. (2014), eqs. (3)-(9). The realizability limiter
@@ -554,7 +554,7 @@ private:
   }
 };
 
-} // namespace ConvDiff
+} // namespace RANS
 } // namespace ExaDG
 
-#endif /* INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_ */
+#endif /* INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_RANS_MODELS_K_OMEGA_1988_H_ */

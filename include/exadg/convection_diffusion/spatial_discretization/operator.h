@@ -28,10 +28,10 @@
 
 // ExaDG
 #include <exadg/convection_diffusion/spatial_discretization/interface.h>
-#include <exadg/convection_diffusion/spatial_discretization/turbulence_model.h>
+#include <exadg/rans_transport_equations/spatial_discretization/turbulence_model.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/combined_operator.h>
 #include <exadg/convection_diffusion/spatial_discretization/operators/rhs_operator.h>
-#include <exadg/convection_diffusion/spatial_discretization/operators/turbulence_source_operator.h>
+#include <exadg/rans_transport_equations/spatial_discretization/operators/turbulence_source_operator.h>
 #include <exadg/convection_diffusion/user_interface/boundary_descriptor.h>
 #include <exadg/convection_diffusion/user_interface/field_functions.h>
 #include <exadg/convection_diffusion/user_interface/parameters.h>

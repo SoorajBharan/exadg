@@ -19,8 +19,8 @@
  *  ______________________________________________________________________
  */
 
-#ifndef INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_
-#define INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_
+#ifndef INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_
+#define INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_
 
 // deal.II
 #include <deal.II/base/array_view.h>
@@ -31,12 +31,12 @@
 #include <memory>
 
 // ExaDG
-#include <exadg/convection_diffusion/spatial_discretization/rans_models/create_rans_model.h>
-#include <exadg/convection_diffusion/user_interface/turbulence_model_data.h>
+#include <exadg/rans_transport_equations/spatial_discretization/rans_models/create_rans_model.h>
+#include <exadg/rans_transport_equations/user_interface/turbulence_model_data.h>
 
 namespace ExaDG
 {
-namespace ConvDiff
+namespace RANS
 {
 /*
  * Pointwise eddy viscosity of the RANS model: nu_t(Q, grad u) and d nu_t / d solution at one
@@ -158,7 +158,7 @@ private:
   mutable RANSViscosity<Number>       point_diffusion_viscosity;
 };
 
-} // namespace ConvDiff
+} // namespace RANS
 } // namespace ExaDG
 
-#endif /* INCLUDE_EXADG_CONVECTION_DIFFUSION_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_ */
+#endif /* INCLUDE_EXADG_RANS_TRANSPORT_EQUATIONS_SPATIAL_DISCRETIZATION_EDDY_VISCOSITY_EVALUATOR_H_ */
