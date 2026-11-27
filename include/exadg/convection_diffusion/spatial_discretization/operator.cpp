@@ -125,10 +125,7 @@ Operator<dim, Number>::initialize_dof_handler_and_constraints()
     dof_handler_velocity->distribute_dofs(*fe_velocity);
   }
 
-  if(param.turbulence_model_data.is_active)
-  {
-    dof_handler_eddy_viscosity->distribute_dofs(*fe_eddy_viscosity);
-  }
+  distribute_dofs_additional();
 
   affine_constraints.close();
 }
@@ -170,11 +167,7 @@ Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matri
       Operators::DiffusiveKernel<dim, Number>::get_mapping_flags(true, true));
   }
 
-  if(param.turbulence_model_data.is_active)
-  { 
-    matrix_free_data.append_mapping_flags(
-      Operators::TurbulenceSourceKernel<dim, Number>::get_mapping_flags());
-  }
+  append_mapping_flags_additional(matrix_free_data);
 
   // mapping flags required for CFL condition
   MappingFlags flags_cfl;
@@ -194,12 +187,7 @@ Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matri
     matrix_free_data.insert_constraint(&affine_constraints, get_dof_name_velocity());
   }
 
-  if(param.turbulence_model_data.is_active)
-  {
-    matrix_free_data.insert_dof_handler(&(*dof_handler_eddy_viscosity), get_dof_name_eddy_viscosity());
-    matrix_free_data.insert_constraint(&affine_constraints, get_dof_name_eddy_viscosity());
-  }
-
+  insert_dof_handlers_additional(matrix_free_data);
   // dealii::Quadrature
   std::shared_ptr<dealii::Quadrature<dim>> quadrature =
     create_quadrature<dim>(param.grid.element_type, param.degree + 1);
@@ -212,6 +200,52 @@ Operator<dim, Number>::fill_matrix_free_data(MatrixFreeData<dim, Number> & matri
     matrix_free_data.insert_quadrature(*quadrature_over, get_quad_name_overintegration());
   }
 
+  insert_quadratures_additional(matrix_free_data);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::distribute_dofs_additional()
+{
+  // eddy viscosity of the RANS model (moves to RANS::Operator in R4)
+  if(param.turbulence_model_data.is_active)
+  {
+    dof_handler_eddy_viscosity->distribute_dofs(*fe_eddy_viscosity);
+  }
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::append_mapping_flags_additional(
+  MatrixFreeData<dim, Number> & matrix_free_data) const
+{
+  // turbulence source terms of the RANS model (moves to RANS::Operator in R4)
+  if(param.turbulence_model_data.is_active)
+  {
+    matrix_free_data.append_mapping_flags(
+      Operators::TurbulenceSourceKernel<dim, Number>::get_mapping_flags());
+  }
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::insert_dof_handlers_additional(
+  MatrixFreeData<dim, Number> & matrix_free_data) const
+{
+  // eddy viscosity of the RANS model (moves to RANS::Operator in R4)
+  if(param.turbulence_model_data.is_active)
+  {
+    matrix_free_data.insert_dof_handler(&(*dof_handler_eddy_viscosity), get_dof_name_eddy_viscosity());
+    matrix_free_data.insert_constraint(&affine_constraints, get_dof_name_eddy_viscosity());
+  }
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::insert_quadratures_additional(
+  MatrixFreeData<dim, Number> & matrix_free_data) const
+{
+  // Gauss-Lobatto points of the eddy viscosity of the RANS model (moves to RANS::Operator in R4)
   if(param.turbulence_model_data.is_active)
   {
     std::shared_ptr<dealii::Quadrature<dim>> quadrature_eddy_velocity = std::make_shared<dealii::QGaussLobatto<dim>>(param.degree + 1);
@@ -282,39 +316,6 @@ Operator<dim, Number>::setup_operators()
     }
   }
 
-  if(param.turbulence_model_data.is_active)
-  {
-
-    AssertThrow(not param.use_overintegration,
-                dealii::ExcMessage("Overintegration is not implemented in combination with the turbulence source terms."));
-
-    turbulence_model_ptr->diffusivity              = param.diffusivity;
-
-    turbulence_model_ptr->initialize(*matrix_free,
-                                     param.turbulence_model_data,
-                                     get_dof_index(),
-                                     get_dof_index_eddy_viscosity(),
-                                     get_dof_index_velocity(),
-                                     get_quad_index(),
-                                     get_quad_index_eddy_velocity());
-  }
-
-  std::vector<double> eddy_viscosity_factor(n_blocks, 0.0);
-
-  if(param.turbulence_model_data.is_active)
-  {
-    // sigma_i of the turbulent diffusion, from the RANS model (Wilcox 1988: sigma* for k, sigma for
-    // omega)
-    auto const & rans_model = turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model();
-
-    AssertThrow(rans_model.get_n_variables() == n_blocks,
-                dealii::ExcMessage("Number of transport variables and of RANS model variables "
-                                   "do not match."));
-
-    for(unsigned int b = 0; b < n_blocks; ++b)
-      eddy_viscosity_factor[b] = rans_model.get_diffusion_factor(b);
-  }
-
   // diffusive operator
   std::vector<Operators::DiffusiveKernelData> diffusive_kernel_data(n_blocks);
 
@@ -369,52 +370,7 @@ Operator<dim, Number>::setup_operators()
     rhs_operator[b]->initialize(*matrix_free, rhs_operator_data, rhs_kernel[b]);
   }
 
-  if(param.turbulence_model_data.is_active)
-  {
-    AssertThrow(param.problem_type == ProblemType::Unsteady and
-                  param.temporal_discretization == TemporalDiscretization::BDF,
-                dealii::ExcMessage("Turbulence model: only unsteady problems with BDF time "
-                                   "integration are implemented (no explicit Runge-Kutta, no "
-                                   "steady solver)."));
-
-    TurbulenceSourceOperatorData<dim> turbulence_source_operator_data;
-    turbulence_source_operator_data.dof_index  = get_dof_index();
-    turbulence_source_operator_data.quad_index = get_quad_index();
-
-    Operators::TurbulenceSourceKernelData<dim> turbulence_source_kernel_data;
-    turbulence_source_kernel_data.dof_index                = get_dof_index();
-    turbulence_source_kernel_data.dof_index_velocity       = get_dof_index_velocity();
-    turbulence_source_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
-    turbulence_source_kernel_data.turbulence_model_data    = param.turbulence_model_data;
-    turbulence_source_kernel_data.diffusivity              = param.diffusivity;
-    turbulence_source_kernel_data.k_log                    = param.turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable;
-    turbulence_source_kernel_data.omega_log                = param.turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable;
-
-    turbulence_source_kernel_data.production_implicit =
-      param.treatment_of_production == TreatmentOfProduction::Implicit;
-    turbulence_source_kernel_data.dissipation_implicit =
-      param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
-    turbulence_source_kernel_data.square_gradient_implicit =
-      param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
-    turbulence_source_kernel_data.cross_diffusion_implicit =
-      turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model().has_cross_diffusion() and
-      param.treatment_of_cross_diffusion == TreatmentOfCrossDiffusion::Implicit;
-    turbulence_source_kernel_data.viscosity_implicit =
-      param.treatment_of_variable_viscosity == TreatmentOfVariableViscosity::Implicit;
-
-    turbulence_source_kernel_data.eddy_viscosity_factor = eddy_viscosity_factor;
-    turbulence_source_kernel_data.IP_factor             = param.IP_factor;
-
-    turbulence_source_kernel_data.bc = boundary_descriptor_block;
-
-    turbulence_source_kernel = std::make_shared<Operators::TurbulenceSourceKernel<dim, Number>>();
-    turbulence_source_kernel->turbulence_model_ptr = turbulence_model_ptr;
-    turbulence_source_kernel->reinit(*matrix_free, turbulence_source_kernel_data, get_quad_index());
-
-    turbulence_source_operator.initialize(*matrix_free,
-                                          turbulence_source_operator_data,
-                                          turbulence_source_kernel);
-  }
+  setup_operators_additional();
 
   // merged operator
   if(param.temporal_discretization == TemporalDiscretization::BDF or
@@ -510,6 +466,109 @@ Operator<dim, Number>::setup_operators()
                           get_quad_index(),
                           param.cut_off_degree,
                           param.gradient_threshold);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::setup_operators_additional()
+{
+  // RANS model: turbulence model, turbulent diffusion factors and turbulence source terms
+  // (moves to RANS::Operator in R4)
+  if(not param.turbulence_model_data.is_active)
+    return;
+
+  AssertThrow(not param.use_overintegration,
+              dealii::ExcMessage("Overintegration is not implemented in combination with the turbulence source terms."));
+
+  AssertThrow(param.problem_type == ProblemType::Unsteady and
+                param.temporal_discretization == TemporalDiscretization::BDF,
+              dealii::ExcMessage("Turbulence model: only unsteady problems with BDF time integration are implemented (no explicit Runge-Kutta, no steady solver)."));
+
+  // turbulence model (eddy viscosity)
+  turbulence_model_ptr->diffusivity = param.diffusivity;
+
+  turbulence_model_ptr->initialize(*matrix_free,
+                                   param.turbulence_model_data,
+                                   get_dof_index(),
+                                   get_dof_index_eddy_viscosity(),
+                                   get_dof_index_velocity(),
+                                   get_quad_index(),
+                                   get_quad_index_eddy_velocity());
+
+  // sigma_i of the turbulent diffusion, from the RANS model (Wilcox 1988: sigma* for k, sigma for
+  // omega)
+  auto const & rans_model = turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model();
+
+  AssertThrow(rans_model.get_n_variables() == n_blocks,
+              dealii::ExcMessage("Number of transport variables and of RANS model variables do not match."));
+
+  std::vector<double> eddy_viscosity_factor(n_blocks, 0.0);
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    eddy_viscosity_factor[b] = rans_model.get_diffusion_factor(b);
+
+  // turbulence source terms
+  TurbulenceSourceOperatorData<dim> turbulence_source_operator_data;
+  turbulence_source_operator_data.dof_index  = get_dof_index();
+  turbulence_source_operator_data.quad_index = get_quad_index();
+
+  Operators::TurbulenceSourceKernelData<dim> turbulence_source_kernel_data;
+  turbulence_source_kernel_data.dof_index                = get_dof_index();
+  turbulence_source_kernel_data.dof_index_velocity       = get_dof_index_velocity();
+  turbulence_source_kernel_data.dof_index_eddy_viscosity = get_dof_index_eddy_viscosity();
+  turbulence_source_kernel_data.turbulence_model_data    = param.turbulence_model_data;
+  turbulence_source_kernel_data.diffusivity              = param.diffusivity;
+  turbulence_source_kernel_data.k_log                    = param.turbulence_model_data.positivity_preserving_limiter[0] == PositivityPreservingLimiter::LogarithmicTransportVariable;
+  turbulence_source_kernel_data.omega_log                = param.turbulence_model_data.positivity_preserving_limiter[1] == PositivityPreservingLimiter::LogarithmicTransportVariable;
+
+  turbulence_source_kernel_data.production_implicit =
+    param.treatment_of_production == TreatmentOfProduction::Implicit;
+  turbulence_source_kernel_data.dissipation_implicit =
+    param.treatment_of_dissipation == TreatmentOfDissipation::Implicit;
+  turbulence_source_kernel_data.square_gradient_implicit =
+    param.treatment_of_square_gradient == TreatmentOfSquareGradient::Implicit;
+  turbulence_source_kernel_data.cross_diffusion_implicit =
+    turbulence_model_ptr->get_eddy_viscosity_evaluator().get_model().has_cross_diffusion() and
+    param.treatment_of_cross_diffusion == TreatmentOfCrossDiffusion::Implicit;
+  turbulence_source_kernel_data.viscosity_implicit =
+    param.treatment_of_variable_viscosity == TreatmentOfVariableViscosity::Implicit;
+
+  turbulence_source_kernel_data.eddy_viscosity_factor = eddy_viscosity_factor;
+  turbulence_source_kernel_data.IP_factor             = param.IP_factor;
+
+  turbulence_source_kernel_data.bc = boundary_descriptor_block;
+
+  turbulence_source_kernel = std::make_shared<Operators::TurbulenceSourceKernel<dim, Number>>();
+  turbulence_source_kernel->turbulence_model_ptr = turbulence_model_ptr;
+  turbulence_source_kernel->reinit(*matrix_free, turbulence_source_kernel_data, get_quad_index());
+
+  turbulence_source_operator.initialize(*matrix_free,
+                                        turbulence_source_operator_data,
+                                        turbulence_source_kernel);
+}
+
+template<int dim, typename Number>
+std::shared_ptr<PreconditionerBase<Number>>
+Operator<dim, Number>::create_block_jacobi_preconditioner_additional(unsigned int const block) const
+{
+  // RANS model: matrix-free block Jacobi that includes the turbulence Newton_Implicit terms (no
+  // matrices); moves to RANS::Operator in R4
+  bool const use_turbulence_block_jacobi =
+    param.implement_block_diagonal_preconditioner_matrix_free and
+    param.turbulence_model_data.is_active and turbulence_source_operator.has_implicit_terms();
+
+  if(not use_turbulence_block_jacobi)
+    return nullptr;
+
+  Elementwise::IterativeSolverData solver_data;
+  solver_data.solver_type = param.solver_block_diagonal;
+  solver_data.solver_data = param.solver_data_block_diagonal;
+
+  return std::make_shared<TurbulenceBlockJacobiPreconditioner<dim, Number>>(
+    *combined_operator[block],
+    turbulence_source_operator,
+    block,
+    param.preconditioner_block_diagonal,
+    solver_data);
 }
 
 template<int dim, typename Number>
@@ -630,29 +689,13 @@ Operator<dim, Number>::setup_preconditioner()
   }
   else if(param.preconditioner == Preconditioner::BlockJacobi)
   {
-    // matrix-free block Jacobi that includes the turbulence Newton_Implicit terms (no matrices)
-    bool const use_turbulence_block_jacobi =
-      param.implement_block_diagonal_preconditioner_matrix_free and
-      param.turbulence_model_data.is_active and turbulence_source_operator.has_implicit_terms();
-
-    if(use_turbulence_block_jacobi)
+    for(unsigned int b = 0; b < n_blocks; ++b)
     {
-      Elementwise::IterativeSolverData solver_data;
-      solver_data.solver_type = param.solver_block_diagonal;
-      solver_data.solver_data = param.solver_data_block_diagonal;
+      // block Jacobi of a derived operator (e.g. RANS: with the turbulence Newton_Implicit terms)
+      preconditioner[b] = create_block_jacobi_preconditioner_additional(b);
 
-      for(unsigned int b = 0; b < n_blocks; ++b)
-        preconditioner[b] =
-          std::make_shared<TurbulenceBlockJacobiPreconditioner<dim, Number>>(
-            *combined_operator[b],
-            turbulence_source_operator,
-            b,
-            param.preconditioner_block_diagonal,
-            solver_data);
-    }
-    else
-  {
-      for(unsigned int b = 0; b < n_blocks; ++b)
+      // otherwise: block Jacobi of the combined operator
+      if(preconditioner[b] == nullptr)
         preconditioner[b] =
           std::make_shared<BlockJacobiPreconditioner<CombinedOperator<dim, Number>>>(*combined_operator[b], false);
     }
@@ -988,10 +1031,40 @@ Operator<dim, Number>::rhs(BlockVectorType & dst,
     }
   }
 
-  // enrichment blocks: no boundary or source terms of their own here, but rhs() overwrites dst,
-  // so they are set to zero as well (otherwise the previous right-hand side stays in them)
+  rhs_additional(dst, time);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::rhs_additional(BlockVectorType & dst, double const time) const
+{
+  (void)time;
+
+  // enrichment blocks of the RANS variables: no boundary or source terms of their own here, but
+  // rhs() overwrites dst, so they are set to zero as well (otherwise the previous right-hand side
+  // stays in them); moves to RANS::Operator in R4
   for(unsigned int e = n_blocks; e < dst.n_blocks(); ++e)
     dst.block(e) = 0.0;
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::apply_add_additional(BlockVectorType &       dst,
+                                            BlockVectorType const & src) const
+{
+  // enrichment of RANS variables: block mass on the enriched cells; moves to RANS::Operator in R4
+  apply_add_enriched_mass_correction(dst, src);
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::set_velocity_additional(VectorType const & velocity)
+{
+  // RANS model: velocity of the turbulence model; moves to RANS::Operator in R4
+  if(param.turbulence_model_data.is_active)
+  {
+    turbulence_model_ptr->set_velocity_ptr(velocity);
+  }
 }
 
 template<int dim, typename Number>
@@ -1618,8 +1691,7 @@ Operator<dim, Number>::apply_conv_diff_operator(BlockVectorType & dst,
   for(unsigned int b = 0; b < n_blocks; ++b)  
     combined_operator[b]->apply(dst.block(b), src.block(b));
 
-  // enrichment of RANS variables: block mass on the enriched cells
-  apply_add_enriched_mass_correction(dst, src);
+  apply_add_additional(dst, src);
 }
 
 template<int dim, typename Number>
@@ -1645,10 +1717,7 @@ Operator<dim, Number>::update_conv_diff_operator(double const       time,
         combined_operator[b]->set_velocity_ptr(*velocity);
       }
 
-      if(param.turbulence_model_data.is_active)
-      {
-        turbulence_model_ptr->set_velocity_ptr(*velocity);
-      }
+      set_velocity_additional(*velocity);
     }
   }
 }
@@ -1780,8 +1849,7 @@ Operator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src)
   }
 
   // block-diagonal part: operator of each transport variable acting on its own block
-  for(unsigned int b = 0; b < n_blocks; ++b)
-    combined_operator[b]->vmult(dst.block(b), src_operator->block(b));
+  vmult_transport_variables(dst, *src_operator);
 
   // enrichment of RANS variables: block mass on the enriched cells
   apply_add_enriched_mass_correction(dst, *src_operator);
@@ -1800,6 +1868,15 @@ Operator<dim, Number>::vmult(BlockVectorType & dst, BlockVectorType const & src)
 #ifdef EXADG_PROFILE
   SectionProfile::lap("scal 3c vmult: turbulence Jacobian", t_prof);
 #endif
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::vmult_transport_variables(BlockVectorType &       dst,
+                                                 BlockVectorType const & src) const
+{
+  for(unsigned int b = 0; b < n_blocks; ++b)
+    combined_operator[b]->vmult(dst.block(b), src.block(b));
 }
 
 template<int dim, typename Number>

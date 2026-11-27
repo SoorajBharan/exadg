@@ -121,8 +121,8 @@ public:
   /*
    * Initialization of dof-vector.
    */
-  void
-  initialize_dof_vector(BlockVectorType & src) const final;
+  virtual void
+  initialize_dof_vector(BlockVectorType & src) const override;
 
   void
   initialize_dof_vector_eddy_viscosity(VectorType & src) const;
@@ -236,7 +236,7 @@ public:
    * This function applies the mass operator to the src-vector and writes the result to the
    * dst-vector.
    */
-  void
+  virtual void
   apply_mass_operator(BlockVectorType & dst,
                       BlockVectorType const & src) const;
 
@@ -244,7 +244,7 @@ public:
    * This function applies the mass operator to the src-vector and adds the result to the
    * dst-vector.
    */
-  void
+  virtual void
   apply_mass_operator_add(BlockVectorType & dst,
                           BlockVectorType const & src) const;
 
@@ -252,7 +252,7 @@ public:
    * Inverse mass operator for all blocks; with enrichment of RANS variables the block inverse
    * (thesis Eqs. (6.16), (6.17)) on the enriched cells. dst and src may be the same vector.
    */
-  void
+  virtual void
   apply_inverse_mass_operator(BlockVectorType & dst, BlockVectorType const & src) const;
 
   /*
@@ -299,7 +299,7 @@ public:
    * field at the nodes, omega_bar + psi_omega omega_tilde (or W_bar + psi_omega W_tilde), on the
    * enriched cells. Without enrichment dst = src.
    */
-  void
+  virtual void
   get_solution_for_output(BlockVectorType & dst, BlockVectorType const & src) const;
 
   // enrichment of RANS variables: k of the RANS solution (block 0) to FunctionEnrichmentRANS (k+
@@ -413,7 +413,7 @@ public:
   TurbulenceModelData const &
   get_turbulence_model_data() const;
 
-  void
+  virtual void
   vmult(BlockVectorType & dst, BlockVectorType const & src) const;
 
   /*
@@ -522,7 +522,7 @@ public:
   void
   get_turbulent_kinetic_energy(VectorType & dst, BlockVectorType const & solution) const;
 
-  void
+  virtual void
   update_time_step_size(double const dt,
                         double const time,
                         double const end_time,
@@ -533,6 +533,44 @@ public:
 
   void
   enforce_positivity(BlockVectorType & solution) const;
+
+protected:
+  /*
+   * Hooks for derived operators (e.g. RANS::Operator), called at the places of the setup where a
+   * derived operator adds its own DoFHandlers, mapping flags and quadrature rules; the order of
+   * the MatrixFree entries is the same as before. Note: initialize_dof_handler_and_constraints()
+   * is called by the constructor, where a virtual call runs this base version; a derived operator
+   * distributes its DoFs in its own constructor, the hook is used after adaptive mesh refinement.
+   */
+  virtual void
+  distribute_dofs_additional();
+
+  virtual void
+  append_mapping_flags_additional(MatrixFreeData<dim, Number> & matrix_free_data) const;
+
+  virtual void
+  insert_dof_handlers_additional(MatrixFreeData<dim, Number> & matrix_free_data) const;
+
+  virtual void
+  insert_quadratures_additional(MatrixFreeData<dim, Number> & matrix_free_data) const;
+
+  virtual void
+  setup_operators_additional();
+
+  virtual std::shared_ptr<PreconditionerBase<Number>>
+  create_block_jacobi_preconditioner_additional(unsigned int const block) const;
+
+  virtual void
+  rhs_additional(BlockVectorType & dst, double const time) const;
+
+  virtual void
+  apply_add_additional(BlockVectorType & dst, BlockVectorType const & src) const;
+
+  virtual void
+  set_velocity_additional(VectorType const & velocity);
+
+  void
+  vmult_transport_variables(BlockVectorType & dst, BlockVectorType const & src) const;
 
 private:
   void
